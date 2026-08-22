@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "seed": 20260822,
+  "source_midi": {
+    "path": "common/midiarranger/tests/fixtures/ancora_arranjo_atual.mid",
+    "sha256": "e2727e269436ee09e0ced1e5b41345592ec3fec6d869938d4ac62ac0b41a35df",
+    "tempo": null,
+    "key": "D#",
+    "bars": 163
+  },
+  "route": "cinematica_emocional",
+  "assumptions": [
+    "Reconstrucao manual (US-009) da estrutura do arranjo real de 'Ancora - Arranjo Atual Midi.mid'.",
+    "Nao reproduz notas: declara elementos, secoes, registros e protagonistas.",
+    "Elementos usam harmony=free porque o insumo do teste positivo sao as notas reais do arranjo (ver test_golden_ancora.py); modo estrito bloqueia real com passagem tonal legitima.",
+    "Tail check evitado com articulation=tight/open onde o elemento pode empurrar a fronteira; pad_outro fica sustained pois OUTRO e a ultima secao (sem next_bar)."
+  ],
+  "sections": [
+    {
+      "label": "INTRO A",
+      "kind": "intro",
+      "start_bar": 4,
+      "end_bar": 14,
+      "source": "marker",
+      "protagonist": "guitar_riff",
+      "energy": {"densidade": 3, "impacto": 3, "largura": 4, "altura": 3, "instabilidade": 2}
+    },
+    {
+      "label": "INTRO B",
+      "kind": "intro",
+      "start_bar": 14,
+      "end_bar": 30,
+      "source": "marker",
+      "protagonist": "guitar_riff",
+      "energy": {"densidade": 5, "impacto": 5, "largura": 5, "altura": 4, "instabilidade": 3}
+    },
+    {
+      "label": "VERSE 1",
+      "kind": "verse",
+      "start_bar": 30,
+      "end_bar": 46,
+      "source": "marker",
+      "protagonist": "vocal_hook",
+      "energy": {"densidade": 4, "impacto": 4, "largura": 4, "altura": 4, "instabilidade": 3}
+    },
+    {
+      "label": "CHORUS 1",
+      "kind": "chorus",
+      "start_bar": 46,
+      "end_bar": 62,
+      "source": "marker",
+      "protagonist": "vocal_hook",
+      "energy": {"densidade": 7, "impacto": 7, "largura": 7, "altura": 6, "instabilidade": 4}
+    },
+    {
+      "label": "VERSE 2",
+      "kind": "verse",
+      "start_bar": 62,
+      "end_bar": 78,
+      "source": "marker",
+      "protagonist": "vocal_hook",
+      "energy": {"densidade": 4, "impacto": 4, "largura": 4, "altura": 4, "instabilidade": 3}
+    },
+    {
+      "label": "PRE-CHORUS",
+      "kind": "pre",
+      "start_bar": 78,
+      "end_bar": 87,
+      "source": "marker",
+      "protagonist": "vocal_hook",
+      "energy": {"densidade": 6, "impacto": 6, "largura": 5, "altura": 6, "instabilidade": 5}
+    },
+    {
+      "label": "CHORUS 2",
+      "kind": "chorus",
+      "start_bar": 87,
+      "end_bar": 103,
+      "source": "marker",
+      "protagonist": "vocal_hook",
+      "energy": {"densidade": 7, "impacto": 8, "largura": 8, "altura": 7, "instabilidade": 4}
+    },
+    {
+      "label": "INTERLUDE",
+      "kind": "interlude",
+      "start_bar": 103,
+      "end_bar": 119,
+      "source": "marker",
+      "protagonist": "guitar_riff",
+      "energy": {"densidade": 5, "impacto": 6, "largura": 7, "altura": 5, "instabilidade": 4}
+    },
+    {
+      "label": "CHORUS 3",
+      "kind": "chorus",
+      "start_bar": 119,
+      "end_bar": 135,
+      "source": "marker",
+      "protagonist": "vocal_hook",
+      "energy": {"densidade": 8, "impacto": 9, "largura": 9, "altura": 8, "instabilidade": 5}
+    },
+    {
+      "label": "OUTRO",
+      "kind": "outro",
+      "start_bar": 135,
+      "end_bar": 162,
+      "source": "marker",
+      "protagonist": "texture",
+      "energy": {"densidade": 4, "impacto": 6, "largura": 8, "altura": 5, "instabilidade": 3}
+    }
+  ],
+  "elements": [
+    {
+      "id": "piano_hook_ch1",
+      "role": "piano",
+      "sections": ["CHORUS 1"],
+      "register": [48, 84],
+      "layers": 1,
+      "sync_role": "response",
+      "articulation": "tight",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Steinway", "preset": "Grand", "verified": true},
+      "rationale": "Hook de piano no primeiro refrao (Steinway Grand Piano #9 no MIDI real).",
+      "is_protagonist": false
+    },
+    {
+      "id": "piano_hook_ch2",
+      "role": "piano",
+      "sections": ["PRE-CHORUS", "CHORUS 2"],
+      "register": [48, 84],
+      "layers": 1,
+      "sync_role": "response",
+      "articulation": "tight",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Steinway", "preset": "Grand", "verified": true},
+      "rationale": "Hook de piano no segundo refrao com pickup no pre-chorus (Steinway #10).",
+      "is_protagonist": false
+    },
+    {
+      "id": "piano_hook_ch3",
+      "role": "piano",
+      "sections": ["INTERLUDE", "CHORUS 3"],
+      "register": [48, 84],
+      "layers": 1,
+      "sync_role": "response",
+      "articulation": "tight",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Steinway", "preset": "Grand", "verified": true},
+      "rationale": "Hook de piano no terceiro refrao com pickup no interlude (Steinway #11).",
+      "is_protagonist": false
+    },
+    {
+      "id": "rhodes_verse1",
+      "role": "rhodes",
+      "sections": ["VERSE 1"],
+      "register": [43, 66],
+      "layers": 1,
+      "sync_role": "sustain_through",
+      "articulation": "tight",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Wide Suitcase", "preset": "Rhodes", "verified": true},
+      "rationale": "Camada Rhodes que sustenta o primeiro verso (Wide Suitcase #14).",
+      "is_protagonist": false
+    },
+    {
+      "id": "rhodes_verse2",
+      "role": "rhodes",
+      "sections": ["VERSE 2", "PRE-CHORUS"],
+      "register": [43, 66],
+      "layers": 1,
+      "sync_role": "sustain_through",
+      "articulation": "tight",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Wide Suitcase", "preset": "Rhodes", "verified": true},
+      "rationale": "Rhodes que segue verso 2 emendando no pre (Wide Suitcase #15).",
+      "is_protagonist": false
+    },
+    {
+      "id": "strings_bed",
+      "role": "strings",
+      "sections": ["CHORUS 2", "INTERLUDE"],
+      "register": [35, 84],
+      "layers": 1,
+      "sync_role": "sustain_through",
+      "articulation": "open",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Breathing Strings", "preset": "Chorale", "verified": true},
+      "rationale": "Cama de cordas que atravessa refrao 2 e interlude (Breathing Strings #20).",
+      "is_protagonist": false
+    },
+    {
+      "id": "pad_outro",
+      "role": "pad",
+      "sections": ["OUTRO"],
+      "register": [40, 72],
+      "layers": 1,
+      "sync_role": "sustain_through",
+      "articulation": "sustained",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Emerald Haze", "preset": "Pad", "verified": true},
+      "rationale": "Pad segurando o OUTRO (Emerald Haze Pad #23). Ultima secao: tail check nao dispara.",
+      "is_protagonist": true
+    },
+    {
+      "id": "sub_bass_outro",
+      "role": "drone",
+      "sections": ["CHORUS 3", "OUTRO"],
+      "register": [28, 48],
+      "layers": 1,
+      "sync_role": "sustain_through",
+      "articulation": "open",
+      "harmony": "free",
+      "pattern": null,
+      "degrees": null,
+      "dynamics": {"shape": "hold"},
+      "instrument": {"plugin": "Pulse Wave", "preset": "Sub", "verified": true},
+      "rationale": "Sub eletronico que costura refrao 3 no outro (Pulse Wave Bass #26).",
+      "is_protagonist": false
+    }
+  ],
+  "transitions": []
+}
