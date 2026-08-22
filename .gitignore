@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.jscpd/
+.jscpd_manual/
+.worktrees/
+.midiarranger/
+*.egg-info/
+dist/
+build/
