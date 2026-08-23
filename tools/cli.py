@@ -24,9 +24,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Import "eager" das tools para que o registry esteja populado quando o CLI
-# rodar. Cada modulo de tool se auto-registra ao ser importado.
-from . import registry  # noqa: F401 — reservado para expansao
+# Import "eager" do contract para que o registry esteja populado quando o
+# CLI rodar. `tools.contract` registra todas as tools no import.
+from . import contract  # noqa: F401 — side effect: bootstrap do registry
 from .registry import call, failure, get, list_tools
 
 
