@@ -172,6 +172,18 @@ def test_referenced_tools_are_registered():
         # Modo rapido nao trava.
         "Modo rapido",
         "nao trava",
+        # US-003: pesquisa e confianca.
+        "pesquise ao vivo",
+        "researched_at",
+        "sources",
+        "tecnica e comportamento",
+        "nunca conteudo musical",
+        "confianca declarada",
+        "chute apresentado como fato",
+        "mostre as fontes antes de gravar",
+        "vocabulario de tecnica e fechado",
+        "techniques.describe",
+        "nao vira base de conhecimento",
     ],
 )
 def test_body_carries_required_clauses(clause):

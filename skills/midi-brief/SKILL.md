@@ -107,20 +107,55 @@ E marque no `style` da familia: `reference: null`, `sources: []`,
 
 ## Pesquisa e confianca
 
-Nesta iteracao a instrucao e apenas o esqueleto: quando o usuario citar
-musico, banda ou produtor, pesquise ao vivo o que voce encontrar sobre
-**tecnica e comportamento** — nunca conteudo musical (isso vem no proximo
-passo da skill, US-003).
+Quando o usuario citar musico, banda ou produtor, **pesquise ao vivo**. A
+pesquisa levanta **tecnica e comportamento**: como o musico toca. Densidade
+de ghost note. Feel de timing (adiantado, atrasado, laid back, on top).
+Articulacao preferida (staccato, legato, palm mute). Uso de efeito (compressao
+esmagada, reverb longo, delay dotted, saturacao de fita). Escolha de
+registro. Preferencia de dinamica. Isso e o que entra em `techniques[]` e
+`parameters` do `style`.
 
-Registre no `style` da familia: `reference` (texto que o usuario deu),
-`researched_at` (data ISO 8601), `sources` (URLs ou referencias
-consultadas), `confidence` do vocabulario fechado
-(`high | medium | low | default`).
+**Nunca conteudo musical.** Nao pesquise, nao registre e nao cite melodia,
+riff, levada, progressao, transcricao de solo, sequencia de notas. Nao e
+"o que o musico toca", e "como o musico toca". Se a fonte so tem transcricao,
+ignore a transcricao e extraia so os parametros de execucao (timing, feel,
+efeito). O `brief.validate` recusa conteudo musical em `style`; voce recusa
+antes.
 
-Tecnica escolhida em `style.<familia>.techniques[].name` **precisa vir do
-manual local**. Use `python3 -m tools.cli tool techniques.list --input
-<(echo '{"family": "<familia>"}')` para ver o vocabulario. Nome fora do
-indice e recusado por `brief.validate`.
+**Confianca declarada, nao maquiada.** Pesquisa que achou pouco vira
+`confidence: "low"` e o usuario ve — em texto, no resumo antes de gravar. Nao
+promova `low` para `medium` porque "parece razoavel".
+**Chute apresentado como fato e o pior resultado possivel** — polui o brief,
+o `run` executa em cima, o resultado nao bate com a referencia e ninguem sabe
+por que. Numero sem fonte vira `[NAO VERIFICADO]` na conversa e nao entra em
+`parameters`.
+
+**Mostre as fontes antes de gravar.** Antes do passo 6 (validar+gravar),
+liste ao usuario, por familia: o que voce pesquisou, quais fontes consultou
+(URLs ou nomes de referencia), qual `confidence` vai registrar e por que.
+Se ele apontar fonte fraca ou pediu correcao, refaca. **O usuario ve o que
+vai virar brief antes de o brief virar arquivo.**
+
+**Vocabulario de tecnica e fechado.** Tecnica em
+`style.<familia>.techniques[].name` **so vale se existir no manual local**
+em `knowledge/tecnicas/`. Use duas tools:
+
+- `python3 -m tools.cli tool techniques.list --input <(echo '{"family":
+  "<familia>"}')` para ver o vocabulario disponivel para a familia.
+- `python3 -m tools.cli tool techniques.describe --input <(echo '{"name":
+  "<tecnica>"}')` para ler a receita completa da tecnica — o que e
+  musicalmente, como se traduz em parametro MIDI (nota, keyswitch, CC,
+  velocity, gate, offset, curva) e as fontes de cada numero.
+
+A `describe` e como voce traduz a tecnica escolhida em parametro MIDI que o
+`run` sabe renderizar. Nome fora do indice e recusado por `brief.validate`
+— nao invente tecnica nem "adapte" o nome.
+
+**Perfil pesquisado nao vira base de conhecimento.** O que voce pesquisou
+sobre o musico X vive **so no `arrangement-brief.json` desta musica**. Nao
+grave em `knowledge/`. Nao crie arquivo em `personas/`. Nao proponha
+"vou salvar isso para reusar depois". Cada musica pesquisa de novo — o
+perfil aqui e servico do arranjo desta faixa, nao base do proximo.
 
 ## Modo rapido
 
