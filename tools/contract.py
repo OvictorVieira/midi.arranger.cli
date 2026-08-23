@@ -27,6 +27,7 @@ from . import plan as plan_mod
 from . import plugins as plugins_mod
 from . import render as render_mod
 from . import sections as sections_mod
+from . import techniques as techniques_mod
 from .constants import REGISTER_BANDS
 from .plan import (
     ARTICULATIONS,
@@ -1514,6 +1515,242 @@ PLUGINS_SCAN_TOOL = Tool(
 )
 
 
+# --- techniques.list / techniques.describe -------------------------------
+
+TECHNIQUES_LIST_DESCRIPTION = (
+    "Lista as tecnicas catalogadas no indice (derivado dos manuais em "
+    "knowledge/tecnicas). Use antes de sugerir tecnica no plano — ESTE E O "
+    "VOCABULARIO FECHADO, o que impede o modelo de inventar tecnica que "
+    "ninguem sabe executar. Filtros: `family` (drums, bass, keys, guitar) e "
+    "`tool` (superior_drummer, addictive_drums, logic_sampler, ...) — quando "
+    "`tool` esta presente, a saida inclui a receita para essa ferramenta e "
+    "esconde tecnicas que nao tem receita ali. Sem filtro, devolve tudo."
+)
+
+TECHNIQUES_DESCRIBE_DESCRIPTION = (
+    "Devolve a receita completa de uma tecnica: o que e musicalmente, como "
+    "reproduzir em MIDI na ferramenta-alvo (nota, keyswitch, CC, velocity, "
+    "gate, offset, curva), o fallback generico, as regras de posicao, as "
+    "contraindicacoes e a fonte de cada numero. Use ao gerar a receita de "
+    "execucao no plano. Sem `tool`, devolve o fallback generico e AVISA que "
+    "esta sem ferramenta. Tecnica inexistente retorna erro com hint listando "
+    "as mais parecidas."
+)
+
+
+def _technique_summary_dict(t: techniques_mod.Technique) -> dict[str, Any]:
+    return {
+        "canonical": t.canonical,
+        "name": t.name,
+        "family": t.family,
+        "summary": t.summary,
+        "verified": t.verified,
+        "parameters": [p.to_dict() for p in t.parameters],
+        "tools_available": sorted(t.tools.keys()),
+    }
+
+
+def _techniques_list_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    try:
+        idx = techniques_mod.build_index()
+    except techniques_mod.TechniqueError as exc:
+        raise ToolError(
+            "E_TECHNIQUES_INDEX",
+            f"falha ao construir indice de tecnicas: {exc}",
+        ) from None
+
+    family = payload.get("family")
+    tool_target = payload.get("tool")
+
+    techniques = idx.by_family(family)
+    if tool_target:
+        techniques = tuple(
+            t for t in techniques
+            if tool_target in t.tools or "generic" in t.tools
+        )
+
+    out = []
+    for t in techniques:
+        entry = _technique_summary_dict(t)
+        if tool_target:
+            entry["recipe"] = t.tools.get(tool_target) or t.tools.get("generic", {})
+        out.append(entry)
+
+    warnings: list[dict[str, Any]] = []
+    if not out:
+        warnings.append({
+            "code": "W_TECHNIQUES_EMPTY",
+            "message": (
+                f"nenhuma tecnica retornada para family={family!r} tool={tool_target!r}. "
+                f"Familias disponiveis: {sorted({t.family for t in idx.techniques})!r}"
+            ),
+            "path": "",
+        })
+    return {"techniques": out}, warnings
+
+
+def _techniques_describe_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    import difflib
+
+    try:
+        idx = techniques_mod.build_index()
+    except techniques_mod.TechniqueError as exc:
+        raise ToolError(
+            "E_TECHNIQUES_INDEX",
+            f"falha ao construir indice de tecnicas: {exc}",
+        ) from None
+
+    name = payload["name"]
+    t = idx.get(name)
+    if t is None:
+        candidates = list(idx.names()) + [tt.name for tt in idx.techniques]
+        matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
+        raise ToolError(
+            "E_TECHNIQUE_NOT_FOUND",
+            f"tecnica {name!r} nao existe no indice",
+            path="name",
+            hint=(
+                f"tecnicas parecidas: {matches}"
+                if matches else
+                f"tecnicas disponiveis: {list(idx.names())}"
+            ),
+        )
+
+    tool_target = payload.get("tool")
+    recipe: dict[str, Any] = t.tools.get("generic", {})
+    used_generic = True
+    if tool_target and tool_target in t.tools:
+        recipe = t.tools[tool_target]
+        used_generic = False
+
+    data = {
+        "canonical": t.canonical,
+        "name": t.name,
+        "family": t.family,
+        "summary": t.summary,
+        "verified": t.verified,
+        "description": t.description,
+        "parameters": [p.to_dict() for p in t.parameters],
+        "tool": tool_target if tool_target and not used_generic else "generic",
+        "recipe": recipe,
+        "source_manual": t.source_manual,
+    }
+    warnings: list[dict[str, Any]] = []
+    if tool_target is None:
+        warnings.append({
+            "code": "W_NO_TOOL",
+            "message": (
+                "sem `tool` declarada; devolvendo receita generica. "
+                f"Ferramentas disponiveis para esta tecnica: {sorted(t.tools.keys())!r}"
+            ),
+            "path": "tool",
+        })
+    elif used_generic:
+        warnings.append({
+            "code": "W_NO_TOOL_RECIPE",
+            "message": (
+                f"tecnica {t.canonical!r} nao tem receita para tool={tool_target!r}; "
+                f"devolvendo fallback generico. Disponiveis: {sorted(t.tools.keys())!r}"
+            ),
+            "path": "tool",
+        })
+    return data, warnings
+
+
+_TECHNIQUE_PARAMETER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "value": {},
+        "range": {
+            "oneOf": [
+                {"type": "null"},
+                {"type": "array", "minItems": 2, "maxItems": 2},
+            ],
+        },
+        "source": {"type": ["string", "null"]},
+    },
+    "required": ["name", "value", "range", "source"],
+}
+
+_TECHNIQUE_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "canonical": {"type": "string"},
+        "name": {"type": "string"},
+        "family": {"type": "string"},
+        "summary": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "parameters": {"type": "array", "items": _TECHNIQUE_PARAMETER_SCHEMA},
+        "tools_available": {"type": "array", "items": {"type": "string"}},
+        "recipe": {"type": "object", "additionalProperties": True},
+    },
+    "required": [
+        "canonical", "name", "family", "summary", "verified",
+        "parameters", "tools_available",
+    ],
+}
+
+TECHNIQUES_LIST_TOOL = Tool(
+    name="techniques.list",
+    description=TECHNIQUES_LIST_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "family": {"type": ["string", "null"]},
+            "tool": {"type": ["string", "null"]},
+        },
+        "required": [],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "techniques": {"type": "array", "items": _TECHNIQUE_SUMMARY_SCHEMA},
+        },
+        "required": ["techniques"],
+    },
+    func=_techniques_list_impl,
+)
+
+
+TECHNIQUES_DESCRIBE_TOOL = Tool(
+    name="techniques.describe",
+    description=TECHNIQUES_DESCRIBE_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "tool": {"type": ["string", "null"]},
+        },
+        "required": ["name"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "canonical": {"type": "string"},
+            "name": {"type": "string"},
+            "family": {"type": "string"},
+            "summary": {"type": "string"},
+            "verified": {"type": "boolean"},
+            "description": {"type": "string"},
+            "parameters": {"type": "array", "items": _TECHNIQUE_PARAMETER_SCHEMA},
+            "tool": {"type": "string"},
+            "recipe": {"type": "object", "additionalProperties": True},
+            "source_manual": {"type": "string"},
+        },
+        "required": [
+            "canonical", "name", "family", "summary", "verified",
+            "description", "parameters", "tool", "recipe", "source_manual",
+        ],
+    },
+    func=_techniques_describe_impl,
+)
+
+
 # --- registro --------------------------------------------------------------
 
 def bootstrap() -> None:
@@ -1525,6 +1762,7 @@ def bootstrap() -> None:
     for tool in (
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
         RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL,
+        TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
     ):
         if _get(tool.name) is None:
             register(tool)
@@ -1541,6 +1779,8 @@ __all__ = [
     "PLAN_VALIDATE_TOOL",
     "PLUGINS_SCAN_TOOL",
     "RENDER_TOOL",
+    "TECHNIQUES_DESCRIBE_TOOL",
+    "TECHNIQUES_LIST_TOOL",
     "VALIDATE_TOOL",
     "bootstrap",
 ]
