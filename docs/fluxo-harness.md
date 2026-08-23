@@ -35,20 +35,26 @@ flowchart LR
 
 ## 2. O laço `run`
 
-Cada iteração é um **processo novo, sem memória da anterior**. Todo estado vive em disco.
+Cada iteração é um **processo novo, sem memória da anterior**. Todo estado vive em disco. Quando o
+usuário não informa `max_iterations`, o default é 10; a ajuda recomenda estimar uma iteração por
+família de instrumento a arranjar, mais folga para correções.
 
 ```mermaid
 flowchart TD
     Start([midi-arranger run N]) --> Check{brief existe?}
     Check -->|não| Die[/erro: rode a skill de brief antes/]
-    Check -->|sim| Arch{brief mudou<br/>desde a última vez?}
+    Check -->|sim| State[cria .midiarranger/<br/>e calcula hash do brief]
+    State --> Arch{brief mudou<br/>desde a última vez?}
     Arch -->|sim| Archive[arquiva plano e log<br/>em .midiarranger/archive]
-    Arch -->|não| Loop
-    Archive --> Loop
+    Arch -->|não| Progress
+    Archive --> Progress[grava hash aceito<br/>e garante progress.txt]
+    Progress --> Loop
 
-    Loop[i = 1] --> Invoke[monta a linha de comando<br/>do adaptador da ferramenta]
+    Loop[i = 1] --> Invoke[monta prompt com iteration=i<br/>e linha de comando do adaptador]
     Invoke --> Run[executa a CLI de IA<br/>ecoa e captura a saída]
-    Run --> Sentinel{saída contém<br/>promise COMPLETE?}
+    Run --> RO{brief mudou<br/>durante a iteração?}
+    RO -->|sim| BriefFail([falha: requisito novo<br/>exige brief novo])
+    RO -->|não| Sentinel{saída contém<br/>&lt;promise&gt;COMPLETE&lt;/promise&gt;?}
     Sentinel -->|sim| Done([sucesso: exit 0])
     Sentinel -->|não| Next{i menor que N?}
     Next -->|sim| Inc[i = i + 1] --> Invoke
@@ -56,10 +62,25 @@ flowchart TD
 
     style Done fill:#d4edda,stroke:#28a745,color:#000
     style Fail fill:#f8d7da,stroke:#dc3545,color:#000
+    style BriefFail fill:#f8d7da,stroke:#dc3545,color:#000
     style Die fill:#f8d7da,stroke:#dc3545,color:#000
 ```
 
-**Estourar as iterações é falha**, com código de saída diferente de zero. O harness nunca finge sucesso.
+O harness procura apenas a sentinela literal `<promise>COMPLETE</promise>` na saída capturada da
+iteração recém-executada, mas só depois de conferir que `arrangement-brief.json` continuou igual ao
+hash aceito no início do `run`. Se o agente alterar ou remover o brief durante uma iteração, o
+harness para com erro: requisito novo exige rodar a fase de brief de novo. Encontrou a sentinela com
+o brief intacto, encerra com código 0. **Estourar as iterações é falha**, com código de saída
+diferente de zero e ponteiro para `progress.txt`. O harness nunca finge sucesso nem consulta
+`progress.txt` para decidir se acabou.
+Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midiarranger/` quando
+necessário e compara o hash atual do brief com `.midiarranger/brief.sha256`. Se o hash mudou desde a
+última execução, o harness move o `arrangement-plan.json` e o `progress.txt` anteriores para
+`.midiarranger/archive/<data>-<slug>/`, onde o slug vem do MIDI citado no brief quando isso está
+disponível. Se nenhum desses arquivos existir, o diretório de arquivo vazio é removido. Só depois
+disso ele grava o novo hash, garante que `progress.txt` exista e acrescenta a entrada de início de
+execução. Se o hash do brief é o mesmo, nada é arquivado: o log existente é preservado e recebe
+append.
 
 ---
 
@@ -79,7 +100,7 @@ flowchart TD
     G --> H{algum disparou?}
     H -->|sim| D
     H -->|não| I[escreve progress.txt]
-    I --> J[emite promise COMPLETE]
+    I --> J[emite &lt;promise&gt;COMPLETE&lt;/promise&gt;]
 
     style J fill:#d4edda,stroke:#28a745,color:#000
     style H fill:#fff4cc,stroke:#b8860b,color:#000
@@ -148,7 +169,7 @@ flowchart TD
         PROG[(progress.txt<br/>log append-only)]
     end
     subgraph escrita_pelo_harness [escrito pelo harness]
-        STATE[(.midiarranger/<br/>estado e arquivo)]
+        STATE[(.midiarranger/<br/>brief.sha256<br/>last-agent-output.txt<br/>archive/)]
     end
 
     BRIEF -->|somente leitura no run| PLAN
@@ -164,10 +185,26 @@ flowchart TD
 | `arrangement-brief.json` | O que você quer. **Somente leitura durante o `run`** | a skill de brief |
 | `arrangement-plan.json` | O que será construído. **Fonte de verdade da conclusão** | o agente |
 | `progress.txt` | O que cada iteração fez. Só log — nunca consultado para decidir se acabou | o agente |
-| `.midiarranger/` | Última execução e arquivo das anteriores | o harness |
+| `.midiarranger/` | `brief.sha256`, última saída capturada e arquivo das execuções anteriores | o harness |
 
 **O brief é contrato.** Se o agente concluir que ele está errado, ele para e reporta — nunca
 reescreve o que você pediu. Requisito novo é brief novo.
+
+No começo do `run`, o harness valida que `arrangement-brief.json` existe antes de invocar o agente.
+Sem brief, o comando falha cedo e manda rodar `midi-arranger brief <input.mid>`. Com brief presente,
+o harness cria `.midiarranger/`, registra o hash do brief em `.midiarranger/brief.sha256` e usa esse
+valor para detectar se a demanda mudou desde a execução anterior.
+
+Durante o `run`, esse mesmo hash vira uma trava de somente leitura. O prompt driver passa
+`brief_readonly=true` e instrui o agente a não editar `arrangement-brief.json`; se o agente mudar o
+arquivo mesmo assim, o harness detecta ao fim da iteração e falha antes de aceitar qualquer sentinela
+de conclusão.
+
+Quando o brief muda, um plano ou log antigo pode pertencer a outra música. Para evitar reutilização
+silenciosa, o harness arquiva `arrangement-plan.json` e `progress.txt` em
+`.midiarranger/archive/<data>-<slug>/` antes de recriar o log. Quando o brief não mudou,
+`progress.txt` continua append-only: o conteúdo anterior fica no lugar e recebe uma nova entrada de
+início de execução.
 
 ---
 
@@ -185,4 +222,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: caa2ce50687ec77d759d11821c977b90619ffa3629ae8c9ebc1eb1c0c7acf8e5 -->
+<!-- harness-sha256: 9dcad3c770a2473a167d9c93cd2430595118a2f976eaed50e7a23b50485034dc -->

@@ -2,7 +2,10 @@
 set -euo pipefail
 
 readonly EX_USAGE=64
+readonly EX_NOINPUT=66
 readonly EX_UNAVAILABLE=69
+readonly BRIEF_HASH_FILE_NAME="brief.sha256"
+readonly COMPLETION_SENTINEL="<promise>COMPLETE</promise>"
 
 SUPPORTED_TOOLS="claude codex agy cursor opencode amp gemini"
 EFFORT_EXPLICIT=0
@@ -39,6 +42,10 @@ Examples:
   midi-arranger run --tool codex --effort high 12
   midi-arranger --cwd /path/to/project --list-models
   midi-arranger tool analyze song.mid
+
+Run iterations:
+  max_iterations defaults to 10. As a rule of thumb, use one iteration per
+  instrument family to arrange, plus extra room for validation fixes.
 EOF
 }
 
@@ -50,6 +57,11 @@ die_usage() {
 die_unavailable() {
   printf 'Error: %s\n' "$1" >&2
   exit "$EX_UNAVAILABLE"
+}
+
+die_noinput() {
+  printf 'Error: %s\n' "$1" >&2
+  exit "$EX_NOINPUT"
 }
 
 die_missing_binary() {
@@ -386,6 +398,59 @@ build_agent_prompt() {
   printf 'midi-arranger %s\nproject_root=%s\n%s\n' "$mode" "$PROJECT_ROOT" "$detail"
 }
 
+run_prompt_detail() {
+  printf 'iteration=%s\nmax_iterations=%s\narrangement_brief=%s\narrangement_plan=%s\nprogress_file=%s\nstate_dir=%s\nbrief_readonly=true\nbrief_readonly_rule=%s\n' \
+    "$CURRENT_ITERATION" "$MAX_ITERATIONS" "$BRIEF_FILE" "$PLAN_FILE" "$PROGRESS_FILE" "$STATE_DIR" \
+    "Do not edit arrangement-brief.json during run; if requirements change, stop and report that a new brief is required."
+}
+
+assert_brief_unchanged_during_run() {
+  local current_hash
+
+  if [[ ! -f "$BRIEF_FILE" ]]; then
+    {
+      printf '\nError: arrangement-brief.json was removed during run: %s\n' "$BRIEF_FILE"
+      printf 'A changed requirement requires a new brief. Run midi-arranger brief <input.mid> before retrying.\n'
+    } >&2
+    return 1
+  fi
+
+  current_hash="$(sha256_file "$BRIEF_FILE")" \
+    || die_unavailable "could not hash arrangement brief: $BRIEF_FILE"
+
+  if [[ "$current_hash" != "$RUN_BRIEF_HASH" ]]; then
+    {
+      printf '\nError: arrangement-brief.json changed during run: %s\n' "$BRIEF_FILE"
+      printf 'The brief is read-only while run is active; a changed requirement requires a new brief.\n'
+      printf 'Run midi-arranger brief <input.mid> before retrying.\n'
+    } >&2
+    return 1
+  fi
+}
+
+run_agent_loop() {
+  local iteration
+
+  for ((iteration = 1; iteration <= MAX_ITERATIONS; iteration += 1)); do
+    CURRENT_ITERATION="$iteration"
+    printf '\n== midi-arranger run iteration %s/%s ==\n' "$iteration" "$MAX_ITERATIONS"
+    invoke_agent_once "run" "$(run_prompt_detail)"
+    assert_brief_unchanged_during_run
+
+    if grep -qF "$COMPLETION_SENTINEL" "$AGENT_OUTPUT_FILE"; then
+      printf '\nmidi-arranger run completed at iteration %s/%s.\n' "$iteration" "$MAX_ITERATIONS"
+      return 0
+    fi
+  done
+
+  {
+    printf '\nError: midi-arranger run reached max_iterations=%s without completion sentinel %s.\n' \
+      "$MAX_ITERATIONS" "$COMPLETION_SENTINEL"
+    printf 'Check progress log for current status: %s\n' "$PROGRESS_FILE"
+  } >&2
+  return 1
+}
+
 invoke_agent_once() {
   local mode="$1"
   local detail="$2"
@@ -485,6 +550,154 @@ resolve_project_root() {
   pwd -P
 }
 
+initialize_project_paths() {
+  BRIEF_FILE="$PROJECT_ROOT/arrangement-brief.json"
+  PLAN_FILE="$PROJECT_ROOT/arrangement-plan.json"
+  PROGRESS_FILE="$PROJECT_ROOT/progress.txt"
+  STATE_DIR="$PROJECT_ROOT/.midiarranger"
+  ARCHIVE_DIR="$STATE_DIR/archive"
+  BRIEF_HASH_FILE="$STATE_DIR/$BRIEF_HASH_FILE_NAME"
+  AGENT_OUTPUT_FILE="$STATE_DIR/last-agent-output.txt"
+}
+
+sha256_file() {
+  shasum -a 256 "$1" | awk '{ print $1 }'
+}
+
+sanitize_slug() {
+  local value="$1"
+
+  printf '%s\n' "$value" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[^a-z0-9._-]/-/g; s/--*/-/g; s/^-//; s/-$//' \
+    | cut -c 1-48
+}
+
+brief_archive_slug() {
+  local brief_hash="$1"
+  local input_midi
+  local base
+  local slug
+
+  input_midi="$(
+    sed -n 's/.*"input_midi"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BRIEF_FILE" \
+      | head -n 1
+  )"
+
+  if [[ -n "$input_midi" ]]; then
+    base="$(basename "$input_midi")"
+    base="${base%.*}"
+    slug="$(sanitize_slug "$base")"
+  fi
+
+  if [[ -z "${slug:-}" ]]; then
+    slug="brief-${brief_hash:0:12}"
+  fi
+
+  printf '%s\n' "$slug"
+}
+
+unique_archive_path() {
+  local slug="$1"
+  local stamp
+  local candidate
+  local suffix
+
+  stamp="$(date '+%Y%m%d-%H%M%S')"
+  candidate="$ARCHIVE_DIR/$stamp-$slug"
+  suffix=2
+
+  while [[ -e "$candidate" ]]; do
+    candidate="$ARCHIVE_DIR/$stamp-$slug-$suffix"
+    suffix=$((suffix + 1))
+  done
+
+  printf '%s\n' "$candidate"
+}
+
+archive_previous_run_state() {
+  local brief_hash="$1"
+  local slug
+  local destination
+  local moved_any=0
+
+  slug="$(brief_archive_slug "$brief_hash")"
+  destination="$(unique_archive_path "$slug")"
+  mkdir -p "$destination" \
+    || die_unavailable "could not create archive directory: $destination"
+
+  if [[ -e "$PLAN_FILE" ]]; then
+    mv "$PLAN_FILE" "$destination/" \
+      || die_unavailable "could not archive arrangement plan: $PLAN_FILE"
+    moved_any=1
+  fi
+
+  if [[ -e "$PROGRESS_FILE" ]]; then
+    mv "$PROGRESS_FILE" "$destination/" \
+      || die_unavailable "could not archive progress log: $PROGRESS_FILE"
+    moved_any=1
+  fi
+
+  if [[ "$moved_any" -eq 0 ]]; then
+    rmdir "$destination" \
+      || die_unavailable "could not remove empty archive directory: $destination"
+  fi
+}
+
+sync_brief_hash_and_archive_if_needed() {
+  local current_hash
+  local previous_hash
+
+  current_hash="$(sha256_file "$BRIEF_FILE")" \
+    || die_unavailable "could not hash arrangement brief: $BRIEF_FILE"
+
+  previous_hash=""
+  if [[ -f "$BRIEF_HASH_FILE" ]]; then
+    previous_hash="$(sed -n '1p' "$BRIEF_HASH_FILE")"
+  fi
+
+  if [[ -n "$previous_hash" && "$previous_hash" != "$current_hash" ]]; then
+    mkdir -p "$ARCHIVE_DIR" \
+      || die_unavailable "could not create archive directory: $ARCHIVE_DIR"
+    archive_previous_run_state "$current_hash"
+  fi
+
+  printf '%s\n' "$current_hash" > "$BRIEF_HASH_FILE" \
+    || die_unavailable "could not record arrangement brief hash: $BRIEF_HASH_FILE"
+  RUN_BRIEF_HASH="$current_hash"
+}
+
+ensure_run_state() {
+  if [[ ! -f "$BRIEF_FILE" ]]; then
+    die_noinput "arrangement-brief.json not found in '$PROJECT_ROOT'. Run 'midi-arranger brief <input.mid>' first."
+  fi
+
+  mkdir -p "$STATE_DIR" \
+    || die_unavailable "could not create state directory: $STATE_DIR"
+
+  sync_brief_hash_and_archive_if_needed
+
+  if [[ ! -e "$PROGRESS_FILE" ]]; then
+    {
+      printf '# midi-arranger progress\n'
+      printf '%s\n' '---'
+    } > "$PROGRESS_FILE" \
+      || die_unavailable "could not create progress log: $PROGRESS_FILE"
+  fi
+
+  if [[ ! -f "$PROGRESS_FILE" ]]; then
+    die_unavailable "progress path exists but is not a file: $PROGRESS_FILE"
+  fi
+
+  {
+    printf '## run started %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+    printf -- '- tool=%s\n' "$TOOL"
+    printf -- '- max_iterations=%s\n' "$MAX_ITERATIONS"
+    printf '%s\n' '---'
+  } >> "$PROGRESS_FILE" \
+    || die_unavailable "could not append to progress log: $PROGRESS_FILE"
+}
+
 parse_positive_integer() {
   local value="$1"
   local label="$2"
@@ -500,6 +713,8 @@ MODEL=""
 EFFORT=""
 CWD=""
 MAX_ITERATIONS=""
+CURRENT_ITERATION=""
+RUN_BRIEF_HASH=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -589,7 +804,7 @@ if [[ -n "$PROJECT_ROOT" ]]; then
 else
   PROJECT_ROOT="$(resolve_project_root "$PWD")"
 fi
-AGENT_OUTPUT_FILE="$PROJECT_ROOT/.midiarranger/last-agent-output.txt"
+initialize_project_paths
 
 case "$COMMAND" in
   brief)
@@ -608,7 +823,9 @@ case "$COMMAND" in
     else
       MAX_ITERATIONS="10"
     fi
-    invoke_agent_once "run" "max_iterations=$MAX_ITERATIONS"
+    validate_effort_support "$TOOL"
+    ensure_run_state
+    run_agent_loop
     ;;
   tool)
     if [[ "${#POSITIONAL[@]}" -lt 1 ]]; then
