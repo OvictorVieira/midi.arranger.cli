@@ -9,6 +9,7 @@ htmlcov/
 .jscpd/
 .jscpd_manual/
 .worktrees/
+.ralph/
 .midiarranger/
 *.egg-info/
 dist/
