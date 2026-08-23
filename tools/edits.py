@@ -185,21 +185,26 @@ def apply_edit(
         abs_tick += msg.time
         events.append([abs_tick, i, msg])
 
-    # 2) parear note_on (vel>0) com o note_off correspondente por
+    # 2) parear note_on (vel>0) com o note_off correspondente por pilha de
     #    (channel, pitch). `note_on vel=0` conta como off (MIDI running).
-    open_notes: dict[tuple[int, int], int] = {}
+    #    Sobreposicao de mesma nota e canal e valida: o off fecha o on mais
+    #    recente ainda aberto, sem sobrescrever onsets anteriores.
+    open_notes: dict[tuple[int, int], list[int]] = {}
     pairs: list[tuple[int, int]] = []
     for idx, (_, _, msg) in enumerate(events):
         if msg.is_meta:
             continue
         if msg.type == "note_on" and msg.velocity > 0:
-            open_notes[(msg.channel, msg.note)] = idx
+            open_notes.setdefault((msg.channel, msg.note), []).append(idx)
         elif msg.type == "note_off" or (
             msg.type == "note_on" and msg.velocity == 0
         ):
             key = (msg.channel, msg.note)
             if key in open_notes:
-                pairs.append((open_notes.pop(key), idx))
+                on_idx = open_notes[key].pop()
+                pairs.append((on_idx, idx))
+                if not open_notes[key]:
+                    del open_notes[key]
 
     if not pairs:
         return (0, 0.0)
