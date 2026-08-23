@@ -123,6 +123,7 @@ class EditReport:
     intensity: float
     notes_touched: int
     mean_offset_ms: float
+    tracks_matched: int = 1
 
 
 # --- helpers ---------------------------------------------------------------
@@ -324,10 +325,12 @@ def apply_edits(
     plan_seed: int,
     pm: pretty_midi.PrettyMIDI,
 ) -> list[EditReport]:
-    """Aplica cada edit na track correspondente (busca pelo nome exato).
+    """Aplica cada edit nas tracks correspondentes (busca pelo nome exato).
 
-    `tracks` e modificada in-place. Track cujo nome nao aparece em `edits`
-    sai intocada. Devolve a lista de `EditReport`, uma por edit aplicada.
+    Se o MIDI tem varias tracks com o mesmo `track_name`, uma edit por nome
+    atinge todas elas. `tracks` e modificada in-place. Track cujo nome nao
+    aparece em `edits` sai intocada. Devolve a lista de `EditReport`, uma por
+    edit declarada, agregando todas as tracks homonimas atingidas.
 
     Precondicao: `plan.py` ja validou que profile+intensity estao no
     vocabulario/range, e o renderer ja rodou `validate_edits_against_midi`
@@ -335,25 +338,37 @@ def apply_edits(
     aplica.
     """
     reports: list[EditReport] = []
-    name_to_index: dict[str, int] = {}
+    name_to_indices: dict[str, list[int]] = {}
     for idx, tr in enumerate(tracks):
         name = track_name(tr)
-        if name and name not in name_to_index:
-            name_to_index[name] = idx
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
 
     for ed in edits:
         profile = PROFILE_PARAMS[ed.profile]
-        idx = name_to_index[ed.track]
-        seed = _edit_seed(plan_seed, ed.track, ed.profile)
-        touched, mean_offset = apply_edit(
-            tracks[idx], profile, float(ed.intensity), seed, pm,
+        indices = name_to_indices[ed.track]
+        total_touched = 0
+        weighted_offset_sum = 0.0
+        for match_ordinal, idx in enumerate(indices):
+            seed_track = ed.track if match_ordinal == 0 else f"{ed.track}#{idx}"
+            seed = _edit_seed(plan_seed, seed_track, ed.profile)
+            touched, mean_offset = apply_edit(
+                tracks[idx], profile, float(ed.intensity), seed, pm,
+            )
+            total_touched += touched
+            weighted_offset_sum += mean_offset * touched
+        mean_offset = (
+            weighted_offset_sum / total_touched
+            if total_touched
+            else 0.0
         )
         reports.append(EditReport(
             track=ed.track,
             profile=ed.profile,
             intensity=float(ed.intensity),
-            notes_touched=touched,
+            notes_touched=total_touched,
             mean_offset_ms=mean_offset,
+            tracks_matched=len(indices),
         ))
     return reports
 

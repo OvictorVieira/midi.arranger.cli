@@ -868,9 +868,15 @@ def format_render_report(report: RenderReport) -> str:
         lines.append("")
         lines.append("Edits applied:")
         for ed in report.edits:
+            tracks_label = (
+                "track"
+                if ed.tracks_matched == 1
+                else "tracks"
+            )
             lines.append(
                 f"  - {ed.track} (profile={ed.profile}, intensity={ed.intensity:.2f}): "
-                f"{ed.notes_touched} notes, mean offset {ed.mean_offset_ms:+.2f}ms"
+                f"{ed.notes_touched} notes across {ed.tracks_matched} {tracks_label}, "
+                f"mean offset {ed.mean_offset_ms:+.2f}ms"
             )
     if report.warnings:
         lines.append("")

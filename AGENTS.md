@@ -16,6 +16,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 
 - O MIDI de origem **nunca** é sobrescrito.
 - Track não declarada para edição sai **nota a nota idêntica**.
+- Em `plan.edits`, `track` endereça todas as tracks do MIDI de origem com aquele `track_name`
+  exato; nomes repetidos de DAW são tratados como uma unidade e o relatório informa quantas tracks
+  físicas foram atingidas.
 - Mesmo plano, mesma origem, mesma seed: arquivo **byte-idêntico**.
 - Nenhum parâmetro sorteado sem origem declarada. O componente aleatório nunca supera a soma das
   intenções determinísticas.

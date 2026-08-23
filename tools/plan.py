@@ -132,6 +132,7 @@ class PlanEdit:
     """Humanizacao opt-in de uma track existente do MIDI de origem (FR-28).
 
     - `track`: nome exato da track no MIDI de origem (meta track_name).
+      Quando o nome aparece em varias tracks, a edit atinge todas elas.
     - `profile`: um de EDIT_PROFILES; determina os ranges dos motores.
     - `intensity`: 0.0 (intocado) ate 1.0 (ranges cheios) — escala a
       amplitude aplicada pelos motores.
