@@ -273,7 +273,11 @@ def _check_density_inversion(
     densidade — o plano so declara camadas novas."""
     issues: list[PersonaIssue] = []
     for section in plan.sections:
-        densidade = section.energy["densidade"]
+        if section.energy is None:
+            continue
+        densidade = section.energy.get("densidade")
+        if densidade is None:
+            continue
         active = _elements_in_section(plan, section.label)
         count = len(active)
         ids = tuple(sorted(e.id for e in active))

@@ -16,6 +16,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 
 - O MIDI de origem **nunca** é sobrescrito.
 - Track não declarada para edição sai **nota a nota idêntica**.
+- Em `plan.edits`, `track` endereça todas as tracks do MIDI de origem com aquele `track_name`
+  exato; nomes repetidos de DAW são tratados como uma unidade e o relatório informa quantas tracks
+  físicas foram atingidas.
 - Mesmo plano, mesma origem, mesma seed: arquivo **byte-idêntico**.
 - Nenhum parâmetro sorteado sem origem declarada. O componente aleatório nunca supera a soma das
   intenções determinísticas.
@@ -23,6 +26,18 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - A pesquisa levanta **técnica e comportamento**, jamais conteúdo musical.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
+- Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto
+  `*_PATTERN_FIELDS` do role correspondente para evitar aviso falso de campo ignorado.
+- Ao adicionar uma nova família de `role` renderizável, atualize o dispatch central
+  `_ROLE_RENDERERS` em `tools/render.py`; `SUPPORTED_ROLES` é derivado dele e os testes garantem
+  que todo role exportado renderiza de fato.
+- Em strings/choir com `pattern.tutti=true`, `element.layers` é limitado por
+  `STRINGS_TUTTI_MAX_VOICES`; dimensione buckets/tracks pelo número efetivo e avise quando reduzir.
+- `tools.render.render()` valida `ArrangementPlan` em memória com `plan.validate()` antes de carregar
+  MIDI ou rodar validadores; plano inválido deve falhar como `PlanValidationError`, não como erro
+  interno do pipeline.
+- Em `tools.edits.apply_edit`, retiming pode mudar ticks, velocity e duração, mas a sequência de
+  `note_on` por canal/altura deve preservar a ordem original.
 
 ## Qualidade
 

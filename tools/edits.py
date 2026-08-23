@@ -123,6 +123,7 @@ class EditReport:
     intensity: float
     notes_touched: int
     mean_offset_ms: float
+    tracks_matched: int = 1
 
 
 # --- helpers ---------------------------------------------------------------
@@ -185,25 +186,31 @@ def apply_edit(
         abs_tick += msg.time
         events.append([abs_tick, i, msg])
 
-    # 2) parear note_on (vel>0) com o note_off correspondente por
+    # 2) parear note_on (vel>0) com o note_off correspondente por pilha de
     #    (channel, pitch). `note_on vel=0` conta como off (MIDI running).
-    open_notes: dict[tuple[int, int], int] = {}
+    #    Sobreposicao de mesma nota e canal e valida: o off fecha o on mais
+    #    recente ainda aberto, sem sobrescrever onsets anteriores.
+    open_notes: dict[tuple[int, int], list[int]] = {}
     pairs: list[tuple[int, int]] = []
     for idx, (_, _, msg) in enumerate(events):
         if msg.is_meta:
             continue
         if msg.type == "note_on" and msg.velocity > 0:
-            open_notes[(msg.channel, msg.note)] = idx
+            open_notes.setdefault((msg.channel, msg.note), []).append(idx)
         elif msg.type == "note_off" or (
             msg.type == "note_on" and msg.velocity == 0
         ):
             key = (msg.channel, msg.note)
             if key in open_notes:
-                pairs.append((open_notes.pop(key), idx))
+                on_idx = open_notes[key].pop()
+                pairs.append((on_idx, idx))
+                if not open_notes[key]:
+                    del open_notes[key]
 
     if not pairs:
         return (0, 0.0)
 
+    pairs.sort(key=lambda pair: events[pair[0]][1])
     downbeats = _downbeat_ticks(pm)
     n_pairs = len(pairs)
     # Gap de gate: distancia ate o proximo onset em qualquer canal da track.
@@ -211,6 +218,7 @@ def apply_edit(
     on_ticks_sorted = sorted({events[on_idx][0] for on_idx, _ in pairs})
 
     offsets_ms: list[float] = []
+    previous_new_on_tick = 0
     for pair_idx, (on_idx, off_idx) in enumerate(pairs):
         on_tick = events[on_idx][0]
         off_tick = events[off_idx][0]
@@ -229,7 +237,6 @@ def apply_edit(
         else:
             offset_ms = rng.gauss(profile.bias_ms, profile.sigma_ms)
         offset_ms *= intensity
-        offsets_ms.append(offset_ms)
 
         # Converte offset em ticks via pretty_midi para respeitar mapa de
         # tempos — nao assume tempo constante. `max(0.0, ...)` no tempo em
@@ -237,6 +244,10 @@ def apply_edit(
         on_time_s = pm.tick_to_time(on_tick)
         new_time_s = max(0.0, on_time_s + offset_ms / 1000.0)
         new_on_tick = int(round(pm.time_to_tick(new_time_s)))
+        new_on_tick = max(previous_new_on_tick, new_on_tick)
+        previous_new_on_tick = new_on_tick
+        actual_offset_ms = (pm.tick_to_time(new_on_tick) - on_time_s) * 1000.0
+        offsets_ms.append(actual_offset_ms)
 
         # velocity ------------------------------------------------------
         dv = 0.0
@@ -319,10 +330,12 @@ def apply_edits(
     plan_seed: int,
     pm: pretty_midi.PrettyMIDI,
 ) -> list[EditReport]:
-    """Aplica cada edit na track correspondente (busca pelo nome exato).
+    """Aplica cada edit nas tracks correspondentes (busca pelo nome exato).
 
-    `tracks` e modificada in-place. Track cujo nome nao aparece em `edits`
-    sai intocada. Devolve a lista de `EditReport`, uma por edit aplicada.
+    Se o MIDI tem varias tracks com o mesmo `track_name`, uma edit por nome
+    atinge todas elas. `tracks` e modificada in-place. Track cujo nome nao
+    aparece em `edits` sai intocada. Devolve a lista de `EditReport`, uma por
+    edit declarada, agregando todas as tracks homonimas atingidas.
 
     Precondicao: `plan.py` ja validou que profile+intensity estao no
     vocabulario/range, e o renderer ja rodou `validate_edits_against_midi`
@@ -330,25 +343,37 @@ def apply_edits(
     aplica.
     """
     reports: list[EditReport] = []
-    name_to_index: dict[str, int] = {}
+    name_to_indices: dict[str, list[int]] = {}
     for idx, tr in enumerate(tracks):
         name = track_name(tr)
-        if name and name not in name_to_index:
-            name_to_index[name] = idx
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
 
     for ed in edits:
         profile = PROFILE_PARAMS[ed.profile]
-        idx = name_to_index[ed.track]
-        seed = _edit_seed(plan_seed, ed.track, ed.profile)
-        touched, mean_offset = apply_edit(
-            tracks[idx], profile, float(ed.intensity), seed, pm,
+        indices = name_to_indices[ed.track]
+        total_touched = 0
+        weighted_offset_sum = 0.0
+        for match_ordinal, idx in enumerate(indices):
+            seed_track = ed.track if match_ordinal == 0 else f"{ed.track}#{idx}"
+            seed = _edit_seed(plan_seed, seed_track, ed.profile)
+            touched, mean_offset = apply_edit(
+                tracks[idx], profile, float(ed.intensity), seed, pm,
+            )
+            total_touched += touched
+            weighted_offset_sum += mean_offset * touched
+        mean_offset = (
+            weighted_offset_sum / total_touched
+            if total_touched
+            else 0.0
         )
         reports.append(EditReport(
             track=ed.track,
             profile=ed.profile,
             intensity=float(ed.intensity),
-            notes_touched=touched,
+            notes_touched=total_touched,
             mean_offset_ms=mean_offset,
+            tracks_matched=len(indices),
         ))
     return reports
 

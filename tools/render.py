@@ -27,6 +27,7 @@ Determinismo:
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,7 +39,9 @@ from .edits import EditReport, apply_edits, collect_track_names
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
+    STRINGS_GHOST_RATIO,
     STRINGS_ROLES,
+    STRINGS_TUTTI_MAX_VOICES,
     DroneNote,
     KeyboardNote,
     PadNote,
@@ -64,6 +67,9 @@ from .plan import (
     PlanSection,
     load,
     validate_edits_against_midi,
+)
+from .plan import (
+    validate as validate_plan,
 )
 from .tracks import name_for_element
 from .validators.artifice import ArtificeIssue, validate_artifice
@@ -94,9 +100,21 @@ MOTOR_CHANNEL = 0
 SHADOW_CHANNEL = 0
 SUSTAIN_CC = 64
 EXPRESSION_CC = 11
-SUPPORTED_ROLES: frozenset[str] = frozenset({
-    "pad", *KEYBOARD_ROLES, *STRINGS_ROLES, *DRONE_ROLES,
-    *RHYTHMIC_ROLES, *MOTOR_ROLES, *SHADOW_ROLES,
+KEYBOARD_PATTERN_FIELDS: frozenset[str] = frozenset({"use_sustain_cc64"})
+STRINGS_PATTERN_FIELDS: frozenset[str] = frozenset({"tutti", "ghost_ratio"})
+DRONE_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "pedal", "pedal_pitch", "filter_cycle_bars", "modulation_bars",
+})
+RHYTHMIC_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "pattern_bars", "mutate_every_bars", "interlock",
+    "filter_cycle_bars", "velocity_cycle_bars", "custom_steps",
+})
+MOTOR_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "subdivision", "filter_cycle_bars", "velocity_cycle_bars", "custom_steps",
+})
+SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "octave_shift", "tail_notes", "phrase_end_gap_s", "velocity_offset",
+    "note_duration_s",
 })
 
 
@@ -187,6 +205,40 @@ def _element_track_name(element: Element, layer_index: int, layers: int) -> str:
         )
     display = element.id if layers == 1 else f"{element.id} L{layer_index + 1}"
     return name_for_element(display, element.role, str(plugin), str(preset), verified)
+
+
+def _pattern_fields_for_role(role: str) -> frozenset[str]:
+    if role == "pad":
+        return frozenset()
+    if role in KEYBOARD_ROLES:
+        return KEYBOARD_PATTERN_FIELDS
+    if role in STRINGS_ROLES:
+        return STRINGS_PATTERN_FIELDS
+    if role in DRONE_ROLES:
+        return DRONE_PATTERN_FIELDS
+    if role in RHYTHMIC_ROLES:
+        return RHYTHMIC_PATTERN_FIELDS
+    if role in MOTOR_ROLES:
+        return MOTOR_PATTERN_FIELDS
+    if role in SHADOW_ROLES:
+        return SHADOW_PATTERN_FIELDS
+    return frozenset()
+
+
+def _unsupported_pattern_warnings(element: Element) -> list[str]:
+    """Avisos para campos de `element.pattern` que o renderer nao consome.
+
+    O plano e editavel a mao; um campo sem efeito precisa aparecer no
+    relatorio em vez de ser aceito em silencio.
+    """
+    pattern = element.pattern or {}
+    known = _pattern_fields_for_role(element.role)
+    return [
+        f"{element.id}: element.pattern.{key} is not supported for "
+        f"role {element.role!r}; ignored"
+        for key in sorted(pattern)
+        if key not in known
+    ]
 
 
 # --- conversao note -> mido -------------------------------------------------
@@ -374,15 +426,16 @@ def _render_strings_element(
     """Gera tracks de strings ou choir. Cada layer e uma voz independente
     da linha — a AC pede attack diferente por voz + CC11 por voz. Voice
     count = `element.layers` (para strings o vocabulario 'layers' significa
-    'vozes independentes', nao unisono). tutti / ghost_ratio / voices sao
-    lidos de `element.pattern`."""
-    voices = element.layers
-    layer_notes: list[list[StringsNote]] = [[] for _ in range(voices)]
-    layer_ccs: list[list[tuple[float, int, int]]] = [[] for _ in range(voices)]
+    'vozes independentes', nao unisono). `tutti` e `ghost_ratio` sao lidos
+    de `element.pattern`."""
     register = (int(element.register[0]), int(element.register[1]))
     dyn = element.dynamics or {}
     pattern = element.pattern or {}
     tutti = bool(pattern.get("tutti", False))
+    voices = min(element.layers, STRINGS_TUTTI_MAX_VOICES) if tutti else element.layers
+    layer_notes: list[list[StringsNote]] = [[] for _ in range(voices)]
+    layer_ccs: list[list[tuple[float, int, int]]] = [[] for _ in range(voices)]
+    ghost_ratio = float(pattern.get("ghost_ratio", STRINGS_GHOST_RATIO))
 
     for section, seed in _iter_element_sections(element, plan):
         section_voices = generate_strings(
@@ -394,6 +447,7 @@ def _render_strings_element(
             articulation=element.articulation,
             dynamics=dyn,
             tutti=tutti,
+            ghost_ratio=ghost_ratio,
             seed=seed,
         )
         for i, voice in enumerate(section_voices):
@@ -402,6 +456,20 @@ def _render_strings_element(
                 layer_ccs[i].append((ev.time_s, EXPRESSION_CC, ev.value))
 
     return _layers_to_tracks(element, layer_notes, pm, channel, layer_ccs)
+
+
+def _strings_tutti_layer_warning(element: Element) -> str | None:
+    pattern = element.pattern or {}
+    if (
+        element.role in STRINGS_ROLES
+        and bool(pattern.get("tutti", False))
+        and element.layers > STRINGS_TUTTI_MAX_VOICES
+    ):
+        return (
+            f"{element.id}: element.layers={element.layers} reduced to "
+            f"{STRINGS_TUTTI_MAX_VOICES} for strings tutti"
+        )
+    return None
 
 
 def _accumulate_cc_layers(
@@ -653,6 +721,52 @@ def _render_pad_element(
     return _layers_to_tracks(element, layer_notes, pm, channel)
 
 
+_RenderElementFn = Callable[
+    [Element, ArrangementPlan, Analysis, pretty_midi.PrettyMIDI, int],
+    tuple[list[mido.MidiTrack], list[RenderedTrack]],
+]
+
+
+@dataclass(frozen=True)
+class _RoleRenderer:
+    render: _RenderElementFn
+    channel: int
+
+
+def _build_role_renderers() -> dict[str, _RoleRenderer]:
+    return {
+        "pad": _RoleRenderer(_render_pad_element, PAD_CHANNEL),
+        **{
+            role: _RoleRenderer(_render_keyboard_element, KEYBOARD_CHANNEL)
+            for role in KEYBOARD_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_strings_element, STRINGS_CHANNEL)
+            for role in STRINGS_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_drone_element, DRONE_CHANNEL)
+            for role in DRONE_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_rhythmic_element, RHYTHMIC_CHANNEL)
+            for role in RHYTHMIC_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_motor_element, MOTOR_CHANNEL)
+            for role in MOTOR_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_shadow_element, SHADOW_CHANNEL)
+            for role in SHADOW_ROLES
+        },
+    }
+
+
+_ROLE_RENDERERS = _build_role_renderers()
+SUPPORTED_ROLES: frozenset[str] = frozenset(_ROLE_RENDERERS)
+
+
 # --- API principal ----------------------------------------------------------
 
 PlanArg = ArrangementPlan | str | Path
@@ -675,7 +789,8 @@ def render(
     Raises:
       RenderError: source inexistente, output apontaria para o source, ou
         elemento pad sem instrument.plugin/preset.
-      PlanValidationError: quando `plan` e caminho e o JSON e invalido.
+      PlanValidationError: quando `plan` e invalido, vindo de caminho ou
+        construido em memoria.
 
     Efeitos: cria diretorio-pai do output se nao existir. Nunca modifica o
     source. Pode mutar `Element.register` do plano em memoria via validator
@@ -683,6 +798,7 @@ def render(
     """
     if not isinstance(plan, ArrangementPlan):
         plan = load(plan)
+    validate_plan(plan)
 
     src = Path(source_path).expanduser() if source_path else _resolve_source_path(plan)
     if not src.exists():
@@ -730,6 +846,10 @@ def render(
     element_reports: list[ElementRationale] = []
     rendered_tracks: list[RenderedTrack] = []
     for e in plan.elements:
+        warnings.extend(_unsupported_pattern_warnings(e))
+        layer_warning = _strings_tutti_layer_warning(e)
+        if layer_warning is not None:
+            warnings.append(layer_warning)
         inst = e.instrument or {}
         report_entry = ElementRationale(
             element_id=e.id,
@@ -742,49 +862,10 @@ def render(
             sections=tuple(e.sections),
             rendered=False,
         )
-        if e.role == "pad":
-            midi_tracks, rendered = _render_pad_element(e, plan, analysis, pm, PAD_CHANNEL)
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in KEYBOARD_ROLES:
-            midi_tracks, rendered = _render_keyboard_element(
-                e, plan, analysis, pm, KEYBOARD_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in STRINGS_ROLES:
-            midi_tracks, rendered = _render_strings_element(
-                e, plan, analysis, pm, STRINGS_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in DRONE_ROLES:
-            midi_tracks, rendered = _render_drone_element(
-                e, plan, analysis, pm, DRONE_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in RHYTHMIC_ROLES:
-            midi_tracks, rendered = _render_rhythmic_element(
-                e, plan, analysis, pm, RHYTHMIC_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in MOTOR_ROLES:
-            midi_tracks, rendered = _render_motor_element(
-                e, plan, analysis, pm, MOTOR_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in SHADOW_ROLES:
-            midi_tracks, rendered = _render_shadow_element(
-                e, plan, analysis, pm, SHADOW_CHANNEL,
+        role_renderer = _ROLE_RENDERERS.get(e.role)
+        if role_renderer is not None:
+            midi_tracks, rendered = role_renderer.render(
+                e, plan, analysis, pm, role_renderer.channel,
             )
             out_mid.tracks.extend(midi_tracks)
             rendered_tracks.extend(rendered)
@@ -868,9 +949,15 @@ def format_render_report(report: RenderReport) -> str:
         lines.append("")
         lines.append("Edits applied:")
         for ed in report.edits:
+            tracks_label = (
+                "track"
+                if ed.tracks_matched == 1
+                else "tracks"
+            )
             lines.append(
                 f"  - {ed.track} (profile={ed.profile}, intensity={ed.intensity:.2f}): "
-                f"{ed.notes_touched} notes, mean offset {ed.mean_offset_ms:+.2f}ms"
+                f"{ed.notes_touched} notes across {ed.tracks_matched} {tracks_label}, "
+                f"mean offset {ed.mean_offset_ms:+.2f}ms"
             )
     if report.warnings:
         lines.append("")
