@@ -370,3 +370,172 @@ nenhum número de velocity ou de timing — extraia escolha de peça, densidade 
 | Limiar quantitativo de virada "de bom gosto" vs "atulhada" | sem fonte |
 | Razão de velocity graça/principal no flam | derivada, não afirmada por fonte |
 | ~~Notas 31–34 no material do usuário~~ | **resolvido** — ver §5, aliases do kit real |
+
+---
+
+## 7. Blocos de técnica — o formato que alimenta o índice
+
+O índice de técnicas (`tools.techniques`) é derivado **destes blocos**, não do texto acima. Cada
+técnica catalogável entra num bloco `technique` — um fenced code block com linguagem `technique` e um
+objeto JSON dentro. Acrescentar um bloco novo faz a técnica aparecer no índice sem alterar Python
+nenhum.
+
+Campos obrigatórios de cada bloco: `name`, `family`, `summary`, `verified`. Opcionais: `description`,
+`parameters` (lista com `name`, opcional `value`, `range`, `source`), `tools` (dict cuja chave é a
+ferramenta-alvo — `generic`, `superior_drummer`, `addictive_drums`, `logic_sampler`, …). Todo número
+sem `source` derruba `verified` para `false` no índice — o parser NÃO deixa `[NÃO VERIFICADO]` sair
+como fato.
+
+Se o parser não encontrar nenhum bloco `technique` num manual, ele **falha alto** — índice vazio
+em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo modelo.
+
+### 7.1 Hierarquia de acento
+
+```technique
+{
+  "name": "accent_hierarchy",
+  "family": "drums",
+  "summary": "Distribui velocity em quatro camadas (acento, normal, suave, ghost) antes de qualquer ornamento.",
+  "verified": true,
+  "description": "Primeiro passo antes de qualquer outro. Levada em 127 chapada colapsa a hierarquia — mova para os quatro clusters abaixo. Teto pratico ~115 (a camada mais alta ja e o hit mais duro e comprimido). Programar tudo em 100 faz o pool de round robin ficar audivel em uma unica camada de sample.",
+  "parameters": [
+    {"name": "accent",     "range": [105, 120], "source": "Toontrack — how to program drums"},
+    {"name": "normal",     "range": [80, 100],  "source": "Toontrack"},
+    {"name": "soft",       "range": [55, 79],   "source": "Toontrack"},
+    {"name": "ghost",      "range": [20, 45],   "source": "Toontrack"},
+    {"name": "hard_ceiling", "value": 115,      "source": "Audient"}
+  ],
+  "tools": {
+    "generic": {"note": "aplique nas velocities existentes; nao gera nota nova"},
+    "superior_drummer": {"engine": ["Hit Variation ligado", "Use Adjacent Layers ligado"]},
+    "addictive_drums": {"engine": ["No Alts desligado"]}
+  }
+}
+```
+
+### 7.2 Ghost notes
+
+```technique
+{
+  "name": "ghost_notes",
+  "family": "drums",
+  "summary": "Notas fantasmas de caixa entre backbeats, com regras de posicao para nao denunciar programacao.",
+  "verified": true,
+  "description": "Localize os backbeats de caixa. Candidatos a ghost sao semicolcheias entre eles. Descartes obrigatorios: (1) a 16a imediatamente anterior ao backbeat, (2) ghosts consecutivas logo depois do backbeat, (3) mais de duas ghosts seguidas em 16as. 32as so em andamento lento.",
+  "parameters": [
+    {"name": "velocity", "range": [20, 45], "source": "Toontrack"},
+    {"name": "timing_offset_ms_laidback", "range": [3, 8], "source": "Sample Focus"},
+    {"name": "timing_offset_ms_urgent",   "range": [-5, -2], "source": "Sample Focus"}
+  ],
+  "tools": {
+    "generic": {"notes": [38]},
+    "superior_drummer": {"notes": [38], "note": "use a nota central de caixa; velocity <45 vira ghost automaticamente"},
+    "addictive_drums": {"notes": [38, 40], "note": "alterne entre 38 e 40 (Snare Open dbl) para nao roubar voz entre ghosts consecutivas"}
+  }
+}
+```
+
+### 7.3 Flam
+
+```technique
+{
+  "name": "flam",
+  "family": "drums",
+  "summary": "Nota de graca precedendo a principal em 8-15ms; a principal e mais forte.",
+  "verified": false,
+  "description": "Prefira a articulacao gravada (SD3 nota 69). No AD2, monte com dois hits e ponha a graca na alternada (40) para as duas nao roubarem voz. Acima de ~35ms deixa de ler como flam.",
+  "parameters": [
+    {"name": "gap_ms", "range": [8, 15], "source": "Moozix"},
+    {"name": "grace_velocity_ratio", "range": [0.30, 0.45], "source": null},
+    {"name": "reading_ceiling_ms", "value": 35, "source": null}
+  ],
+  "tools": {
+    "superior_drummer": {"notes": [69], "note": "usar a articulacao Snare Flams gravada; NAO montar na mao"},
+    "addictive_drums": {"notes_main": [38], "notes_grace": [40], "note": "AD2 nao tem articulacao de flam gravada"}
+  }
+}
+```
+
+### 7.4 Microtiming
+
+```technique
+{
+  "name": "microtiming",
+  "family": "drums",
+  "summary": "Jitter musical no ostinato de chimbal (sigma ~8-9ms) com autocorrelacao lag-1 negativa e velocity bimodal.",
+  "verified": true,
+  "description": "Numero medido de take real (Jeff Porcaro em I Keep Forgettin', PMC4454559). NAO use ruido branco: gente toca com anticorrelacao (intervalo longo tende a ser seguido de curto). Velocity de hat deve ser bimodal, nao uniforme.",
+  "parameters": [
+    {"name": "hihat_timing_sigma_ms", "value": 8.7, "source": "PMC4454559 (Jeff Porcaro)"},
+    {"name": "hihat_autocorr_lag1", "value": -0.48, "source": "PMC4454559"},
+    {"name": "perception_threshold_ms", "value": 5, "source": "Slam Tracks"},
+    {"name": "musical_range_ms", "range": [5, 20], "source": "Slam Tracks / Moozix"},
+    {"name": "sloppy_threshold_ms", "value": 50, "source": "Slam Tracks"}
+  ],
+  "tools": {
+    "generic": {"note": "aplique como offset absoluto em ms a cada nota; nao substitui hierarquia de acento"}
+  }
+}
+```
+
+### 7.5 Buzz roll
+
+```technique
+{
+  "name": "buzz_roll",
+  "family": "drums",
+  "summary": "Repeticoes densas em velocity baixa; NENHUMA das duas ferramentas tem articulacao de buzz roll.",
+  "verified": false,
+  "description": "Represente como 32as/64as em velocity subindo devagar. NAO use nota longa sustentada. NAO confunda com Snare Backward/Forward Swirl (SD3 66/67) nem com a familia Sweep do AD2 (26-35) — aquilo e vassoura, nao rufo.",
+  "parameters": [
+    {"name": "grid", "value": "32nd/64th", "source": null},
+    {"name": "velocity_ramp", "value": null, "range": null, "source": null}
+  ],
+  "tools": {
+    "superior_drummer": {"engine": ["ligar Smoothing na caixa antes"], "notes": [38], "note": "sem Smoothing cada repeticao redispara ataque duro"},
+    "addictive_drums": {"notes": [38], "note": "sem articulacao dedicada; monte por repeticao"}
+  }
+}
+```
+
+### 7.6 Choke de prato
+
+```technique
+{
+  "name": "cymbal_choke",
+  "family": "drums",
+  "summary": "Fecha o prato imediatamente; via nota dedicada, Note Off ou aftertouch, conforme a ferramenta.",
+  "verified": true,
+  "description": "AD2 tem notas de choke dedicadas (hi-hat NAO tem choke). SD3 tem tres rotas: nota Mute Hit, Note Off, ou aftertouch. Cuidado no SD3: se Mute Tail Trigger estiver em Note Off, o comprimento da nota do prato passa a ter significado musical.",
+  "parameters": [],
+  "tools": {
+    "addictive_drums": {"notes": [63, 78, 80, 82, 87, 90, 92, 94], "note": "hi-hat nao tem choke"},
+    "superior_drummer": {"notes": [50, 54, 56, 58, 83, 94, 95, 106, 107, 118], "note": "Mute Hit dedicado; ou Note Off; ou aftertouch"}
+  }
+}
+```
+
+### 7.7 Diferenciacao de articulacao
+
+```technique
+{
+  "name": "articulation_diff",
+  "family": "drums",
+  "summary": "Alterna edge/tip no hat, bow/bell no ride, centro/rimshot na caixa — leva chapada vira detalhada.",
+  "verified": true,
+  "description": "Rimshot na caixa apenas no backbeat mais forte; rimshot em tudo mata o contraste. No hat, tip no contratempo e edge/shaft no downbeat. No ride, bow tip como default e bell para levantar o compasso.",
+  "parameters": [],
+  "tools": {
+    "superior_drummer": {
+      "hat_tip": [42], "hat_edge": [22],
+      "ride_bow_tip": [51], "ride_bow_shank": [116], "ride_bell": [53],
+      "snare_center": [38], "snare_rimshot": [40]
+    },
+    "addictive_drums": {
+      "hat_tip": [49, 51], "hat_edge": [50, 52],
+      "ride_bow_tip": [60], "ride_bow_shank": [62], "ride_bell": [61],
+      "snare_center": [38], "snare_rimshot": [37]
+    }
+  }
+}
+```
