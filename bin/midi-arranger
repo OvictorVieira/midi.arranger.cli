@@ -252,6 +252,18 @@ extract_effort_values() {
     | sed 's/[[:space:]]*$//'
 }
 
+codex_configured_model() {
+  # A CLI do codex nao anuncia lista de modelos nem o default. O que existe e a
+  # chave `model` em ~/.codex/config.toml. Emitido no formato que
+  # `extract_configured_model` reconhece.
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  [[ -f "$cfg" ]] || return 0
+  local model
+  model="$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$cfg" 2>/dev/null | head -n 1)"
+  [[ -n "$model" ]] && printf 'configured model: %s\n' "$model"
+}
+
 tool_model_query_output() {
   local tool="$1"
   local binary="$2"
@@ -261,7 +273,10 @@ tool_model_query_output() {
       run_cli_query "$binary" --help
       ;;
     codex)
-      run_cli_query "$binary" models
+      # `codex models` nao e subcomando: a CLI trata o argumento como lixo e cai
+      # no help interativo. O default do usuario vive em ~/.codex/config.toml, que
+      # e a mesma fonte que o ralph consulta.
+      codex_configured_model
       ;;
     agy)
       run_cli_query "$binary" models
@@ -381,6 +396,12 @@ invoke_agent_once() {
   require_tool_installed "$TOOL"
   prompt="$(build_agent_prompt "$mode" "$detail")"
   binary="$(tool_binary_path "$TOOL")"
+
+  # O agente trabalha sobre o projeto, e o prompt anuncia `project_root`. Sem
+  # este `cd`, uma invocacao a partir de subdiretorio (ou com `--cwd`) roda o
+  # agente no diretorio errado e ele le e escreve os arquivos errados. Apenas
+  # `codex` recebe a raiz por flag (`-C`); os demais herdam o cwd do processo.
+  cd "$PROJECT_ROOT" || die_unavailable "could not enter project root: $PROJECT_ROOT"
 
   case "$TOOL" in
     claude)

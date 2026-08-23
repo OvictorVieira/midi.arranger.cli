@@ -97,6 +97,14 @@ esac
     )
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
 
+    if binary_name == "codex":
+        # `codex models` nao existe: a CLI trata o argumento como lixo e cai no
+        # help interativo, sem anunciar modelo nenhum. O default do usuario vive
+        # em ~/.codex/config.toml, e e de la que o harness le.
+        codex_home = home / ".codex"
+        codex_home.mkdir(exist_ok=True)
+        (codex_home / "config.toml").write_text(f'model = "{configured}"\n')
+
     return {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(home),
@@ -202,7 +210,10 @@ def test_recognizes_subcommands_and_common_options() -> None:
     ("tool", "binary", "configured", "models", "efforts"),
     [
         ("claude", "claude", "claude-default", ["claude-a", "claude-b"], ["low", "medium", "high"]),
-        ("codex", "codex", "codex-default", ["codex-a", "codex-b"], ["minimal", "low", "high"]),
+        # codex nao anuncia lista de modelos: `codex models` nao e subcomando, e o
+        # default sai de ~/.codex/config.toml. Esperar lista aqui seria testar
+        # comportamento que a CLI nao tem.
+        ("codex", "codex", "codex-default", [], ["minimal", "low", "high"]),
         ("agy", "agy", "agy-default", ["agy-a", "agy-b"], ["low", "medium", "high"]),
         ("cursor", "cursor-agent", "cursor-default", ["cursor-a", "cursor-b"], ["medium", "high"]),
         ("opencode", "opencode", "opencode-default", ["open-a", "open-b"], ["minimal", "max"]),
@@ -225,7 +236,10 @@ def test_list_models_queries_installed_cli_and_prints_what_it_announces(
     assert result.returncode == 0, result.stderr
     assert any(line.split() == [tool, "(installed)"] for line in result.stdout.splitlines())
     assert f"configured default : {configured}" in result.stdout
-    assert f"advertised by CLI  : {' '.join(models)}" in result.stdout
+    if models:
+        assert f"advertised by CLI  : {' '.join(models)}" in result.stdout
+    else:
+        assert "advertised by CLI  : no model list announced by CLI" in result.stdout
     if efforts:
         assert f"effort             : {' '.join(efforts)}" in result.stdout
     else:
