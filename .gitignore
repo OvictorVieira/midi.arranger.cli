@@ -9,6 +9,7 @@ htmlcov/
 .jscpd/
 .jscpd_manual/
 .worktrees/
+.ralph/
 .midiarranger/
 .ralph/
 prd.json
@@ -16,3 +17,6 @@ progress.txt
 *.egg-info/
 dist/
 build/
+
+prd.json
+progress.txt

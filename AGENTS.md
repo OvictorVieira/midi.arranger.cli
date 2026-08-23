@@ -48,6 +48,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - **Nunca** editar `quality-baseline.json` à mão para o gate passar.
 - Dependências das tools: só `mido` e `pretty_midi`. Nenhuma nova sem perguntar.
 - Python ≥ 3.11.
+- Testes do harness usam mocks reutilizáveis em `tests/harness/fixtures/bin/`; copie esses binários
+  para um `PATH` temporário e asserte o `MOCK_LOG` (`ARG_*`, `STDIN`, `PROMPT`) em vez de criar mocks
+  ad hoc ou chamar CLIs reais.
 
 ## Commits
 

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+binary_name="$(basename "$0")"
+stdin_payload="$(cat)"
+prompt_payload="$stdin_payload"
+args=("$@")
+
+for ((index = 0; index < ${#args[@]}; index += 1)); do
+  if [[ "${args[$index]}" == "--prompt" && "$((index + 1))" -lt "${#args[@]}" ]]; then
+    prompt_payload="${args[$((index + 1))]}"
+  fi
+done
+
+{
+  printf 'BIN<<END\n%s\nEND\n' "$binary_name"
+  index=0
+  for arg in "$@"; do
+    printf 'ARG_%s<<END\n%s\nEND\n' "$index" "$arg"
+    index=$((index + 1))
+  done
+  printf 'STDIN<<END\n%s\nEND\n' "$stdin_payload"
+  printf 'PROMPT<<END\n%s\nEND\n' "$prompt_payload"
+} > "$MOCK_LOG"
+
+printf 'mock output from %s\n' "$binary_name"
