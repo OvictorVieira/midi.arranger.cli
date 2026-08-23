@@ -2,7 +2,7 @@
 
 ## Convencao da ferramenta
 
-Este driver e entregue ao Claude por stdin. O harness ja chama a CLI em modo headless e permissivo;
+Este driver e entregue ao Agy por stdin. O harness ja chama a CLI em modo headless e permissivo;
 nao dependa de sessao anterior nem de confirmacoes interativas.
 
 Voce e um arranjador musical trabalhando dentro do loop headless do `midi-arranger run`.
