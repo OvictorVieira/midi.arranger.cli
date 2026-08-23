@@ -62,10 +62,16 @@ RHYTHMIC_BASE_VELOCITY_BUCKET: str = "normal"
 """Bucket 'normal' (82-105) — arp senta na mesma faixa do teclado, sem
 mascarar acentos de guitarra/lead."""
 
-RHYTHMIC_TIMING_JITTER_MS: tuple[float, float] = (0.5, 2.0)
-"""AC: 'Timing quase fixo (arp e mecanico)'. Jitter minusculo em relacao
-ao teclado (5-15ms) — o suficiente para o ouvido nao perceber grade
-matematica, sem tirar o carater sintetico."""
+RHYTHMIC_TIMING_JITTER_MS: tuple[float, float] = (2.5, 4.5)
+"""AC: 'Timing quase fixo (arp e mecanico)'. Jitter pequeno o suficiente
+para preservar o carater sintetico, mas fora da tolerancia de 2ms do
+artifice.GRID_TOLERANCE_S — antes valia (0.5, 2.0) e todo onset cabia
+inteiro dentro da tolerancia, o que fazia o validador certificar a track
+como grade matematica perfeita. Base de conhecimento
+(knowledge/persona/persona_produtor_metal_moderno.md:579-580): piano/Rhodes
+±5-15ms; 'arp mecanico: timing quase fixo'. 'Quase fixo' e definido por
+contraste como significativamente menor que os 5ms minimos do teclado —
+por isso o teto de 4.5ms."""
 
 RHYTHMIC_LAYER_ONSET_STAGGER_MS: tuple[float, float] = (2.0, 6.0)
 """Desencontro de ataque entre camadas — bem mais apertado que pad/teclado
@@ -755,9 +761,14 @@ DEFAULT_MOTOR_REGISTER: tuple[int, int] = REGISTER_BANDS["mid"]
 """Registro default do motor: banda mid (C3-C5). Motor tipicamente cobre
 faixa media — apoio ritmico entre baixo (grave) e arp/lead (alto)."""
 
-MOTOR_TIMING_JITTER_MS: tuple[float, float] = (0.5, 2.0)
-"""Motor mecanico — mesmo jitter minusculo do arp. A base de conhecimento
-descreve o motor como pulso constante."""
+MOTOR_TIMING_JITTER_MS: tuple[float, float] = (2.5, 4.5)
+"""Motor mecanico — mesmo jitter do arp, e pela mesma razao: valor antigo
+(0.5, 2.0) cabia inteiro dentro da tolerancia de 2ms do artifice
+(GRID_TOLERANCE_S), certificando a track como grade matematica perfeita.
+Motor e figura de apoio ritmico com pulso constante; a base
+(knowledge/persona/persona_produtor_metal_moderno.md:580) enquadra este
+tipo de elemento como 'timing quase fixo' — significativamente menor que
+o teclado (±5-15ms), por isso o teto de 4.5ms."""
 
 MOTOR_LAYER_ONSET_STAGGER_MS: tuple[float, float] = (2.0, 6.0)
 """Stagger apertado entre camadas — motor grosso e feito de duas patches
