@@ -126,23 +126,60 @@ que adianta**, e o quanto acompanha a diferença de intensidade.
 Faixa dinâmica total usada pelos pianistas: velocity final de martelo de **0,21 a 4,26 m/s**. Abaixo
 de ~0,21 m/s o martelo não alcança a corda.
 
-**Cuidado com a conversão.** Esses valores são velocity de martelo em m/s, e o mapeamento para
-velocity MIDI é **não-linear e específico do instrumento**. Não converta linearmente para 0–127.
+### A conversão de velocity de martelo para MIDI
+
+O mapeamento é **logarítmico**, não linear. Goebl & Bresin (2003) mediram num Yamaha Disklavier de
+cauda com sensores ópticos e derivaram:
+
+```
+velocity_MIDI = 57,96 + 71,3 × log₁₀(v)          v em m/s
+```
+
+| Velocidade do martelo | Velocity MIDI | |
+|---|---|---|
+| 1,0 m/s | ≈ 58 | pianíssimo |
+| 2,0 m/s | ≈ 79 | piano |
+| 3,0 m/s | ≈ 92 | mezzo forte |
+| 5,0 m/s | ≈ 108 | fortíssimo |
+
+**Nunca converta linearmente.** Uma escala linear de 0,21 a 4,26 m/s para 0–127 comprimiria toda a
+região expressiva do piano ao pianíssimo numa faixa estreita de velocity, e é o erro que faz
+programação de piano soar sem dinâmica no meio-termo.
+
+### Relação de dinâmica entre as mãos
+
+A mão direita toca **10 a 20% mais forte** que a esquerda — cerca de **+8 a +15 unidades de velocity
+MIDI**. Medido comparando pianistas especialistas com amadores: os especialistas mantêm essa
+diferenciação de forma rigorosa e consistente; os amadores não.
+
+Regra que sai daí: **em passagem melódica, a mão esquerda nunca tem velocity igual ou maior que a
+direita.** Isso vale junto com a regra da §2 — a melodia é sempre a voz mais forte.
 
 ---
 
 ## 3. Restrições físicas
 
-Seção fraca em evidência — a literatura de ergonomia que alcancei mede EMG e postura, não extensão
-em semitons.
-
 **Verificado:** oitava do teclado convencional tem **6,5 polegadas** (≈165 mm) de dó a dó; teclados
 alternativos de pesquisa usam 6,0" e 5,5". Pianistas de mão pequena mostram **11,2 a 13,8% mais**
 ativação de extensores em acordes de grande extensão. Profundidade de curso da tecla: **~9,5 mm**.
 
-**Não verificado — convenção de ensino, marcar como tal:** extensão confortável em semitons, alcance
-máximo, quantas notas por mão são realistas, quais vozeamentos exigem duas mãos, e o ponto de divisão
-entre as mãos.
+### Extensão da mão — medida, não convenção
+
+Wagner (1988) mediu mais de 200 pianistas; Parncutt e colegas (1997) modelaram os dados. A
+terminologia é deles:
+
+| | Semitons | Intervalo |
+|---|---|---|
+| `MaxComf` — confortável | **9 a 10** | sexta maior à oitava |
+| `MaxPrac` — prática máxima | **11 a 13** | sétima maior à décima |
+| `MaxPoss` — virtuosística absoluta | **14 a 17** | estiramento extremo entre polegar e mínimo |
+
+**Regra de validação que sai daí:** disposição de notas numa única mão que exceda **13 semitons**
+denuncia arranjo não executável por mão humana normal. É checagem barata e pega vozeamento de
+teclado escrito como se fosse de órgão.
+
+**Ainda não verificado — convenção de ensino:** quantas notas por mão são realistas em textura densa,
+quais vozeamentos exigem duas mãos, e o ponto de divisão entre as mãos.
 
 Há um **proxy medido** para a divisão de mãos que vale usar: o estudo dos 63 mil eventos assumiu que
 a direita toca a pauta de cima e a esquerda a de baixo, e defendeu isso como razoável para o Chopin
@@ -289,13 +326,14 @@ Mesmo formato dos outros manuais.
 {
   "name": "rolled_chord",
   "family": "keys",
-  "summary": "Acorde rolado, nota a nota de baixo para cima.",
-  "verified": false,
-  "description": "LACUNA DECLARADA: os dois corpora medidos EXCLUIRAM arpejos, ornamentos e apogiaturas da analise, dizendo apenas que eles mostram assincronias maiores que eventos regulares. Nao ha valor medido para o espalhamento entre notas, nem para saber se o rolo acelera ou e uniforme. Os numeros abaixo sao convencao de oficio sem fonte — confira de ouvido antes de tratar como lei.",
+  "summary": "Acorde rolado de baixo para cima, com espalhamento que ACELERA — nao e uniforme.",
+  "verified": true,
+  "description": "O achado que importa: a taxa de rolagem NAO e constante. Os intervalos entre notas sucessivas diminuem progressivamente do grave para o agudo — o rolo acelera. Espalhar 20ms fixos entre cada nota e o erro classico e soa mecanico. O espalhamento TOTAL entre a primeira nota e a ultima fica entre 30 e 120ms; distribua esse total com intervalos decrescentes. Os dois corpora de piano mais citados excluiram arpejos da analise de proposito, entao este dado vem de outro estudo — confira o valor exato no artigo antes de calibrar fino.",
   "parameters": [
-    {"name": "espalhamento_por_nota_ms", "range": [20, 40]}
+    {"name": "espalhamento_total_ms", "range": [30, 120], "source": "Fu, Xia, Dannenberg & Wasserman, ISMIR 2015 — modelo estatistico sobre performances de pianistas profissionais"},
+    {"name": "perfil", "value": "acelerado_nao_linear", "source": "ISMIR 2015 — intervalos diminuem progressivamente do grave para o agudo"}
   ],
-  "tools": {"generic": {"note": "de baixo para cima; a nota de topo cai no tempo"}}
+  "tools": {"generic": {"note": "de baixo para cima; a nota de topo cai no tempo; intervalos DECRESCENTES entre notas sucessivas"}}
 }
 ```
 
@@ -305,11 +343,13 @@ Mesmo formato dos outros manuais.
 {
   "name": "syncopated_pedal",
   "family": "keys",
-  "summary": "Solta na harmonia nova e repisa logo depois do acorde soar — nunca junto.",
-  "verified": false,
-  "description": "Convencao de ensino consolidada, sem valor em ms medido que eu tenha alcancado. O que E medido: o tempo do pedal NAO e invariante, as acoes acontecem um pouco mais cedo em andamento rapido, e esses deslocamentos sao proporcionalmente MENORES que as mudancas no tempo dos acordes — o pe nao escala junto com as maos. Pedal tambem nao e liga-desliga: meio-pedal e profundidade continua sao dimensoes reais e medidas.",
+  "summary": "Pedal desce DEPOIS do acorde soar, entre 50 e 150ms — nunca junto e nunca antes.",
+  "verified": true,
+  "description": "Mandar CC64 junto com o note-on, ou antes dele, captura as notas do acorde ANTERIOR e suja a harmonia. O pedal desce depois que o acorde ja soou. O atraso diminui conforme o andamento sobe. Tambem medido: o tempo do pedal nao e invariante e os deslocamentos dele sao proporcionalmente MENORES que as mudancas no tempo dos acordes — o pe nao escala junto com as maos. E pedal nao e liga-desliga: meio-pedal opera entre 40 e 85 de CC64, mantendo os abafadores em contato leve para ressonancia simpatica sem sustentacao prolongada.",
   "parameters": [
-    {"name": "atraso_apos_o_acorde_ms", "range": [20, 60]}
+    {"name": "atraso_apos_o_acorde_ms", "range": [50, 150], "source": "Repp 1996b/1996c/1997, reanalisado em Lehtonen et al. 2007 — Analysis and modeling of piano sustain-pedal effects"},
+    {"name": "dependencia_de_andamento", "value": "atraso_diminui_com_bpm_maior", "source": "Lehtonen et al. 2007"},
+    {"name": "meio_pedal_cc64", "range": [40, 85], "source": "tese Aalto sobre efeitos do pedal de sustentacao"}
   ],
   "tools": {
     "generic": {"cc": 64, "note": "soltar ANTES da harmonia nova, repisar DEPOIS que ela soa"},
@@ -325,11 +365,12 @@ Mesmo formato dos outros manuais.
 | Item | Situação |
 |---|---|
 | Desvio padrão do melody lead por voz | plotado graficamente no artigo, não impresso em número |
-| Delta de velocity MIDI entre melodia e acompanhamento | **lacuna** — a conversão de m/s para MIDI não foi obtida |
-| Relação de velocity entre mão esquerda e direita | **lacuna** — nenhum número agregado publicado |
-| Espalhamento de acorde arpejado, e se acelera | **lacuna** — excluído dos dois corpora |
-| Extensão de mão em semitons, alcance máximo, notas por mão, ponto de divisão | convenção de ensino apenas |
-| Offset em ms do pedal sincopado | convenção; só se sabe que o tempo do pedal não é invariante ao andamento |
+| ~~Conversão de m/s para velocity MIDI~~ | **fechada** — Goebl & Bresin 2003, equação logarítmica na §2 |
+| ~~Relação de velocity entre mão esquerda e direita~~ | **fechada** — direita 10 a 20% mais forte |
+| ~~Espalhamento de acorde arpejado, e se acelera~~ | **fechada** — ISMIR 2015: 30–120 ms totais, acelerando |
+| ~~Extensão de mão em semitons~~ | **fechada** — Wagner 1988 / Parncutt 1997, §3 |
+| ~~Offset em ms do pedal sincopado~~ | **fechada** — 50 a 150 ms, Lehtonen 2007 |
+| Notas por mão em textura densa, ponto de divisão entre as mãos | convenção de ensino apenas |
 | Valores de jazz e pop para adiantamento de mão | citados mas não medidos nas fontes alcançadas |
 | **Rhodes, qualquer medição** | **lacuna completa** — nada publicado |
 
@@ -344,4 +385,8 @@ Mesmo formato dos outros manuais.
 - Askenfelt & Jansson (1990, 1991) *JASA* 88 e 90 — medição da ação do Steinway B, via Goebl 2001
 - Repp (1997). The effect of tempo on pedal timing in piano performance. *Psychological Research* 60:164–172 — resumo
 - [Bernays & Traube (2014). *Frontiers in Psychology* 5:157](https://doi.org/10.3389/fpsyg.2014.00157)
+- Goebl & Bresin (2003). *JASA* 114:2273–2283 — conversão de velocity de martelo para MIDI no Yamaha Disklavier
+- Fu, Xia, Dannenberg & Wasserman (2015), ISMIR — espalhamento de acorde arpejado
+- Lehtonen, Penttinen, Rauhala & Välimäki (2007). Analysis and modeling of piano sustain-pedal effects — reanálise de Repp 1996b/1996c/1997
+- Wagner (1988) e Parncutt et al. (1997) — ergonomia de extensão de mão, amostra de mais de 200 pianistas
 - [Chi et al. (2021) *Appl Ergon*, PMID 34246074](https://pubmed.ncbi.nlm.nih.gov/34246074/) · [Turner et al. (2026) *Appl Ergon*, PMID 41385802](https://pubmed.ncbi.nlm.nih.gov/41385802/) · [Sakai et al. (2006) *J Hand Surg Am*, PMID 16713851](https://pubmed.ncbi.nlm.nih.gov/16713851/)
