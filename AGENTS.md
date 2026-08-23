@@ -59,6 +59,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   mocks do harness; a invocação `n` reescreverá `arrangement-brief.json` no `project_root` do prompt.
 - Para testes de ponta a ponta do `run`, defina `MOCK_WRITE_PROGRESS=1` nos mocks do harness; cada
   invocação acrescentará uma entrada determinística ao `progress_file` anunciado no prompt.
+- O prompt de `run` entrega metadados primeiro e depois o conteúdo do driver resolvido; por padrão
+  vem de `prompts/<TOOL>.md`, mas `MIDI_ARRANGER_PROMPT_FILE` tem precedência e caminho inexistente
+  deve falhar sem fallback silencioso.
 - Testes de prompt driver ficam em `tests/harness/` e devem comparar nomes de tools contra
   `tools.registry.list_tools()`; importe `tools.contract` antes, porque o registry é populado por
   efeito colateral no import.
