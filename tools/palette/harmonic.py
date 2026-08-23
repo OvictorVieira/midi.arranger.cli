@@ -972,12 +972,10 @@ def generate_strings(
             voice_pitches_per_bar.append(next_pitches)
             prev = next_pitches
 
-    # Coleta candidatos a ghost (indices absolutos de notas nao-extremas).
-    total_notes = 0
-    inner_note_indices: list[tuple[int, int]] = []  # (voice_idx, bar_pos)
     chug_map: list[bool] = [_bar_has_chug(b, analysis) for b in bars]
 
     voices_notes_raw: list[list[StringsNote]] = [[] for _ in range(voices)]
+    voices_bar_pos: list[list[int]] = [[] for _ in range(voices)]
     for bar_pos, bar in enumerate(bars):
         if bar.chord is None:
             continue
@@ -1006,13 +1004,58 @@ def generate_strings(
                 start_s=start, end_s=end, is_ghost=False,
             )
             voices_notes_raw[vi].append(n)
-            total_notes += 1
-            if 0 < vi < voices - 1:
-                inner_note_indices.append((vi, len(voices_notes_raw[vi]) - 1))
+            voices_bar_pos[vi].append(bar_pos)
 
-    # Distribuicao de ghost: seleciona floor(ghost_ratio * total_notes) das
-    # notas internas. Vozes extremas nunca sao ghost (grave sustenta o
-    # arco, aguda entrega a nota focal).
+    # Consolida `nota comum sustentada` — knowledge/persona/persona_produtor_
+    # metal_moderno.md linhas 524 ("nota comum: uma voz permanece enquanto o
+    # acorde muda") e 699 ("uma voz sustenta nota comum") descrevem UM arco
+    # segurado, nao um ataque por compasso. Ataques repetidos com mesmo
+    # pitch/velocity/duracao/espacamento sao literalmente o padrao que o
+    # artifice `_check_repeated_notes` denuncia como robotico — o conserto
+    # e no gerador, colapsando corridas de bars contiguos no mesmo pitch
+    # numa unica nota longa.
+    for vi in range(voices):
+        raw_notes = voices_notes_raw[vi]
+        raw_bp = voices_bar_pos[vi]
+        if len(raw_notes) < 2:
+            continue
+        merged_notes: list[StringsNote] = []
+        merged_bp: list[int] = []
+        cur = raw_notes[0]
+        cur_bp = raw_bp[0]
+        for i in range(1, len(raw_notes)):
+            nxt = raw_notes[i]
+            nxt_bp = raw_bp[i]
+            if (
+                nxt.pitch == cur.pitch
+                and nxt.velocity == cur.velocity
+                and nxt_bp == cur_bp + 1
+            ):
+                cur = StringsNote(
+                    pitch=cur.pitch, velocity=cur.velocity,
+                    start_s=cur.start_s, end_s=nxt.end_s,
+                    is_ghost=cur.is_ghost,
+                )
+                cur_bp = nxt_bp
+            else:
+                merged_notes.append(cur)
+                merged_bp.append(cur_bp)
+                cur = nxt
+                cur_bp = nxt_bp
+        merged_notes.append(cur)
+        merged_bp.append(cur_bp)
+        voices_notes_raw[vi] = merged_notes
+        voices_bar_pos[vi] = merged_bp
+
+    # Ghost roda DEPOIS do merge — a fracao de ghost e sobre notas MUSICAIS
+    # (arcos), nao sobre re-ataques que nem existem musicalmente. Vozes
+    # extremas nunca sao ghost (grave sustenta o arco, aguda entrega a nota
+    # focal).
+    total_notes = sum(len(v) for v in voices_notes_raw)
+    inner_note_indices: list[tuple[int, int]] = []
+    for vi in range(1, voices - 1):
+        for ni in range(len(voices_notes_raw[vi])):
+            inner_note_indices.append((vi, ni))
     target_ghost = int(round(ghost_ratio * total_notes))
     ghost_pool = list(inner_note_indices)
     rng.shuffle(ghost_pool)

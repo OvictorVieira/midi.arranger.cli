@@ -233,7 +233,6 @@ _ROLES: tuple[str, ...] = tuple(_ROLE_SPECS.keys())
 # passa e o xfail vira `XPASS` — a story tem que remover o marker aqui
 # alem de aplicar o fix. Zerar este dict e requisito da US-008.
 _KNOWN_ARTIFICE_XFAILS: dict[str, str] = {
-    "strings": "US-004 (repeated_notes em harmonic.py:975)",
     "shadow": "US-008 (duplicates_source: decidir isencao musicalmente justificada)",
 }
 
