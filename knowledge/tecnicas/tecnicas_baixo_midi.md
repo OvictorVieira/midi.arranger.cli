@@ -354,7 +354,45 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
 }
 ```
 
-### 5.9 Harmônico
+### 5.9 Seleção de corda — a decisão que o plugin erra sozinho
+
+```technique
+{
+  "name": "string_selection",
+  "family": "bass",
+  "summary": "Forcar a corda em que a nota soa. Em drop tuning o riff vive na corda grave, e o plugin nao sabe disso sozinho.",
+  "verified": false,
+  "description": "A MESMA ALTURA soa diferente em cordas diferentes: na corda grave, mais fundamental e mais corpo; numa corda mais aguda na mesma altura, mais harmonico e menos peso. O MODO BASS escolhe a corda sozinho otimizando ECONOMIA DE MAO — menos deslocamento, posicao mais confortavel. Isso e o oposto do que metal em drop quer: ali a escolha e por TIMBRE, e o riff fica na corda mais grave mesmo quando daria para tocar mais acima com menos esforco. Sempre que a corda for decisao intencional, FORCE por keyswitch; deixar no automatico entrega uma linha com as notas certas e o peso errado. O keyswitch e latchavel: ele vale ate outro keyswitch de corda mudar, entao declare a troca, nao repita a cada nota.",
+  "parameters": [
+    {"name": "keyswitch_corda_C", "value": 0},
+    {"name": "keyswitch_corda_A", "value": 9},
+    {"name": "keyswitch_corda_B", "value": 11},
+    {"name": "keyswitch_corda_D", "value": 14},
+    {"name": "keyswitch_corda_E", "value": 16},
+    {"name": "keyswitch_corda_G", "value": 19},
+    {"name": "keyswitch_posicao_mao_inicio", "value": 77, "source": "manual oficial MODO BASS v1 — F5 a E7, uma tecla por posicao"},
+    {"name": "keyswitch_posicao_mao_fim", "value": 100, "source": "manual oficial MODO BASS v1"}
+  ],
+  "tools": {
+    "generic": {"note": "sem controle de corda: o timbre sai do que o instrumento decidir. Declare no plano que a intencao de corda nao pode ser honrada nesta ferramenta"},
+    "modo_bass": {
+      "note": "keyswitch latchavel: vale ate a proxima troca. Combine com o keyswitch de posicao de mao (77-100) quando a posicao tambem for intencional. CC 4 controla posicao de forma continua, mas o numero do CC e de terceiros"
+    }
+  }
+}
+```
+
+**Quando forçar e quando deixar automático.** Force sempre que a escolha de corda carregar intenção:
+riff de drop na corda mais grave, nota pedal sustentada numa corda enquanto a mão trabalha em outra,
+ou passagem em que você quer o timbre de uma corda solta. Deixe automático em linha de acompanhamento
+onde só a altura importa — aí a economia de mão do plugin é uma escolha melhor que a nossa.
+
+**A tabulação é a fonte da verdade quando existe.** Se o material de origem veio de tab, a corda já
+está decidida ali e o gerador deve honrar, não recalcular. Quando não houver tab, a regra prática do
+gênero: em afinação drop, o riff mora nas cordas mais graves e o gerador força; o que sobe de
+registro é linha melódica, não riff.
+
+### 5.10 Harmônico
 
 ```technique
 {
