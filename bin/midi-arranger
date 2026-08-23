@@ -41,6 +41,10 @@ Examples:
   midi-arranger run --tool codex --effort high 12
   midi-arranger --cwd /path/to/project --list-models
   midi-arranger tool analyze song.mid
+
+Run iterations:
+  max_iterations defaults to 10. As a rule of thumb, use one iteration per
+  instrument family to arrange, plus extra room for validation fixes.
 EOF
 }
 
@@ -394,8 +398,18 @@ build_agent_prompt() {
 }
 
 run_prompt_detail() {
-  printf 'max_iterations=%s\narrangement_brief=%s\narrangement_plan=%s\nprogress_file=%s\nstate_dir=%s\n' \
-    "$MAX_ITERATIONS" "$BRIEF_FILE" "$PLAN_FILE" "$PROGRESS_FILE" "$STATE_DIR"
+  printf 'iteration=%s\nmax_iterations=%s\narrangement_brief=%s\narrangement_plan=%s\nprogress_file=%s\nstate_dir=%s\n' \
+    "$CURRENT_ITERATION" "$MAX_ITERATIONS" "$BRIEF_FILE" "$PLAN_FILE" "$PROGRESS_FILE" "$STATE_DIR"
+}
+
+run_agent_loop() {
+  local iteration
+
+  for ((iteration = 1; iteration <= MAX_ITERATIONS; iteration += 1)); do
+    CURRENT_ITERATION="$iteration"
+    printf '\n== midi-arranger run iteration %s/%s ==\n' "$iteration" "$MAX_ITERATIONS"
+    invoke_agent_once "run" "$(run_prompt_detail)"
+  done
 }
 
 invoke_agent_once() {
@@ -659,6 +673,7 @@ MODEL=""
 EFFORT=""
 CWD=""
 MAX_ITERATIONS=""
+CURRENT_ITERATION=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -769,7 +784,7 @@ case "$COMMAND" in
     fi
     validate_effort_support "$TOOL"
     ensure_run_state
-    invoke_agent_once "run" "$(run_prompt_detail)"
+    run_agent_loop
     ;;
   tool)
     if [[ "${#POSITIONAL[@]}" -lt 1 ]]; then

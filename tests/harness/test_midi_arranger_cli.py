@@ -153,6 +153,10 @@ def logged_args(blocks: dict[str, str]) -> list[str]:
     return args
 
 
+def count_mock_invocations(log_path: Path) -> int:
+    return log_path.read_text().count("BIN<<END\n")
+
+
 def test_script_is_executable_bash_with_strict_mode() -> None:
     mode = SCRIPT.stat().st_mode
 
@@ -184,6 +188,8 @@ def test_help_documents_subcommands_options_and_examples() -> None:
     assert "--effort LEVEL" in result.stdout
     assert "--cwd DIR" in result.stdout
     assert "Examples:" in result.stdout
+    assert "max_iterations defaults to 10" in result.stdout
+    assert "one iteration per" in result.stdout
 
 
 def test_unknown_argument_fails_with_clear_usage_error() -> None:
@@ -340,9 +346,10 @@ def test_agent_adapter_builds_expected_command_line(
     project = prepare_run_project(tmp_path)
     expected_args = [str(project) if value == str(REPO_ROOT) else value for value in expected_args]
 
-    result = run_cli("run", "--cwd", str(project), "--tool", tool, *options, "12", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", tool, *options, "1", env=env)
 
     assert result.returncode == 0, result.stderr
+    assert count_mock_invocations(log_path) == 1
     blocks = read_mock_log(log_path)
     assert blocks["BIN"] == binary
     args = logged_args(blocks)
@@ -351,15 +358,18 @@ def test_agent_adapter_builds_expected_command_line(
         prompt_index = expected_args.index("<PROMPT>")
         assert args[:prompt_index] == expected_args[:prompt_index]
         assert args[prompt_index].startswith("midi-arranger run")
-        assert "max_iterations=12" in args[prompt_index]
+        assert "iteration=1" in args[prompt_index]
+        assert "max_iterations=1" in args[prompt_index]
         assert args[prompt_index + 1 :] == expected_args[prompt_index + 1 :]
         assert blocks["STDIN"].strip() == ""
         assert blocks["PROMPT"].startswith("midi-arranger run")
-        assert "max_iterations=12" in blocks["PROMPT"]
+        assert "iteration=1" in blocks["PROMPT"]
+        assert "max_iterations=1" in blocks["PROMPT"]
     else:
         assert args == expected_args
         assert blocks["STDIN"].startswith("midi-arranger run")
-        assert "max_iterations=12" in blocks["STDIN"]
+        assert "iteration=1" in blocks["STDIN"]
+        assert "max_iterations=1" in blocks["STDIN"]
         assert blocks["PROMPT"] == blocks["STDIN"]
 
     assert f"mock output from {binary}" in result.stdout
@@ -392,6 +402,33 @@ def test_agent_adapter_does_not_pass_model_or_effort_when_not_requested(
     joined_args = "\n".join(logged_args(read_mock_log(log_path)))
     for unexpected in unexpected_args:
         assert unexpected not in joined_args
+
+
+def test_run_loop_invokes_agent_once_per_requested_iteration(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "4", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert count_mock_invocations(log_path) == 4
+    raw_log = log_path.read_text()
+    for iteration in range(1, 5):
+        assert f"iteration={iteration}" in raw_log
+    assert "== midi-arranger run iteration 1/4 ==" in result.stdout
+    assert "== midi-arranger run iteration 4/4 ==" in result.stdout
+
+
+def test_run_loop_uses_documented_default_iterations(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert count_mock_invocations(log_path) == 10
+    assert "== midi-arranger run iteration 10/10 ==" in result.stdout
+    assert "max_iterations=10" in log_path.read_text()
 
 
 def test_brief_invokes_selected_agent_with_input_midi_prompt(tmp_path: Path) -> None:
@@ -430,7 +467,7 @@ printf 'stderr after sleep\\n' >&2
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     process = subprocess.Popen(
-        [str(SCRIPT), "run", "--cwd", str(project), "--tool", "claude"],
+        [str(SCRIPT), "run", "--cwd", str(project), "--tool", "claude", "1"],
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -439,12 +476,17 @@ printf 'stderr after sleep\\n' >&2
     )
 
     assert process.stdout is not None
-    first_line = process.stdout.readline()
-    assert first_line == "stdout before sleep\n"
+    observed_lines: list[str] = []
+    while True:
+        line = process.stdout.readline()
+        assert line != ""
+        observed_lines.append(line)
+        if line == "stdout before sleep\n":
+            break
     assert process.poll() is None
 
     stdout_remainder, stderr = process.communicate(timeout=5)
-    stdout = first_line + stdout_remainder
+    stdout = "".join(observed_lines) + stdout_remainder
 
     assert process.returncode == 0, stderr
     assert "stderr before sleep" in stdout
@@ -499,7 +541,7 @@ def test_project_root_detection_climbs_to_git_root(tmp_path: Path) -> None:
     (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     log_path, env = install_mock_binary(tmp_path, "codex")
 
-    result = run_cli("run", cwd=nested, env=env)
+    result = run_cli("run", "1", cwd=nested, env=env)
 
     assert result.returncode == 0, result.stderr
     assert f"project_root={project}" in read_mock_log(log_path)["STDIN"]
@@ -528,7 +570,7 @@ def test_cwd_overrides_auto_detected_root(tmp_path: Path) -> None:
     (override / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     log_path, env = install_mock_binary(tmp_path, "codex")
 
-    result = run_cli("run", "--cwd", str(override), cwd=nested, env=env)
+    result = run_cli("run", "--cwd", str(override), "1", cwd=nested, env=env)
 
     assert result.returncode == 0, result.stderr
     assert f"project_root={override}" in read_mock_log(log_path)["STDIN"]
@@ -540,7 +582,7 @@ def test_run_without_brief_fails_before_agent_invocation(tmp_path: Path) -> None
     (project / ".git").mkdir()
     log_path, env = install_mock_binary(tmp_path, "claude")
 
-    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
 
     assert result.returncode == 66
     assert "arrangement-brief.json not found" in result.stderr
@@ -572,7 +614,7 @@ def test_run_preserves_existing_progress_and_appends(tmp_path: Path) -> None:
     (project / "progress.txt").write_text(existing_progress)
     _, env = install_mock_binary(tmp_path, "claude")
 
-    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
 
     assert result.returncode == 0, result.stderr
     progress = (project / "progress.txt").read_text()
@@ -594,7 +636,7 @@ def test_run_archives_plan_and_progress_when_brief_changed(tmp_path: Path) -> No
     (state_dir / "brief.sha256").write_text(f"{brief_hash(old_brief)}\n")
     _, env = install_mock_binary(tmp_path, "claude")
 
-    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
 
     assert result.returncode == 0, result.stderr
     archive_root = state_dir / "archive"

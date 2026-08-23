@@ -35,7 +35,9 @@ flowchart LR
 
 ## 2. O laço `run`
 
-Cada iteração é um **processo novo, sem memória da anterior**. Todo estado vive em disco.
+Cada iteração é um **processo novo, sem memória da anterior**. Todo estado vive em disco. Quando o
+usuário não informa `max_iterations`, o default é 10; a ajuda recomenda estimar uma iteração por
+família de instrumento a arranjar, mais folga para correções.
 
 ```mermaid
 flowchart TD
@@ -47,7 +49,7 @@ flowchart TD
     Arch -->|não| Loop
     Archive --> Loop
 
-    Loop[i = 1] --> Invoke[monta a linha de comando<br/>do adaptador da ferramenta]
+    Loop[i = 1] --> Invoke[monta prompt com iteration=i<br/>e linha de comando do adaptador]
     Invoke --> Run[executa a CLI de IA<br/>ecoa e captura a saída]
     Run --> Sentinel{saída contém<br/>promise COMPLETE?}
     Sentinel -->|sim| Done([sucesso: exit 0])
@@ -204,4 +206,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: 50c8424968ee0425d78ab3c60dc4d20b7a451b368c118c30a78b0b9f49b1b687 -->
+<!-- harness-sha256: 8b6d4169aabc583da30e9f990f017cdf192c535c9eb153f53320ce5417edefcb -->

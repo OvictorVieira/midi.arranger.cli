@@ -51,6 +51,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Testes do harness usam mocks reutilizáveis em `tests/harness/fixtures/bin/`; copie esses binários
   para um `PATH` temporário e asserte o `MOCK_LOG` (`ARG_*`, `STDIN`, `PROMPT`) em vez de criar mocks
   ad hoc ou chamar CLIs reais.
+- Os mocks do harness acrescentam cada invocação ao `MOCK_LOG`; para testes multi-iteração, conte
+  blocos `BIN<<END`, enquanto `read_mock_log` continua representando a última invocação.
 
 ## Commits
 

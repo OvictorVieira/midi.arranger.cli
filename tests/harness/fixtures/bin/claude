@@ -14,6 +14,6 @@ prompt_payload="$stdin_payload"
   done
   printf 'STDIN<<END\n%s\nEND\n' "$stdin_payload"
   printf 'PROMPT<<END\n%s\nEND\n' "$prompt_payload"
-} > "$MOCK_LOG"
+} >> "$MOCK_LOG"
 
 printf 'mock output from %s\n' "$binary_name"
