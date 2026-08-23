@@ -5,6 +5,7 @@
 - Run the project test suite with `python3 -m pytest`; on this machine `python` resolves to Python 2.7.
 - Harness tests mock AI CLIs by putting fake binaries first on `PATH` and using `MOCK_LOG` to assert argv/stdin; never call real agent CLIs from tests.
 - Agent output inspection state lives in `.midiarranger/last-agent-output.txt`; the harness writes the combined stdout/stderr stream there while echoing it to the user.
+- `--list-models` must query installed CLIs and parse their live output; do not add baked-in model tables. Tests should isolate `PATH` and `HOME` so real local CLIs do not affect assertions.
 
 Started: Sáb 22 Ago 2026 22:28:25 -03
 ---
@@ -48,4 +49,17 @@ Started: Sáb 22 Ago 2026 22:28:25 -03
 - **Learnings for future iterations:**
   - Use the centralized `capture_agent_output` helper for agent invocations so streaming and inspection capture stay consistent.
   - The capture file is run state under `.midiarranger/`, already ignored by git.
+---
+## 2026-08-22 22:47:23 -0300 - US-004
+- Implemented `midi-arranger --list-models` so it inspects each supported installed CLI live, prints configured defaults and advertised models when the CLI announces them, reports effort levels parsed from help output, and marks missing tools as absent without failing.
+- Added mocked CLI discovery tests for claude, codex, agy, cursor-agent, opencode, amp, and gemini, plus an all-absent regression case with isolated `PATH` and `HOME`.
+- Files changed:
+  - `bin/midi-arranger`
+  - `tests/harness/test_midi_arranger_cli.py`
+  - `prd.json`
+  - `progress.txt`
+- **Learnings for future iterations:**
+  - Discovery tests should isolate both `PATH` and `HOME`; otherwise a locally installed CLI or opencode fallback path can make tests nondeterministic.
+  - Prefer BSD-compatible awk in harness scripts; macOS awk does not support GNU-only conveniences like `IGNORECASE`, and `index` is a built-in name.
+  - Model discovery should parse CLI output and honestly report missing announcements instead of maintaining a model table in the harness.
 ---

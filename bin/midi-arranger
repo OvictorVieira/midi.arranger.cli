@@ -161,6 +161,209 @@ capture_agent_output() {
   return "$command_status"
 }
 
+run_cli_query() {
+  local binary="$1"
+  shift
+
+  set +e
+  "$binary" "$@" </dev/null 2>&1
+  set -e
+  return 0
+}
+
+normalize_discovery_words() {
+  tr "',()[]{}" ' ' \
+    | tr ',|' '  ' \
+    | awk '
+        {
+          for (field_index = 1; field_index <= NF; field_index += 1) {
+            value = $field_index
+            gsub(/^[[:space:]-]+|[[:space:].;:]+$/, "", value)
+            if (value != "" && !seen[value]++) {
+              print value
+            }
+          }
+        }
+      ' \
+    | tr '\n' ' ' \
+    | sed 's/[[:space:]]*$//'
+}
+
+extract_configured_model() {
+  awk '
+    {
+      line = $0
+      lower = tolower(line)
+    }
+    lower ~ /(configured default|configured model|current model|default model)/ && line ~ /[:=]/ {
+      sub(/^[^:=]*[:=][[:space:]]*/, "", line)
+      gsub(/[`"'\''<>]/, "", line)
+      split(line, parts)
+      print parts[1]
+      exit
+    }
+  '
+}
+
+extract_advertised_models() {
+  awk '
+    {
+      line = $0
+      lower = tolower(line)
+    }
+    lower ~ /(error|unknown command|not found|usage:|options:|authentication|login|api-key)/ {
+      next
+    }
+    lower ~ /(available models|advertised models|models:|model aliases|model ids)/ {
+      sub(/^[^:]*:[[:space:]]*/, "", line)
+      print line
+      next
+    }
+    line ~ /^[[:space:]]*[-*]?[[:space:]]*[[:alnum:]][[:alnum:]._:\/-]+[[:space:]]*$/ {
+      gsub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
+      print line
+    }
+  ' | normalize_discovery_words
+}
+
+extract_effort_values() {
+  awk '
+    {
+      lower = tolower($0)
+    }
+    lower ~ /effort|variant/ {
+      print
+    }
+  ' \
+    | tr "',()[]{}" ' ' \
+    | tr ',|' '  ' \
+    | awk '
+        {
+          for (field_index = 1; field_index <= NF; field_index += 1) {
+            value = tolower($field_index)
+            gsub(/^[[:space:]-]+|[[:space:].;:]+$/, "", value)
+            if (value ~ /^(minimal|low|medium|high|xhigh|max)$/ && !seen[value]++) {
+              print value
+            }
+          }
+        }
+      ' \
+    | tr '\n' ' ' \
+    | sed 's/[[:space:]]*$//'
+}
+
+tool_model_query_output() {
+  local tool="$1"
+  local binary="$2"
+
+  case "$tool" in
+    claude)
+      run_cli_query "$binary" --help
+      ;;
+    codex)
+      run_cli_query "$binary" models
+      ;;
+    agy)
+      run_cli_query "$binary" models
+      ;;
+    cursor)
+      run_cli_query "$binary" --list-models
+      ;;
+    opencode)
+      run_cli_query "$binary" models
+      ;;
+    amp)
+      run_cli_query "$binary" --help
+      ;;
+    gemini)
+      run_cli_query "$binary" --help
+      ;;
+  esac
+}
+
+tool_help_query_output() {
+  local tool="$1"
+  local binary="$2"
+
+  run_cli_query "$binary" --help
+  case "$tool" in
+    codex)
+      run_cli_query "$binary" exec --help
+      ;;
+    opencode)
+      run_cli_query "$binary" run --help
+      ;;
+  esac
+}
+
+tool_has_effort_adapter() {
+  case "$1" in
+    claude|codex|agy|cursor|opencode)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+print_model_discovery() {
+  local tool
+  local binary
+  local model_output
+  local help_output
+  local combined_output
+  local configured
+  local advertised
+  local efforts
+
+  echo "Models"
+  echo ""
+
+  for tool in $SUPPORTED_TOOLS; do
+    if ! binary="$(tool_binary_path "$tool")"; then
+      printf '  %-8s (%s)\n' "$tool" "absent"
+      printf '    configured default : not queried\n'
+      printf '    advertised by CLI  : not queried\n'
+      printf '    effort             : not queried\n'
+      echo ""
+      continue
+    fi
+
+    model_output="$(tool_model_query_output "$tool" "$binary")"
+    help_output="$(tool_help_query_output "$tool" "$binary")"
+    combined_output="$model_output
+$help_output"
+    configured="$(printf '%s\n' "$combined_output" | extract_configured_model)"
+    advertised="$(printf '%s\n' "$model_output" | extract_advertised_models)"
+    efforts="$(printf '%s\n' "$help_output" | extract_effort_values)"
+
+    printf '  %-8s (%s)\n' "$tool" "installed"
+
+    if [[ -n "$configured" ]]; then
+      printf '    configured default : %s\n' "$configured"
+    else
+      printf '    configured default : not announced by CLI\n'
+    fi
+
+    if [[ -n "$advertised" ]]; then
+      printf '    advertised by CLI  : %s\n' "$advertised"
+    else
+      printf '    advertised by CLI  : no model list announced by CLI\n'
+    fi
+
+    if ! tool_has_effort_adapter "$tool"; then
+      printf '    effort             : not supported by this CLI\n'
+    elif [[ -n "$efforts" ]]; then
+      printf '    effort             : %s\n' "$efforts"
+    else
+      printf '    effort             : not announced by CLI\n'
+    fi
+
+    echo ""
+  done
+}
+
 build_agent_prompt() {
   local mode="$1"
   local detail="$2"
@@ -396,7 +599,7 @@ case "$COMMAND" in
     if [[ "${#POSITIONAL[@]}" -ne 0 ]]; then
       die_usage "--list-models does not accept positional arguments."
     fi
-    die_unavailable "--list-models parsed successfully for project '$PROJECT_ROOT', but model discovery is not implemented yet."
+    print_model_discovery
     ;;
   *)
     die_usage "Unknown command '$COMMAND'."

@@ -61,6 +61,51 @@ printf 'mock output from %s\\n' "$(basename "$0")"
     return log_path, env
 
 
+def install_model_discovery_binary(
+    tmp_path: Path,
+    binary_name: str,
+    configured: str,
+    models: list[str],
+    efforts: list[str],
+) -> dict[str, str]:
+    bin_dir = tmp_path / "discovery-bin"
+    bin_dir.mkdir(exist_ok=True)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    binary = bin_dir / binary_name
+    models_text = " ".join(models)
+    efforts_text = "|".join(efforts)
+    binary.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+case "$args" in
+  "--help"|"exec --help"|"run --help")
+    printf 'Configured model: {configured}\\n'
+    printf 'Available models: {models_text}\\n'
+    if [[ -n "{efforts_text}" ]]; then
+      printf 'Reasoning effort ({efforts_text})\\n'
+    fi
+    ;;
+  "models"|"--list-models")
+    printf 'Configured model: {configured}\\n'
+    printf 'Available models: {models_text}\\n'
+    ;;
+  *)
+    printf 'unexpected discovery command: %s\\n' "$args" >&2
+    exit 2
+    ;;
+esac
+""",
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+
+    return {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "HOME": str(home),
+    }
+
+
 def read_mock_log(log_path: Path) -> dict[str, str]:
     blocks: dict[str, str] = {}
     current_key = ""
@@ -139,12 +184,60 @@ def test_invalid_tool_fails_before_dispatch() -> None:
 
 def test_recognizes_subcommands_and_common_options() -> None:
     tool = run_cli("tool", "--tool", "amp", "analyze", "song.mid")
-    list_models = run_cli("--list-models", "--tool", "gemini")
+    list_models = run_cli("--list-models", "--tool", "gemini", env={"PATH": "/usr/bin:/bin"})
 
     assert tool.returncode == 69
     assert "tool parsed successfully" in tool.stderr
-    assert list_models.returncode == 69
-    assert "--list-models parsed successfully" in list_models.stderr
+    assert list_models.returncode == 0
+    assert "Models" in list_models.stdout
+
+
+@pytest.mark.parametrize(
+    ("tool", "binary", "configured", "models", "efforts"),
+    [
+        ("claude", "claude", "claude-default", ["claude-a", "claude-b"], ["low", "medium", "high"]),
+        ("codex", "codex", "codex-default", ["codex-a", "codex-b"], ["minimal", "low", "high"]),
+        ("agy", "agy", "agy-default", ["agy-a", "agy-b"], ["low", "medium", "high"]),
+        ("cursor", "cursor-agent", "cursor-default", ["cursor-a", "cursor-b"], ["medium", "high"]),
+        ("opencode", "opencode", "opencode-default", ["open-a", "open-b"], ["minimal", "max"]),
+        ("amp", "amp", "amp-default", ["amp-a", "amp-b"], []),
+        ("gemini", "gemini", "gemini-default", ["gemini-a", "gemini-b"], []),
+    ],
+)
+def test_list_models_queries_installed_cli_and_prints_what_it_announces(
+    tmp_path: Path,
+    tool: str,
+    binary: str,
+    configured: str,
+    models: list[str],
+    efforts: list[str],
+) -> None:
+    env = install_model_discovery_binary(tmp_path, binary, configured, models, efforts)
+
+    result = run_cli("--list-models", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert any(line.split() == [tool, "(installed)"] for line in result.stdout.splitlines())
+    assert f"configured default : {configured}" in result.stdout
+    assert f"advertised by CLI  : {' '.join(models)}" in result.stdout
+    if efforts:
+        assert f"effort             : {' '.join(efforts)}" in result.stdout
+    else:
+        assert "effort             : not supported by this CLI" in result.stdout
+
+
+def test_list_models_marks_missing_tools_absent_without_failing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home)}
+
+    result = run_cli("--list-models", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "claude   (absent)" in result.stdout
+    assert "codex    (absent)" in result.stdout
+    assert "cursor   (absent)" in result.stdout
+    assert "configured default : not queried" in result.stdout
 
 
 @pytest.mark.parametrize(
