@@ -1,0 +1,9 @@
+#!/bin/sh
+# Rapido: so lint. O gate completo roda no pre-push.
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+if command -v ruff >/dev/null 2>&1; then
+    cd "$ROOT" && ruff check tools tests scripts --output-format concise
+else
+    echo "WARN: ruff ausente; pulando lint no pre-commit" >&2
+fi

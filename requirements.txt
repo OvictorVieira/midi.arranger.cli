@@ -1,0 +1,12 @@
+# Dependencias de runtime do pacote tools/.
+#
+# Esta lista e o escopo do audit de seguranca do quality gate: o gate mede o
+# risco DESTE projeto, nao o da maquina. Rodar `pip-audit` sem argumento
+# auditaria o ambiente inteiro — pip, ruff, o proprio pip-audit — e
+# reportaria vulnerabilidade que este repo nao introduziu e nao pode
+# corrigir.
+#
+# Versoes fixadas porque `pip-audit -r` precisa de versao exata para
+# resolver sem rede.
+mido==1.3.3
+pretty_midi==0.2.11.post0
