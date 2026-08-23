@@ -455,6 +455,84 @@ def test_run_prompt_includes_default_driver_for_selected_tool(tmp_path: Path) ->
     assert (REPO_ROOT / "prompts" / "CLAUDE.md").read_text() not in prompt
 
 
+@pytest.mark.parametrize(
+    ("tool", "binary", "driver_name"),
+    [
+        ("claude", "claude", "CLAUDE.md"),
+        ("codex", "codex", "CODEX.md"),
+        ("agy", "agy", "AGY.md"),
+        ("cursor", "cursor-agent", "CURSOR.md"),
+        ("opencode", "opencode", "OPENCODE.md"),
+        ("amp", "amp", "AMP.md"),
+        ("gemini", "gemini", "GEMINI.md"),
+    ],
+)
+def test_run_prompt_delivers_selected_tool_driver_to_mock_agent(
+    tmp_path: Path,
+    tool: str,
+    binary: str,
+    driver_name: str,
+) -> None:
+    log_path, env = install_mock_binary(tmp_path, binary)
+    env = complete_on(env, 1)
+    project = prepare_run_project(tmp_path, name=f"project-{tool}")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", tool, "1", env=env)
+
+    assert result.returncode == 0, result.stderr
+    prompt = read_mock_log(log_path)["PROMPT"]
+    selected_driver = REPO_ROOT / "prompts" / driver_name
+    other_drivers = [
+        path
+        for path in (REPO_ROOT / "prompts").glob("*.md")
+        if path.name != driver_name
+    ]
+
+    assert f"prompt_driver_file={selected_driver}" in prompt
+    assert selected_driver.read_text() in prompt
+    for other_driver in other_drivers:
+        assert other_driver.read_text() not in prompt
+
+
+def test_changing_run_tool_changes_prompt_driver_delivered_to_mock_agent(tmp_path: Path) -> None:
+    claude_log, claude_env = install_mock_binary(tmp_path, "claude")
+    gemini_log, gemini_env = install_mock_binary(tmp_path, "gemini")
+    claude_env = complete_on(claude_env, 1)
+    gemini_env = complete_on(gemini_env, 1)
+    claude_project = prepare_run_project(tmp_path, name="claude-project")
+    gemini_project = prepare_run_project(tmp_path, name="gemini-project")
+
+    claude_result = run_cli(
+        "run",
+        "--cwd",
+        str(claude_project),
+        "--tool",
+        "claude",
+        "1",
+        env=claude_env,
+    )
+    gemini_result = run_cli(
+        "run",
+        "--cwd",
+        str(gemini_project),
+        "--tool",
+        "gemini",
+        "1",
+        env=gemini_env,
+    )
+
+    assert claude_result.returncode == 0, claude_result.stderr
+    assert gemini_result.returncode == 0, gemini_result.stderr
+    claude_prompt = read_mock_log(claude_log)["PROMPT"]
+    gemini_prompt = read_mock_log(gemini_log)["PROMPT"]
+
+    assert f"prompt_driver_file={REPO_ROOT / 'prompts' / 'CLAUDE.md'}" in claude_prompt
+    assert f"prompt_driver_file={REPO_ROOT / 'prompts' / 'GEMINI.md'}" in gemini_prompt
+    assert (REPO_ROOT / "prompts" / "CLAUDE.md").read_text() in claude_prompt
+    assert (REPO_ROOT / "prompts" / "GEMINI.md").read_text() in gemini_prompt
+    assert claude_prompt != gemini_prompt
+
+
 def test_run_prompt_file_override_takes_precedence(tmp_path: Path) -> None:
     log_path, env = install_mock_binary(tmp_path, "claude")
     env = complete_on(env, 1)
