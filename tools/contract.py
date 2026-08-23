@@ -70,9 +70,8 @@ def _resolve_midi(path_str: str) -> Path:
     """Valida existencia/permissao/formato do MIDI e devolve o Path resolvido.
 
     Erros viram `ToolError` com codigo dedicado. Nunca stack trace.
+    `midi_path` vazio nao chega aqui: input_schema exige minLength=1.
     """
-    if not path_str:
-        raise ToolError("E_MIDI_PATH", "midi_path vazio", path="midi_path")
     path = Path(path_str).expanduser()
     if not path.exists():
         raise ToolError(
@@ -540,13 +539,9 @@ def _plan_skeleton_impl(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     src = _resolve_midi(payload["midi_path"])
     seed = int(payload.get("seed", _DEFAULT_SEED))
+    # route ja e validado contra o enum pelo input_schema — chegar aqui com
+    # valor fora do vocabulario e impossivel via registry.call.
     route = payload.get("route", _DEFAULT_ROUTE)
-    if route not in ROUTES:
-        raise ToolError(
-            "E_ROUTE_INVALID",
-            f"rota {route!r} fora do vocabulario {list(ROUTES)}",
-            path="route",
-        )
     output_path = payload.get("output_path")
 
     try:
@@ -689,48 +684,55 @@ def _load_plan_from_dict(data: dict[str, Any]) -> ArrangementPlan:
         ) from None
 
 
-def _plan_validate_impl(
-    payload: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _read_plan_dict(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extrai plan_dict do payload: `plan` inline OU `plan_path`.
+
+    Compartilhado por plan.validate, render e validate — os tres aceitam a
+    mesma dupla de campos. Erros viram ToolError com codigo dedicado.
+    """
     if ("plan" in payload) == ("plan_path" in payload):
         raise ToolError(
             "E_PLAN_INPUT",
             "informe exatamente um: `plan` inline OU `plan_path`",
             hint="use plan={} para inline ou plan_path='...' para caminho",
         )
+    if "plan" in payload:
+        return payload["plan"]
 
-    plan_dict: dict[str, Any]
-    if "plan_path" in payload:
-        pp = Path(payload["plan_path"]).expanduser()
-        if not pp.exists():
-            raise ToolError(
-                "E_PLAN_FILE_NOT_FOUND",
-                f"arquivo de plano nao encontrado: {pp}",
-                path="plan_path",
-            )
-        try:
-            plan_dict = json.loads(pp.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ToolError(
-                "E_PLAN_JSON",
-                f"plano em {pp} nao e JSON valido: {exc.msg}",
-                path="plan_path",
-            ) from None
-        except OSError as exc:
-            raise ToolError(
-                "E_PLAN_FILE_IO",
-                f"erro lendo plano {pp}: {exc}",
-                path="plan_path",
-            ) from None
-        if not isinstance(plan_dict, dict):
-            raise ToolError(
-                "E_PLAN_JSON",
-                f"plano precisa ser objeto JSON; recebi {type(plan_dict).__name__}",
-                path="plan_path",
-            )
-    else:
-        plan_dict = payload["plan"]
+    pp = Path(payload["plan_path"]).expanduser()
+    if not pp.exists():
+        raise ToolError(
+            "E_PLAN_FILE_NOT_FOUND",
+            f"arquivo de plano nao encontrado: {pp}",
+            path="plan_path",
+        )
+    try:
+        data = json.loads(pp.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ToolError(
+            "E_PLAN_JSON",
+            f"plano em {pp} nao e JSON valido: {exc.msg}",
+            path="plan_path",
+        ) from None
+    except OSError as exc:
+        raise ToolError(
+            "E_PLAN_FILE_IO",
+            f"erro lendo plano {pp}: {exc}",
+            path="plan_path",
+        ) from None
+    if not isinstance(data, dict):
+        raise ToolError(
+            "E_PLAN_JSON",
+            f"plano precisa ser objeto JSON; recebi {type(data).__name__}",
+            path="plan_path",
+        )
+    return data
 
+
+def _plan_validate_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    plan_dict = _read_plan_dict(payload)
     src = _resolve_midi(payload["midi_path"])
 
     errors: list[dict[str, Any]] = []
@@ -952,6 +954,27 @@ _PERSONA_ISSUE_SCHEMA = {
     ],
 }
 
+def _issues_schema_block() -> dict[str, Any]:
+    """Reaproveita o bloco `harmony_issues/placement_issues/... + collision`.
+
+    Compartilhado entre render e validate — ambos devolvem o mesmo core de
+    relatorio dos validadores.
+    """
+    return {
+        "collision": _COLLISION_SCHEMA,
+        "harmony_issues": {"type": "array", "items": _HARMONY_ISSUE_SCHEMA},
+        "placement_issues": {"type": "array", "items": _PLACEMENT_ISSUE_SCHEMA},
+        "artifice_issues": {"type": "array", "items": _ARTIFICE_ISSUE_SCHEMA},
+        "persona_issues": {"type": "array", "items": _PERSONA_ISSUE_SCHEMA},
+    }
+
+
+_ISSUES_REQUIRED = (
+    "collision", "harmony_issues", "placement_issues",
+    "artifice_issues", "persona_issues",
+)
+
+
 _COLLISION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1025,33 +1048,9 @@ RENDER_DESCRIPTION = (
 def _render_impl(
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if ("plan" in payload) == ("plan_path" in payload):
-        raise ToolError(
-            "E_PLAN_INPUT",
-            "informe exatamente um: `plan` inline OU `plan_path`",
-        )
-
+    plan_dict = _read_plan_dict(payload)
     src = _resolve_midi(payload["midi_path"])
     source_hash_before = _sha256_of_file(src)
-
-    if "plan_path" in payload:
-        pp = Path(payload["plan_path"]).expanduser()
-        if not pp.exists():
-            raise ToolError(
-                "E_PLAN_FILE_NOT_FOUND",
-                f"arquivo de plano nao encontrado: {pp}",
-                path="plan_path",
-            )
-        try:
-            plan_dict = json.loads(pp.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise ToolError(
-                "E_PLAN_JSON",
-                f"erro lendo plano {pp}: {exc}",
-                path="plan_path",
-            ) from None
-    else:
-        plan_dict = payload["plan"]
 
     try:
         plan_obj = plan_mod.from_dict(plan_dict)
@@ -1205,17 +1204,12 @@ RENDER_TOOL = Tool(
             "source_sha256": {"type": "string"},
             "seed": {"type": "integer"},
             "elements": {"type": "array", "items": _ELEMENT_REPORT_SCHEMA},
-            "collision": _COLLISION_SCHEMA,
-            "harmony_issues": {"type": "array", "items": _HARMONY_ISSUE_SCHEMA},
-            "placement_issues": {"type": "array", "items": _PLACEMENT_ISSUE_SCHEMA},
-            "artifice_issues": {"type": "array", "items": _ARTIFICE_ISSUE_SCHEMA},
-            "persona_issues": {"type": "array", "items": _PERSONA_ISSUE_SCHEMA},
+            **_issues_schema_block(),
             "edits": {"type": "array", "items": _EDIT_REPORT_SCHEMA},
         },
         "required": [
-            "output_path", "source_sha256", "seed", "elements", "collision",
-            "harmony_issues", "placement_issues", "artifice_issues",
-            "persona_issues", "edits",
+            "output_path", "source_sha256", "seed", "elements",
+            *_ISSUES_REQUIRED, "edits",
         ],
     },
     func=_render_impl,
@@ -1299,12 +1293,7 @@ def _rendered_tracks_from_midi(
 def _validate_impl(
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if ("plan" in payload) == ("plan_path" in payload):
-        raise ToolError(
-            "E_PLAN_INPUT",
-            "informe exatamente um: `plan` inline OU `plan_path`",
-        )
-
+    plan_dict = _read_plan_dict(payload)
     src = _resolve_midi(payload["midi_path"])
     rendered_path = _resolve_midi(payload["rendered_path"])
     if rendered_path.resolve() == src.resolve():
@@ -1313,25 +1302,6 @@ def _validate_impl(
             f"rendered_path e o proprio midi_path: {src}",
             path="rendered_path",
         )
-
-    if "plan_path" in payload:
-        pp = Path(payload["plan_path"]).expanduser()
-        if not pp.exists():
-            raise ToolError(
-                "E_PLAN_FILE_NOT_FOUND",
-                f"arquivo de plano nao encontrado: {pp}",
-                path="plan_path",
-            )
-        try:
-            plan_dict = json.loads(pp.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise ToolError(
-                "E_PLAN_JSON",
-                f"erro lendo plano {pp}: {exc}",
-                path="plan_path",
-            ) from None
-    else:
-        plan_dict = payload["plan"]
 
     try:
         plan_obj = plan_mod.from_dict(plan_dict)
@@ -1397,15 +1367,10 @@ VALIDATE_TOOL = Tool(
         "properties": {
             "rendered_path": {"type": "string"},
             "rendered_sha256": {"type": "string"},
-            "collision": _COLLISION_SCHEMA,
-            "harmony_issues": {"type": "array", "items": _HARMONY_ISSUE_SCHEMA},
-            "placement_issues": {"type": "array", "items": _PLACEMENT_ISSUE_SCHEMA},
-            "artifice_issues": {"type": "array", "items": _ARTIFICE_ISSUE_SCHEMA},
-            "persona_issues": {"type": "array", "items": _PERSONA_ISSUE_SCHEMA},
+            **_issues_schema_block(),
         },
         "required": [
-            "rendered_path", "rendered_sha256", "collision", "harmony_issues",
-            "placement_issues", "artifice_issues", "persona_issues",
+            "rendered_path", "rendered_sha256", *_ISSUES_REQUIRED,
         ],
     },
     func=_validate_impl,

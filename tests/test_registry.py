@@ -354,6 +354,43 @@ def test_call_output_schema_error_becomes_failure_envelope():
     assert env["error"]["path"] == "value"
 
 
+def test_register_rejects_non_dict_schema():
+    with pytest.raises(ValueError, match="schemas"):
+        register(Tool(
+            name="ok.name",
+            description="d",
+            input_schema="not a dict",  # type: ignore[arg-type]
+            output_schema={},
+            func=lambda p: {},
+        ))
+
+
+def test_unregister_removes_from_registry():
+    register(_mk_tool("sample.temp"))
+    from tools.registry import unregister
+    assert registry.get("sample.temp") is not None
+    unregister("sample.temp")
+    assert registry.get("sample.temp") is None
+
+
+def test_call_tool_returns_wrong_tuple_size_becomes_internal_error():
+    tool = _mk_tool()
+    register(Tool(
+        name=tool.name, description=tool.description,
+        input_schema=tool.input_schema, output_schema=tool.output_schema,
+        func=lambda p: ({"value": p["value"]}, [], "extra"),
+    ))
+    env = call("sample.echo", {"value": 1})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INTERNAL"
+
+
+def test_type_matches_unknown_type_raises():
+    from tools.registry import _type_matches
+    with pytest.raises(ValueError, match="tipo desconhecido"):
+        _type_matches("x", "flibbertigibbet")
+
+
 def test_call_output_schema_rejects_unknown_field():
     tool = _mk_tool()
     register(Tool(

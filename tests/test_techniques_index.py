@@ -193,3 +193,111 @@ def test_technique_to_dict_shape():
         "canonical", "name", "family", "summary", "verified",
         "description", "parameters", "tools", "source_manual",
     }
+
+
+# --- rotas de erro do _parse_block/_parse_parameter ---------------------
+
+def _one_block_manual(tmp_path: Path, block_json: str) -> Path:
+    m = tmp_path / "bad.md"
+    m.write_text(f"```technique\n{block_json}\n```\n", encoding="utf-8")
+    return m
+
+
+def test_block_not_object_json_fails(tmp_path: Path):
+    m = _one_block_manual(tmp_path, "[1,2,3]")
+    with pytest.raises(TechniqueError, match="objeto JSON"):
+        parse_manual(m)
+
+
+def test_name_must_be_nonempty_string(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name": "", "family": "y", "summary": "s", "verified": true}',
+    )
+    with pytest.raises(TechniqueError, match="`name`"):
+        parse_manual(m)
+
+
+def test_family_must_be_nonempty_string(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name": "x", "family": "", "summary": "s", "verified": true}',
+    )
+    with pytest.raises(TechniqueError, match="`family`"):
+        parse_manual(m)
+
+
+def test_summary_must_be_nonempty_string(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name": "x", "family": "y", "summary": "", "verified": true}',
+    )
+    with pytest.raises(TechniqueError, match="`summary`"):
+        parse_manual(m)
+
+
+def test_verified_must_be_bool(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name": "x", "family": "y", "summary": "s", "verified": "yes"}',
+    )
+    with pytest.raises(TechniqueError, match="verified"):
+        parse_manual(m)
+
+
+def test_tools_must_be_object(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name":"x","family":"y","summary":"s","verified":true,"tools":[]}',
+    )
+    with pytest.raises(TechniqueError, match="`tools`"):
+        parse_manual(m)
+
+
+def test_tool_recipe_must_be_object(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name":"x","family":"y","summary":"s","verified":true,'
+        '"tools":{"generic":"nope"}}',
+    )
+    with pytest.raises(TechniqueError, match="tools"):
+        parse_manual(m)
+
+
+def test_description_must_be_string(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name":"x","family":"y","summary":"s","verified":true,"description":123}',
+    )
+    with pytest.raises(TechniqueError, match="description"):
+        parse_manual(m)
+
+
+def test_parameter_must_be_object(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name":"x","family":"y","summary":"s","verified":true,'
+        '"parameters":["not-a-dict"]}',
+    )
+    with pytest.raises(TechniqueError, match="objeto"):
+        parse_manual(m)
+
+
+def test_parameter_name_must_be_nonempty(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name":"x","family":"y","summary":"s","verified":true,'
+        '"parameters":[{"name":""}]}',
+    )
+    with pytest.raises(TechniqueError, match="parametro.name"):
+        parse_manual(m)
+
+
+def test_parameter_range_must_be_two_items(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name":"x","family":"y","summary":"s","verified":true,'
+        '"parameters":[{"name":"p","range":[1,2,3]}]}',
+    )
+    with pytest.raises(TechniqueError, match="range"):
+        parse_manual(m)

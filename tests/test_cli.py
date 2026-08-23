@@ -192,6 +192,25 @@ def test_tool_unknown_returns_error_envelope_exit_1(tmp_path: Path):
     assert env["error"]["code"] == "E_TOOL_NOT_FOUND"
 
 
+def test_tool_input_path_is_directory_returns_error(tmp_path: Path):
+    registry.register(_echo_tool())
+    exit_code, env, _ = _run(["tool", "sample.echo", "--input", str(tmp_path)])
+    assert exit_code == 2
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_FILE"
+
+
+def test_missing_input_flag_for_tool_subcommand_calls_parser_error():
+    registry.register(_echo_tool())
+    with pytest.raises(SystemExit):
+        cli.main(["tool", "sample.echo"])
+
+
+def test_tool_subcommand_without_name_calls_parser_error():
+    with pytest.raises(SystemExit):
+        cli.main(["tool"])
+
+
 def test_empty_stdin_becomes_empty_payload():
     def zero_arg(_payload):
         return {"greeting": "oi"}
