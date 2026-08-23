@@ -1,0 +1,4 @@
+{
+  "input_midi": "fixtures/mock-song.mid",
+  "request": "Arrange with mocked agent output for harness loop tests."
+}
