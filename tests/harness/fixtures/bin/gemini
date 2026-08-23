@@ -5,6 +5,7 @@ binary_name="$(basename "$0")"
 stdin_payload="$(cat)"
 prompt_payload="$stdin_payload"
 args=("$@")
+invocation="$(( $(grep -c '^BIN<<END$' "$MOCK_LOG" 2>/dev/null || true) + 1 ))"
 
 for ((index = 0; index < ${#args[@]}; index += 1)); do
   if [[ "${args[$index]}" == "--prompt" && "$((index + 1))" -lt "${#args[@]}" ]]; then
@@ -24,3 +25,6 @@ done
 } >> "$MOCK_LOG"
 
 printf 'mock output from %s\n' "$binary_name"
+if [[ "${MOCK_COMPLETE_ON:-}" == "$invocation" ]]; then
+  printf '<promise>COMPLETE</promise>\n'
+fi

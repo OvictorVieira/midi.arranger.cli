@@ -58,6 +58,12 @@ def install_mock_binary(tmp_path: Path, binary_name: str) -> tuple[Path, dict[st
     return log_path, env
 
 
+def complete_on(env: dict[str, str], invocation: int) -> dict[str, str]:
+    env = env.copy()
+    env["MOCK_COMPLETE_ON"] = str(invocation)
+    return env
+
+
 def prepare_run_project(tmp_path: Path, name: str = "project") -> Path:
     project = tmp_path / name
     project.mkdir()
@@ -343,6 +349,7 @@ def test_agent_adapter_builds_expected_command_line(
     expected_args: list[str],
 ) -> None:
     log_path, env = install_mock_binary(tmp_path, binary)
+    env = complete_on(env, 1)
     project = prepare_run_project(tmp_path)
     expected_args = [str(project) if value == str(REPO_ROOT) else value for value in expected_args]
 
@@ -394,6 +401,7 @@ def test_agent_adapter_does_not_pass_model_or_effort_when_not_requested(
     unexpected_args: list[str],
 ) -> None:
     log_path, env = install_mock_binary(tmp_path, binary)
+    env = complete_on(env, 2)
     project = prepare_run_project(tmp_path)
 
     result = run_cli("run", "--cwd", str(project), "--tool", tool, "2", env=env)
@@ -406,6 +414,7 @@ def test_agent_adapter_does_not_pass_model_or_effort_when_not_requested(
 
 def test_run_loop_invokes_agent_once_per_requested_iteration(tmp_path: Path) -> None:
     log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 4)
     project = prepare_run_project(tmp_path)
 
     result = run_cli("run", "--cwd", str(project), "--tool", "claude", "4", env=env)
@@ -421,6 +430,7 @@ def test_run_loop_invokes_agent_once_per_requested_iteration(tmp_path: Path) -> 
 
 def test_run_loop_uses_documented_default_iterations(tmp_path: Path) -> None:
     log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 10)
     project = prepare_run_project(tmp_path)
 
     result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
@@ -429,6 +439,45 @@ def test_run_loop_uses_documented_default_iterations(tmp_path: Path) -> None:
     assert count_mock_invocations(log_path) == 10
     assert "== midi-arranger run iteration 10/10 ==" in result.stdout
     assert "max_iterations=10" in log_path.read_text()
+
+
+def test_run_loop_stops_when_agent_emits_completion_sentinel(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 2)
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "5", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert count_mock_invocations(log_path) == 2
+    assert "== midi-arranger run iteration 2/5 ==" in result.stdout
+    assert "== midi-arranger run iteration 3/5 ==" not in result.stdout
+    assert "midi-arranger run completed at iteration 2/5" in result.stdout
+
+
+def test_run_loop_exhaustion_fails_and_points_to_progress(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "2", env=env)
+
+    assert result.returncode != 0
+    assert count_mock_invocations(log_path) == 2
+    assert "reached max_iterations=2" in result.stderr
+    assert "without completion sentinel <promise>COMPLETE</promise>" in result.stderr
+    assert str(project / "progress.txt") in result.stderr
+
+
+def test_run_loop_does_not_treat_progress_log_sentinel_as_completion(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    project = prepare_run_project(tmp_path)
+    (project / "progress.txt").write_text("old <promise>COMPLETE</promise>\n")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
+
+    assert result.returncode != 0
+    assert count_mock_invocations(log_path) == 1
+    assert "reached max_iterations=1" in result.stderr
 
 
 def test_brief_invokes_selected_agent_with_input_midi_prompt(tmp_path: Path) -> None:
@@ -460,6 +509,7 @@ printf 'stderr before sleep\\n' >&2
 sleep 1
 printf 'stdout after sleep\\n'
 printf 'stderr after sleep\\n' >&2
+printf '<promise>COMPLETE</promise>\\n'
 """,
     )
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
@@ -540,6 +590,7 @@ def test_project_root_detection_climbs_to_git_root(tmp_path: Path) -> None:
     (project / ".git").mkdir()
     (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     log_path, env = install_mock_binary(tmp_path, "codex")
+    env = complete_on(env, 1)
 
     result = run_cli("run", "1", cwd=nested, env=env)
 
@@ -569,6 +620,7 @@ def test_cwd_overrides_auto_detected_root(tmp_path: Path) -> None:
     (outer / ".git").mkdir()
     (override / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     log_path, env = install_mock_binary(tmp_path, "codex")
+    env = complete_on(env, 1)
 
     result = run_cli("run", "--cwd", str(override), "1", cwd=nested, env=env)
 
@@ -595,6 +647,7 @@ def test_run_without_brief_fails_before_agent_invocation(tmp_path: Path) -> None
 def test_run_creates_state_directory_and_progress_header(tmp_path: Path) -> None:
     project = prepare_run_project(tmp_path)
     log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 3)
 
     result = run_cli("run", "--cwd", str(project), "--tool", "claude", "3", env=env)
 
@@ -613,6 +666,7 @@ def test_run_preserves_existing_progress_and_appends(tmp_path: Path) -> None:
     existing_progress = "existing progress\n---\n"
     (project / "progress.txt").write_text(existing_progress)
     _, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 1)
 
     result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
 
@@ -635,6 +689,7 @@ def test_run_archives_plan_and_progress_when_brief_changed(tmp_path: Path) -> No
     state_dir.mkdir()
     (state_dir / "brief.sha256").write_text(f"{brief_hash(old_brief)}\n")
     _, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 1)
 
     result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
 
@@ -661,6 +716,7 @@ def test_run_does_not_archive_when_brief_hash_matches_last_run(tmp_path: Path) -
     state_dir.mkdir()
     (state_dir / "brief.sha256").write_text(f"{brief_hash(brief)}\n")
     _, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 1)
 
     result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
 

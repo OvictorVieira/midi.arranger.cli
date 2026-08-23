@@ -53,6 +53,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   ad hoc ou chamar CLIs reais.
 - Os mocks do harness acrescentam cada invocação ao `MOCK_LOG`; para testes multi-iteração, conte
   blocos `BIN<<END`, enquanto `read_mock_log` continua representando a última invocação.
+- Para testes de conclusão do `run`, defina `MOCK_COMPLETE_ON=<n>` nos mocks do harness; a invocação
+  `n` emitirá a sentinela literal `<promise>COMPLETE</promise>`.
 
 ## Commits
 

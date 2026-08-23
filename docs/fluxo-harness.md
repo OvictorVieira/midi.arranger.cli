@@ -51,7 +51,7 @@ flowchart TD
 
     Loop[i = 1] --> Invoke[monta prompt com iteration=i<br/>e linha de comando do adaptador]
     Invoke --> Run[executa a CLI de IA<br/>ecoa e captura a saída]
-    Run --> Sentinel{saída contém<br/>promise COMPLETE?}
+    Run --> Sentinel{saída contém<br/>&lt;promise&gt;COMPLETE&lt;/promise&gt;?}
     Sentinel -->|sim| Done([sucesso: exit 0])
     Sentinel -->|não| Next{i menor que N?}
     Next -->|sim| Inc[i = i + 1] --> Invoke
@@ -62,7 +62,10 @@ flowchart TD
     style Die fill:#f8d7da,stroke:#dc3545,color:#000
 ```
 
-**Estourar as iterações é falha**, com código de saída diferente de zero. O harness nunca finge sucesso.
+O harness procura apenas a sentinela literal `<promise>COMPLETE</promise>` na saída capturada da
+iteração recém-executada. Encontrou, encerra com código 0. **Estourar as iterações é falha**, com
+código de saída diferente de zero e ponteiro para `progress.txt`. O harness nunca finge sucesso nem
+consulta `progress.txt` para decidir se acabou.
 Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midiarranger/` quando
 necessário e compara o hash atual do brief com `.midiarranger/brief.sha256`. Se o hash mudou desde a
 última execução, o harness move o `arrangement-plan.json` e o `progress.txt` anteriores para
@@ -89,7 +92,7 @@ flowchart TD
     G --> H{algum disparou?}
     H -->|sim| D
     H -->|não| I[escreve progress.txt]
-    I --> J[emite promise COMPLETE]
+    I --> J[emite &lt;promise&gt;COMPLETE&lt;/promise&gt;]
 
     style J fill:#d4edda,stroke:#28a745,color:#000
     style H fill:#fff4cc,stroke:#b8860b,color:#000
@@ -206,4 +209,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: 8b6d4169aabc583da30e9f990f017cdf192c535c9eb153f53320ce5417edefcb -->
+<!-- harness-sha256: 69e59ea316648f4912be1eaf731efc5f71d2362eaa113344e1313cbe319fb514 -->
