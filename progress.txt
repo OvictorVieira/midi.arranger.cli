@@ -1,0 +1,22 @@
+# Ralph Progress Log
+
+## Codebase Patterns
+- Harness CLI usage errors use exit code 64; recognized but not-yet-implemented harness capabilities use exit code 69 so tests can distinguish parsing from dispatch.
+- Run the project test suite with `python3 -m pytest`; on this machine `python` resolves to Python 2.7.
+
+Started: Sáb 22 Ago 2026 22:28:25 -03
+---
+## 2026-08-22 22:32:23 -0300 - US-001
+- Implemented the initial `bin/midi-arranger` Bash entrypoint with strict mode, executable permissions, help text, common option parsing, supported subcommand recognition, project root detection, `--cwd` override, and clear usage errors.
+- Added harness tests for executable metadata, help coverage, unknown arguments, missing option values, invalid tools, common option parsing, root detection via git/state files, `--cwd` override, and shellcheck when available.
+- Files changed:
+  - `bin/midi-arranger`
+  - `tests/harness/test_midi_arranger_cli.py`
+  - `.gitignore`
+  - `prd.json`
+  - `progress.txt`
+- **Learnings for future iterations:**
+  - Harness work should stay in `bin/`, `prompts/`, and `tests/harness/`; `tools/` remains independent from the AI harness.
+  - Use structured, observable CLI behavior for tests; the current skeleton returns exit 69 after successful parsing because adapter dispatch is a later story.
+  - `shellcheck` is not installed in this local PATH, so the pytest check skips it here; install it to enforce the acceptance gate locally.
+---

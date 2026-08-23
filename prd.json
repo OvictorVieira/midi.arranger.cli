@@ -1,0 +1,93 @@
+{
+  "project": "midi.arranger.cli",
+  "branchName": "feat/harness-base",
+  "description": "Issue #1 — script base do harness com adaptadores por ferramenta de IA. Leia AGENTS.md e docs/arquitetura.md antes de comecar, secoes 1, 2 e 5. O modelo de referencia e o Ralph: um script que invoca a CLI de IA que o usuario ja tem instalada, sem implementar laco de agente, sem SDK de provider, sem MCP. A implementacao de referencia esta em ~/.local/share/ralph/ralph.sh — leia antes de escrever qualquer coisa. Trabalhe SOMENTE em bin/, prompts/ e tests/harness/ — NAO toque em tools/ nem pyproject.toml, ha outra frente trabalhando neles em paralelo.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Esqueleto do script e parsing de argumentos",
+      "description": "Como usuario, quero o comando midi-arranger com ajuda clara e argumentos parseados.",
+      "acceptanceCriteria": [
+        "bin/midi-arranger criado, bash, executavel, com set -euo pipefail",
+        "Subcomandos reconhecidos: brief, run, tool, --list-models, --help",
+        "Opcoes comuns parseadas: --tool, --model, --effort, --cwd",
+        "--help documenta todos os subcomandos e opcoes com exemplos de uso",
+        "Resolucao do diretorio de projeto: sobe a arvore ate achar raiz de git ou arquivo de estado; --cwd sobrescreve",
+        "Argumento desconhecido falha com mensagem clara e exit code proprio, nunca com erro cru de shell",
+        "shellcheck passa sem erro"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Adaptadores de invocacao por ferramenta",
+      "description": "Como usuario, quero que o harness funcione com a CLI de IA que eu ja uso, seja ela qual for.",
+      "acceptanceCriteria": [
+        "Sete adaptadores implementados exatamente conforme a tabela da issue #1 e de docs/arquitetura.md secao 1",
+        "claude: prompt por stdin, flags --print --dangerously-skip-permissions, effort via --effort",
+        "codex: prompt por stdin via exec -, flags --dangerously-bypass-approvals-and-sandbox -C <root>, effort via -c model_reasoning_effort=\"<v>\"",
+        "agy: prompt por stdin, flags --print --dangerously-skip-permissions, effort via --effort",
+        "cursor: prompt como argumento posicional, flags --print --force, effort embutido na string do modelo",
+        "opencode: prompt como argumento posicional, flags run --auto, effort via --variant",
+        "amp: prompt por stdin, flag --dangerously-allow-all, sem effort",
+        "gemini: prompt via --prompt, flag --approval-mode yolo, sem effort",
+        "NENHUM modelo e fixado no codigo: sem --model, nenhum --model e passado adiante e a CLI usa o default do usuario",
+        "Effort so e enviado quando o usuario pediu explicitamente, exceto onde a ferramenta exige",
+        "Ferramenta nao instalada falha cedo, dizendo qual binario faltou e como instalar, sem stack trace",
+        "Teste: para cada uma das sete ferramentas, com o binario mockado no PATH, a linha de comando montada bate com a esperada",
+        "Teste: sem --model, nenhum --model aparece na linha montada",
+        "shellcheck passa sem erro"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Captura e eco da saida do agente",
+      "description": "Como usuario, quero ver o progresso em tempo real enquanto o harness inspeciona a saida.",
+      "acceptanceCriteria": [
+        "A saida do agente e ecoada ao usuario em tempo real E capturada para inspecao, simultaneamente",
+        "stderr e stdout sao ambos capturados",
+        "Teste: com binario mockado que imprime texto conhecido, o texto aparece na saida do harness e fica disponivel para inspecao",
+        "shellcheck passa sem erro"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Comando --list-models",
+      "description": "Como usuario, quero saber quais modelos e niveis de effort cada ferramenta instalada aceita.",
+      "acceptanceCriteria": [
+        "--list-models consulta as CLIs instaladas ao vivo e mostra, por ferramenta: modelo configurado, modelos anunciados, niveis de effort aceitos",
+        "Consulta ao vivo, NUNCA tabela embutida no codigo — tabela embutida envelhece a cada lancamento",
+        "Ferramenta nao instalada aparece como ausente, sem quebrar o comando",
+        "Teste: com binarios mockados, a saida lista o que cada um anunciou",
+        "shellcheck passa sem erro"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Suite de teste do harness",
+      "description": "Como desenvolvedor, preciso testar o harness sem chamar IA de verdade.",
+      "acceptanceCriteria": [
+        "tests/harness/ com fixtures de binario mockado para as sete ferramentas",
+        "Os mocks registram a linha de comando recebida e o prompt, para asserção",
+        "Nenhum teste chama CLI de IA de verdade nem faz requisicao de rede",
+        "Os testes rodam por python -m pytest a partir da raiz, junto do resto da suite",
+        "Teste: todos os criterios das stories anteriores cobertos",
+        "shellcheck passa sem erro em todos os scripts de bin/"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
