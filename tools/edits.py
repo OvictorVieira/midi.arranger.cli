@@ -210,6 +210,7 @@ def apply_edit(
     if not pairs:
         return (0, 0.0)
 
+    pairs.sort(key=lambda pair: events[pair[0]][1])
     downbeats = _downbeat_ticks(pm)
     n_pairs = len(pairs)
     # Gap de gate: distancia ate o proximo onset em qualquer canal da track.
@@ -217,6 +218,7 @@ def apply_edit(
     on_ticks_sorted = sorted({events[on_idx][0] for on_idx, _ in pairs})
 
     offsets_ms: list[float] = []
+    previous_new_on_tick = 0
     for pair_idx, (on_idx, off_idx) in enumerate(pairs):
         on_tick = events[on_idx][0]
         off_tick = events[off_idx][0]
@@ -235,7 +237,6 @@ def apply_edit(
         else:
             offset_ms = rng.gauss(profile.bias_ms, profile.sigma_ms)
         offset_ms *= intensity
-        offsets_ms.append(offset_ms)
 
         # Converte offset em ticks via pretty_midi para respeitar mapa de
         # tempos — nao assume tempo constante. `max(0.0, ...)` no tempo em
@@ -243,6 +244,10 @@ def apply_edit(
         on_time_s = pm.tick_to_time(on_tick)
         new_time_s = max(0.0, on_time_s + offset_ms / 1000.0)
         new_on_tick = int(round(pm.time_to_tick(new_time_s)))
+        new_on_tick = max(previous_new_on_tick, new_on_tick)
+        previous_new_on_tick = new_on_tick
+        actual_offset_ms = (pm.tick_to_time(new_on_tick) - on_time_s) * 1000.0
+        offsets_ms.append(actual_offset_ms)
 
         # velocity ------------------------------------------------------
         dv = 0.0

@@ -36,6 +36,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - `tools.render.render()` valida `ArrangementPlan` em memória com `plan.validate()` antes de carregar
   MIDI ou rodar validadores; plano inválido deve falhar como `PlanValidationError`, não como erro
   interno do pipeline.
+- Em `tools.edits.apply_edit`, retiming pode mudar ticks, velocity e duração, mas a sequência de
+  `note_on` por canal/altura deve preservar a ordem original.
 
 ## Qualidade
 
