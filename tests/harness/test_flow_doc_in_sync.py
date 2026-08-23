@@ -12,6 +12,7 @@ abrir o arquivo e olhar.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -63,8 +64,6 @@ def test_flow_doc_is_in_sync_with_harness() -> None:
 
 def test_update_script_is_executable() -> None:
     assert UPDATE_SCRIPT.is_file(), f"{UPDATE_SCRIPT.relative_to(REPO_ROOT)} nao existe"
-    import os
-
     assert os.access(UPDATE_SCRIPT, os.X_OK), (
         f"{UPDATE_SCRIPT.relative_to(REPO_ROOT)} precisa ser executavel — "
         "sem isso a mensagem de erro do teste manda rodar algo que nao roda."
