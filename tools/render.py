@@ -38,6 +38,7 @@ from .edits import EditReport, apply_edits, collect_track_names
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
+    STRINGS_GHOST_RATIO,
     STRINGS_ROLES,
     DroneNote,
     KeyboardNote,
@@ -97,6 +98,22 @@ EXPRESSION_CC = 11
 SUPPORTED_ROLES: frozenset[str] = frozenset({
     "pad", *KEYBOARD_ROLES, *STRINGS_ROLES, *DRONE_ROLES,
     *RHYTHMIC_ROLES, *MOTOR_ROLES, *SHADOW_ROLES,
+})
+KEYBOARD_PATTERN_FIELDS: frozenset[str] = frozenset({"use_sustain_cc64"})
+STRINGS_PATTERN_FIELDS: frozenset[str] = frozenset({"tutti", "ghost_ratio"})
+DRONE_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "pedal", "pedal_pitch", "filter_cycle_bars", "modulation_bars",
+})
+RHYTHMIC_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "pattern_bars", "mutate_every_bars", "interlock",
+    "filter_cycle_bars", "velocity_cycle_bars", "custom_steps",
+})
+MOTOR_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "subdivision", "filter_cycle_bars", "velocity_cycle_bars", "custom_steps",
+})
+SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "octave_shift", "tail_notes", "phrase_end_gap_s", "velocity_offset",
+    "note_duration_s",
 })
 
 
@@ -187,6 +204,40 @@ def _element_track_name(element: Element, layer_index: int, layers: int) -> str:
         )
     display = element.id if layers == 1 else f"{element.id} L{layer_index + 1}"
     return name_for_element(display, element.role, str(plugin), str(preset), verified)
+
+
+def _pattern_fields_for_role(role: str) -> frozenset[str]:
+    if role == "pad":
+        return frozenset()
+    if role in KEYBOARD_ROLES:
+        return KEYBOARD_PATTERN_FIELDS
+    if role in STRINGS_ROLES:
+        return STRINGS_PATTERN_FIELDS
+    if role in DRONE_ROLES:
+        return DRONE_PATTERN_FIELDS
+    if role in RHYTHMIC_ROLES:
+        return RHYTHMIC_PATTERN_FIELDS
+    if role in MOTOR_ROLES:
+        return MOTOR_PATTERN_FIELDS
+    if role in SHADOW_ROLES:
+        return SHADOW_PATTERN_FIELDS
+    return frozenset()
+
+
+def _unsupported_pattern_warnings(element: Element) -> list[str]:
+    """Avisos para campos de `element.pattern` que o renderer nao consome.
+
+    O plano e editavel a mao; um campo sem efeito precisa aparecer no
+    relatorio em vez de ser aceito em silencio.
+    """
+    pattern = element.pattern or {}
+    known = _pattern_fields_for_role(element.role)
+    return [
+        f"{element.id}: element.pattern.{key} is not supported for "
+        f"role {element.role!r}; ignored"
+        for key in sorted(pattern)
+        if key not in known
+    ]
 
 
 # --- conversao note -> mido -------------------------------------------------
@@ -374,8 +425,8 @@ def _render_strings_element(
     """Gera tracks de strings ou choir. Cada layer e uma voz independente
     da linha — a AC pede attack diferente por voz + CC11 por voz. Voice
     count = `element.layers` (para strings o vocabulario 'layers' significa
-    'vozes independentes', nao unisono). tutti / ghost_ratio / voices sao
-    lidos de `element.pattern`."""
+    'vozes independentes', nao unisono). `tutti` e `ghost_ratio` sao lidos
+    de `element.pattern`."""
     voices = element.layers
     layer_notes: list[list[StringsNote]] = [[] for _ in range(voices)]
     layer_ccs: list[list[tuple[float, int, int]]] = [[] for _ in range(voices)]
@@ -383,6 +434,7 @@ def _render_strings_element(
     dyn = element.dynamics or {}
     pattern = element.pattern or {}
     tutti = bool(pattern.get("tutti", False))
+    ghost_ratio = float(pattern.get("ghost_ratio", STRINGS_GHOST_RATIO))
 
     for section, seed in _iter_element_sections(element, plan):
         section_voices = generate_strings(
@@ -394,6 +446,7 @@ def _render_strings_element(
             articulation=element.articulation,
             dynamics=dyn,
             tutti=tutti,
+            ghost_ratio=ghost_ratio,
             seed=seed,
         )
         for i, voice in enumerate(section_voices):
@@ -730,6 +783,7 @@ def render(
     element_reports: list[ElementRationale] = []
     rendered_tracks: list[RenderedTrack] = []
     for e in plan.elements:
+        warnings.extend(_unsupported_pattern_warnings(e))
         inst = e.instrument or {}
         report_entry = ElementRationale(
             element_id=e.id,

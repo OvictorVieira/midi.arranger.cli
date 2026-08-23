@@ -26,6 +26,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - A pesquisa levanta **técnica e comportamento**, jamais conteúdo musical.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
+- Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto
+  `*_PATTERN_FIELDS` do role correspondente para evitar aviso falso de campo ignorado.
 
 ## Qualidade
 
