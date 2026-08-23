@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly EX_USAGE=64
+readonly EX_UNAVAILABLE=69
+
+SUPPORTED_TOOLS="claude codex agy cursor opencode amp gemini"
+
+print_usage() {
+  cat <<'EOF'
+Usage:
+  midi-arranger brief [options] <input.mid>
+  midi-arranger run [options] [max_iterations]
+  midi-arranger tool [options] <tool-name> [tool-args...]
+  midi-arranger --list-models [options]
+  midi-arranger --help
+
+Subcommands:
+  brief          Interview the user and write arrangement-brief.json.
+  run            Run the autonomous arrangement loop.
+  tool           Invoke the deterministic MIDI tool layer.
+  --list-models  Show models and effort levels announced by installed AI CLIs.
+  --help         Show this help message.
+
+Common options:
+  --tool TOOL     AI CLI to use: claude, codex, agy, cursor, opencode, amp, gemini.
+  --tool=TOOL     Same as above.
+  --model MODEL   Model to pass through to the chosen AI CLI.
+  --model=MODEL   Same as above.
+  --effort LEVEL  Reasoning effort to pass through when the chosen AI CLI supports it.
+  --effort=LEVEL  Same as above.
+  --cwd DIR       Project root to use instead of auto-detecting from the current directory.
+  --cwd=DIR       Same as above.
+  -h, --help      Show this help message.
+
+Examples:
+  midi-arranger brief song.mid
+  midi-arranger run --tool codex --effort high 12
+  midi-arranger --cwd /path/to/project --list-models
+  midi-arranger tool analyze song.mid
+EOF
+}
+
+die_usage() {
+  printf 'Error: %s\n' "$1" >&2
+  exit "$EX_USAGE"
+}
+
+die_unavailable() {
+  printf 'Error: %s\n' "$1" >&2
+  exit "$EX_UNAVAILABLE"
+}
+
+validate_tool() {
+  case " $SUPPORTED_TOOLS " in
+    *" $1 "*) ;;
+    *) die_usage "Invalid tool '$1'. Must be one of: $SUPPORTED_TOOLS." ;;
+  esac
+}
+
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+
+  if [[ -z "$value" || "$value" == --* ]]; then
+    die_usage "$option requires a value."
+  fi
+}
+
+resolve_project_root() {
+  local start_dir="$1"
+  local dir
+
+  dir="$(cd "$start_dir" && pwd -P)" || die_usage "Cannot access directory '$start_dir'."
+
+  while [[ "$dir" != "/" ]]; do
+    if [[ -d "$dir/.git" || -f "$dir/.git" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+
+    if [[ -f "$dir/arrangement-brief.json" \
+      || -f "$dir/arrangement-plan.json" \
+      || -f "$dir/progress.txt" \
+      || -d "$dir/.midiarranger" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+
+    dir="$(dirname "$dir")"
+  done
+
+  pwd -P
+}
+
+parse_positive_integer() {
+  local value="$1"
+  local label="$2"
+
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    die_usage "$label must be a positive integer."
+  fi
+}
+
+COMMAND=""
+TOOL="codex"
+MODEL=""
+EFFORT=""
+CWD=""
+MAX_ITERATIONS=""
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      if [[ -z "$COMMAND" ]]; then
+        print_usage
+        exit 0
+      fi
+      die_usage "--help is only supported as a top-level command."
+      ;;
+    --list-models)
+      if [[ -n "$COMMAND" ]]; then
+        die_usage "--list-models must be used as a top-level command."
+      fi
+      COMMAND="list-models"
+      shift
+      ;;
+    brief|run|tool)
+      if [[ -n "$COMMAND" ]]; then
+        die_usage "Unexpected argument '$1' after command '$COMMAND'."
+      fi
+      COMMAND="$1"
+      shift
+      ;;
+    --tool)
+      require_value "$1" "${2:-}"
+      TOOL="$2"
+      validate_tool "$TOOL"
+      shift 2
+      ;;
+    --tool=*)
+      TOOL="${1#*=}"
+      require_value "--tool" "$TOOL"
+      validate_tool "$TOOL"
+      shift
+      ;;
+    --model)
+      require_value "$1" "${2:-}"
+      MODEL="$2"
+      shift 2
+      ;;
+    --model=*)
+      MODEL="${1#*=}"
+      require_value "--model" "$MODEL"
+      shift
+      ;;
+    --effort)
+      require_value "$1" "${2:-}"
+      EFFORT="$2"
+      shift 2
+      ;;
+    --effort=*)
+      EFFORT="${1#*=}"
+      require_value "--effort" "$EFFORT"
+      shift
+      ;;
+    --cwd)
+      require_value "$1" "${2:-}"
+      CWD="$2"
+      shift 2
+      ;;
+    --cwd=*)
+      CWD="${1#*=}"
+      require_value "--cwd" "$CWD"
+      shift
+      ;;
+    --*)
+      die_usage "Unknown argument '$1'."
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$COMMAND" ]]; then
+  die_usage "Missing command. Run 'midi-arranger --help' for usage."
+fi
+
+PROJECT_ROOT="${CWD:-}"
+if [[ -n "$PROJECT_ROOT" ]]; then
+  PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)" || die_usage "Cannot access --cwd directory '$CWD'."
+else
+  PROJECT_ROOT="$(resolve_project_root "$PWD")"
+fi
+
+case "$COMMAND" in
+  brief)
+    if [[ "${#POSITIONAL[@]}" -ne 1 ]]; then
+      die_usage "brief requires exactly one MIDI file argument."
+    fi
+    die_unavailable "brief parsed successfully for project '$PROJECT_ROOT', but the interview runner is not implemented yet."
+    ;;
+  run)
+    if [[ "${#POSITIONAL[@]}" -gt 1 ]]; then
+      die_usage "run accepts at most one max_iterations argument."
+    fi
+    if [[ "${#POSITIONAL[@]}" -eq 1 ]]; then
+      parse_positive_integer "${POSITIONAL[0]}" "max_iterations"
+      MAX_ITERATIONS="${POSITIONAL[0]}"
+    else
+      MAX_ITERATIONS="10"
+    fi
+    die_unavailable "run parsed successfully for project '$PROJECT_ROOT' with max_iterations=$MAX_ITERATIONS, but the agent loop is not implemented yet."
+    ;;
+  tool)
+    if [[ "${#POSITIONAL[@]}" -lt 1 ]]; then
+      die_usage "tool requires a tool name."
+    fi
+    die_unavailable "tool parsed successfully for project '$PROJECT_ROOT', but deterministic tool dispatch is not implemented yet."
+    ;;
+  list-models)
+    if [[ "${#POSITIONAL[@]}" -ne 0 ]]; then
+      die_usage "--list-models does not accept positional arguments."
+    fi
+    die_unavailable "--list-models parsed successfully for project '$PROJECT_ROOT', but model discovery is not implemented yet."
+    ;;
+  *)
+    die_usage "Unknown command '$COMMAND'."
+    ;;
+esac
