@@ -3,6 +3,7 @@
 ## Codebase Patterns
 - Harness CLI usage errors use exit code 64; recognized but not-yet-implemented harness capabilities use exit code 69 so tests can distinguish parsing from dispatch.
 - Run the project test suite with `python3 -m pytest`; on this machine `python` resolves to Python 2.7.
+- Harness tests mock AI CLIs by putting fake binaries first on `PATH` and using `MOCK_LOG` to assert argv/stdin; never call real agent CLIs from tests.
 
 Started: Sáb 22 Ago 2026 22:28:25 -03
 ---
@@ -19,4 +20,18 @@ Started: Sáb 22 Ago 2026 22:28:25 -03
   - Harness work should stay in `bin/`, `prompts/`, and `tests/harness/`; `tools/` remains independent from the AI harness.
   - Use structured, observable CLI behavior for tests; the current skeleton returns exit 69 after successful parsing because adapter dispatch is a later story.
   - `shellcheck` is required for harness Bash scripts; it was installed locally with Homebrew during this iteration and now runs through pytest.
+---
+## 2026-08-22 22:38:40 -0300 - US-002
+- Implemented one-shot AI CLI adapter invocation for `brief` and `run`, covering claude, codex, agy, cursor-agent, opencode, amp, and gemini with the documented stdin/positional prompt contracts, autonomous flags, optional model pass-through, and explicit-only effort handling.
+- Added early installed-binary checks with clear unavailable errors, cursor effort validation, and unsupported-effort errors for tools without effort support.
+- Added harness tests with mocked binaries for exact argv/stdin assertions across all seven adapters, default-model behavior, missing binaries, unsupported effort, `brief` prompt content, and root detection through adapter dispatch.
+- Files changed:
+  - `bin/midi-arranger`
+  - `tests/harness/test_midi_arranger_cli.py`
+  - `prd.json`
+  - `progress.txt`
+- **Learnings for future iterations:**
+  - `cursor` is invoked through `cursor-agent`; effort is encoded as `model[effort=<level>]`, so `--effort` requires `--model`.
+  - `opencode` should resolve from `PATH` first, then `~/.opencode/bin/opencode`, matching the Ralph reference behavior.
+  - Adapter tests should assert both argv and prompt transport because some CLIs read stdin while cursor/opencode/gemini receive the prompt positionally or via `--prompt`.
 ---

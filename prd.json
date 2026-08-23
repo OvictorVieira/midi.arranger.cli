@@ -41,7 +41,7 @@
         "shellcheck passa sem erro"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": ""
     },
     {

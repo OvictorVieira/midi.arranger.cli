@@ -5,6 +5,7 @@ readonly EX_USAGE=64
 readonly EX_UNAVAILABLE=69
 
 SUPPORTED_TOOLS="claude codex agy cursor opencode amp gemini"
+EFFORT_EXPLICIT=0
 
 print_usage() {
   cat <<'EOF'
@@ -51,10 +52,162 @@ die_unavailable() {
   exit "$EX_UNAVAILABLE"
 }
 
+die_missing_binary() {
+  printf 'Error: %s was not found in PATH. Install the %s CLI and try again.\n' "$1" "$2" >&2
+  exit "$EX_UNAVAILABLE"
+}
+
 validate_tool() {
   case " $SUPPORTED_TOOLS " in
     *" $1 "*) ;;
     *) die_usage "Invalid tool '$1'. Must be one of: $SUPPORTED_TOOLS." ;;
+  esac
+}
+
+resolve_opencode_bin() {
+  if command -v opencode >/dev/null 2>&1; then
+    command -v opencode
+    return 0
+  fi
+
+  if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
+    printf '%s\n' "$HOME/.opencode/bin/opencode"
+    return 0
+  fi
+
+  return 1
+}
+
+tool_binary_path() {
+  case "$1" in
+    cursor)
+      command -v cursor-agent 2>/dev/null
+      ;;
+    opencode)
+      resolve_opencode_bin
+      ;;
+    *)
+      command -v "$1" 2>/dev/null
+      ;;
+  esac
+}
+
+tool_display_binary() {
+  case "$1" in
+    cursor) printf '%s\n' "cursor-agent" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+require_tool_installed() {
+  local tool="$1"
+  local display
+
+  if ! tool_binary_path "$tool" >/dev/null 2>&1; then
+    display="$(tool_display_binary "$tool")"
+    die_missing_binary "$display" "$display"
+  fi
+}
+
+validate_effort_support() {
+  local tool="$1"
+
+  if [[ "$EFFORT_EXPLICIT" -ne 1 ]]; then
+    return 0
+  fi
+
+  case "$tool" in
+    claude|codex|agy|cursor|opencode)
+      ;;
+    amp|gemini)
+      die_usage "--effort is not supported by '$tool'."
+      ;;
+  esac
+
+  if [[ "$tool" == "cursor" && -z "$MODEL" ]]; then
+    die_usage "cursor carries effort inside --model, so --effort requires --model."
+  fi
+}
+
+cursor_model_argument() {
+  local model="$1"
+  local effort="$2"
+
+  if [[ -z "$effort" ]]; then
+    printf '%s\n' "$model"
+    return 0
+  fi
+
+  if [[ "$model" == *"["*"]" ]]; then
+    printf '%s\n' "$model"
+    return 0
+  fi
+
+  printf '%s[effort=%s]\n' "$model" "$effort"
+}
+
+build_agent_prompt() {
+  local mode="$1"
+  local detail="$2"
+
+  printf 'midi-arranger %s\nproject_root=%s\n%s\n' "$mode" "$PROJECT_ROOT" "$detail"
+}
+
+invoke_agent_once() {
+  local mode="$1"
+  local detail="$2"
+  local prompt
+  local binary
+
+  validate_effort_support "$TOOL"
+  require_tool_installed "$TOOL"
+  prompt="$(build_agent_prompt "$mode" "$detail")"
+  binary="$(tool_binary_path "$TOOL")"
+
+  case "$TOOL" in
+    claude)
+      local claude_args=(--print --dangerously-skip-permissions)
+      [[ -n "$MODEL" ]] && claude_args+=(--model "$MODEL")
+      [[ "$EFFORT_EXPLICIT" -eq 1 ]] && claude_args+=(--effort "$EFFORT")
+      printf '%s\n' "$prompt" | "$binary" "${claude_args[@]}"
+      ;;
+    codex)
+      local codex_args=(exec --dangerously-bypass-approvals-and-sandbox -C "$PROJECT_ROOT")
+      [[ -n "$MODEL" ]] && codex_args+=(--model "$MODEL")
+      [[ "$EFFORT_EXPLICIT" -eq 1 ]] && codex_args+=(-c "model_reasoning_effort=\"$EFFORT\"")
+      printf '%s\n' "$prompt" | "$binary" "${codex_args[@]}" -
+      ;;
+    agy)
+      local agy_args=(--print --dangerously-skip-permissions)
+      [[ -n "$MODEL" ]] && agy_args+=(--model "$MODEL")
+      [[ "$EFFORT_EXPLICIT" -eq 1 ]] && agy_args+=(--effort "$EFFORT")
+      printf '%s\n' "$prompt" | "$binary" "${agy_args[@]}"
+      ;;
+    cursor)
+      local cursor_args=(--print --force)
+      local cursor_model="$MODEL"
+      if [[ "$EFFORT_EXPLICIT" -eq 1 ]]; then
+        cursor_model="$(cursor_model_argument "$MODEL" "$EFFORT")"
+      fi
+      [[ -n "$cursor_model" ]] && cursor_args+=(--model "$cursor_model")
+      "$binary" "${cursor_args[@]}" "$prompt"
+      ;;
+    opencode)
+      local opencode_args=(run --auto)
+      [[ -n "$MODEL" ]] && opencode_args+=(--model "$MODEL")
+      [[ "$EFFORT_EXPLICIT" -eq 1 ]] && opencode_args+=(--variant "$EFFORT")
+      "$binary" "${opencode_args[@]}" "$prompt"
+      ;;
+    amp)
+      local amp_args=(--dangerously-allow-all)
+      [[ -n "$MODEL" ]] && amp_args+=(--model "$MODEL")
+      printf '%s\n' "$prompt" | "$binary" "${amp_args[@]}"
+      ;;
+    gemini)
+      local gemini_args=(--approval-mode yolo)
+      [[ -n "$MODEL" ]] && gemini_args+=(--model "$MODEL")
+      "$binary" "${gemini_args[@]}" --prompt "$prompt"
+      ;;
   esac
 }
 
@@ -158,11 +311,13 @@ while [[ $# -gt 0 ]]; do
     --effort)
       require_value "$1" "${2:-}"
       EFFORT="$2"
+      EFFORT_EXPLICIT=1
       shift 2
       ;;
     --effort=*)
       EFFORT="${1#*=}"
       require_value "--effort" "$EFFORT"
+      EFFORT_EXPLICIT=1
       shift
       ;;
     --cwd)
@@ -201,7 +356,7 @@ case "$COMMAND" in
     if [[ "${#POSITIONAL[@]}" -ne 1 ]]; then
       die_usage "brief requires exactly one MIDI file argument."
     fi
-    die_unavailable "brief parsed successfully for project '$PROJECT_ROOT', but the interview runner is not implemented yet."
+    invoke_agent_once "brief" "input_midi=${POSITIONAL[0]}"
     ;;
   run)
     if [[ "${#POSITIONAL[@]}" -gt 1 ]]; then
@@ -213,7 +368,7 @@ case "$COMMAND" in
     else
       MAX_ITERATIONS="10"
     fi
-    die_unavailable "run parsed successfully for project '$PROJECT_ROOT' with max_iterations=$MAX_ITERATIONS, but the agent loop is not implemented yet."
+    invoke_agent_once "run" "max_iterations=$MAX_ITERATIONS"
     ;;
   tool)
     if [[ "${#POSITIONAL[@]}" -lt 1 ]]; then
