@@ -28,6 +28,7 @@ from . import plugins as plugins_mod
 from . import render as render_mod
 from . import sections as sections_mod
 from . import techniques as techniques_mod
+from .brief_schema import BRIEF_VALIDATE_TOOL
 from .constants import REGISTER_BANDS
 from .plan import (
     ARTICULATIONS,
@@ -1728,6 +1729,7 @@ def bootstrap() -> None:
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
         RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
+        BRIEF_VALIDATE_TOOL,
     ):
         if _get(tool.name) is None:
             register(tool)
@@ -1740,6 +1742,7 @@ bootstrap()
 
 __all__ = [
     "ANALYZE_TOOL",
+    "BRIEF_VALIDATE_TOOL",
     "PLAN_SKELETON_TOOL",
     "PLAN_VALIDATE_TOOL",
     "PLUGINS_SCAN_TOOL",
