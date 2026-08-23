@@ -35,10 +35,11 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..analyze import Analysis, BarAnalysis, Chord, GuitarNote
 from ..constants import GATE_RATIOS, REGISTER_BANDS, VELOCITY_RANGES
+from ..humanize import DurationEngine, DurationRequest
 from ..plan import PlanSection
 from .harmonic import _chord_degrees, _parse_fade_in_bars, _sine_lfo_points
 
@@ -510,6 +511,7 @@ def _generate_snake_layers(
     register: tuple[int, int],
     base_velocity: int,
     gate: float,
+    articulation: str,
     velocity_cycle_bars: int,
     dyn: dict,
     section_kind: str,
@@ -578,9 +580,50 @@ def _generate_snake_layers(
             )
 
         notes.sort(key=lambda n: (n.start_s, n.pitch))
+        notes = _apply_duration_engine(
+            notes,
+            articulation=articulation,
+            fallback_end_s=section_end_s,
+            seed=seed + (layer_idx + 1) * 1_000_009,
+        )
         result.append(RhythmicLayer(
             index=layer_idx, notes=tuple(notes), cc_events=cc_events,
         ))
+    return result
+
+
+def _apply_duration_engine(
+    notes: list[RhythmicNote],
+    *,
+    articulation: str,
+    fallback_end_s: float,
+    seed: int,
+) -> list[RhythmicNote]:
+    """Reescreve `end_s` de cada nota da camada via `DurationEngine`.
+
+    Sem esse pos-passo, `_emit_snake_step_note` fixava `step_dur_s * gate`
+    igual para toda nota; validador de artificialidade certificava a camada
+    inteira como `duration_uniform`. Aqui cada nota sorteia um valor dentro
+    de `GATE_RATIOS[articulation]` proporcional ao gap real ate a proxima
+    nota da camada (ou `fallback_end_s` na ultima). Articulacao fora de
+    `GATE_RATIOS` cai para o default do rhythmic — mesma politica de
+    `_rhythmic_gate`."""
+    if not notes:
+        return notes
+    art = articulation if articulation in GATE_RATIOS else DEFAULT_RHYTHMIC_ARTICULATION
+    engine = DurationEngine(seed=seed)
+    result: list[RhythmicNote] = []
+    for i, note in enumerate(notes):
+        next_start = (
+            notes[i + 1].start_s if i + 1 < len(notes) else fallback_end_s
+        )
+        gap_s = next_start - note.start_s
+        gap_ms = gap_s * 1000.0 if gap_s > 0 else None
+        dur_ms = engine.compute(
+            DurationRequest(articulation=art, gap_ms=gap_ms),
+        )
+        dur_s = max(MIN_NOTE_DURATION_S, dur_ms / 1000.0)
+        result.append(replace(note, end_s=note.start_s + dur_s))
     return result
 
 
@@ -722,6 +765,7 @@ def generate_rhythmic(
         steps_for_bar=steps_for_bar,
         resolve_interlock=resolver,
         register=register, base_velocity=base, gate=gate,
+        articulation=articulation,
         velocity_cycle_bars=velocity_cycle_bars,
         dyn=dyn, section_kind=section.kind,
         bar_dur_s=bar_dur_s,
@@ -953,6 +997,7 @@ def generate_motor(
         steps_for_bar=lambda _bar_pos: pattern,
         resolve_interlock=None,
         register=register, base_velocity=base, gate=gate,
+        articulation=articulation,
         velocity_cycle_bars=velocity_cycle_bars,
         dyn=dyn, section_kind=section.kind,
         bar_dur_s=bar_dur_s,

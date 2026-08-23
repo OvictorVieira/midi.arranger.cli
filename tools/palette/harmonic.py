@@ -29,6 +29,7 @@ from dataclasses import dataclass, replace
 
 from ..analyze import Analysis, BarAnalysis, Chord
 from ..constants import GATE_RATIOS, REGISTER_BANDS, VELOCITY_RANGES
+from ..humanize import DurationEngine, DurationRequest
 from ..plan import ArrangementPlan, PlanSection
 from ..voicing import (
     C2_PITCH,
@@ -535,7 +536,13 @@ def generate_keyboard(
         ]
 
     base = _keyboard_base_velocity()
-    gate = _keyboard_gate(articulation)
+    # Articulacao normalizada — motor de duracao usa GATE_RATIOS diretamente e
+    # exige articulacao do vocabulario (`let_ring` etc caem para tight, igual
+    # a `_keyboard_gate`).
+    duration_art = (
+        articulation if articulation in GATE_RATIOS
+        else DEFAULT_KEYBOARD_ARTICULATION
+    )
 
     layer_offsets_s: list[float] = [0.0]
     for _ in range(1, layers):
@@ -548,6 +555,10 @@ def generate_keyboard(
         # Engine independente por camada — evita correlacao de onset spread
         # entre camadas quando duas dividem o mesmo bar/acorde.
         engine = VoicingEngine(seed=seed + layer_idx * 1_000_003)
+        # Motor de duracao independente por camada; sem isso o `note_dur`
+        # ficaria constante e `_check_duration_uniform` certificaria a track
+        # como duracao chapada.
+        dur_engine = DurationEngine(seed=seed + layer_idx * 1_000_009)
 
         # Passo 1: por bar, resolve onset base do acorde e pitches.
         bar_chords: list[tuple[float, list[int], int] | None] = []
@@ -565,7 +576,10 @@ def generate_keyboard(
             pitches = _voice_keyboard_chord(bar.chord, register)
             bar_chords.append((onset, pitches, bar_pos))
 
-        # Passo 2: emite notas com natural end = proximo onset OU fim da secao.
+        # Passo 2: emite notas com duracao sorteada por voz via motor de
+        # duracao — cada voz recebe uma proporcao independente de
+        # GATE_RATIOS[articulation] * gap ate o proximo acorde, quebrando a
+        # duracao chapada que originava `duration_uniform`.
         raw: list[KeyboardNote] = []
         for i, item in enumerate(bar_chords):
             if item is None:
@@ -579,18 +593,22 @@ def generate_keyboard(
             boundary = next_onset if next_onset is not None else bars[-1].end
             # window > 0 por construcao: onset < bar.end <= boundary (proximo
             # bar comeca em bar.end, e o guard de linha 562 assegura o resto).
-            note_dur = (boundary - chord_onset) * gate
             v_bar = _velocity_for_bar(bar_pos, dyn, section.kind, base)
             voiced = engine.voice(VoicingRequest(pitches=tuple(pitches), role=role))
             for vn in voiced:
                 note_onset = chord_onset + vn.onset_offset_ms / 1000.0
                 velocity = max(1, min(127, v_bar + vn.velocity_delta))
-                end_s = note_onset + note_dur
+                gap_s = boundary - note_onset
+                gap_ms = gap_s * 1000.0 if gap_s > 0 else None
+                dur_ms = dur_engine.compute(
+                    DurationRequest(articulation=duration_art, gap_ms=gap_ms),
+                )
+                dur_s = max(MIN_NOTE_DURATION_S, dur_ms / 1000.0)
                 raw.append(KeyboardNote(
                     pitch=vn.pitch,
                     velocity=velocity,
                     start_s=note_onset,
-                    end_s=end_s,
+                    end_s=note_onset + dur_s,
                 ))
 
         # Passo 3: contrato de par de mesma altura por role.
