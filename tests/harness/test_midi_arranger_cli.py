@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import stat
@@ -63,6 +64,10 @@ def prepare_run_project(tmp_path: Path, name: str = "project") -> Path:
     (project / ".git").mkdir()
     (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     return project
+
+
+def brief_hash(content: str) -> str:
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def install_model_discovery_binary(
@@ -574,6 +579,55 @@ def test_run_preserves_existing_progress_and_appends(tmp_path: Path) -> None:
     assert progress.startswith(existing_progress)
     assert len(progress) > len(existing_progress)
     assert progress.count("existing progress") == 1
+    assert "## run started " in progress
+
+
+def test_run_archives_plan_and_progress_when_brief_changed(tmp_path: Path) -> None:
+    project = prepare_run_project(tmp_path)
+    old_brief = '{"input_midi":"old-song.mid"}\n'
+    new_brief = '{"input_midi":"new song.mid"}\n'
+    (project / "arrangement-brief.json").write_text(new_brief)
+    (project / "arrangement-plan.json").write_text('{"old":"plan"}\n')
+    (project / "progress.txt").write_text("old progress\n---\n")
+    state_dir = project / ".midiarranger"
+    state_dir.mkdir()
+    (state_dir / "brief.sha256").write_text(f"{brief_hash(old_brief)}\n")
+    _, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+
+    assert result.returncode == 0, result.stderr
+    archive_root = state_dir / "archive"
+    archives = list(archive_root.iterdir())
+    assert len(archives) == 1
+    assert archives[0].name.endswith("-new-song")
+    assert (archives[0] / "arrangement-plan.json").read_text() == '{"old":"plan"}\n'
+    assert (archives[0] / "progress.txt").read_text() == "old progress\n---\n"
+    assert not (project / "arrangement-plan.json").exists()
+    fresh_progress = (project / "progress.txt").read_text()
+    assert fresh_progress.startswith("# midi-arranger progress\n---\n")
+    assert "old progress" not in fresh_progress
+    assert (state_dir / "brief.sha256").read_text() == f"{brief_hash(new_brief)}\n"
+
+
+def test_run_does_not_archive_when_brief_hash_matches_last_run(tmp_path: Path) -> None:
+    project = prepare_run_project(tmp_path)
+    brief = (project / "arrangement-brief.json").read_text()
+    (project / "arrangement-plan.json").write_text('{"current":"plan"}\n')
+    (project / "progress.txt").write_text("current progress\n---\n")
+    state_dir = project / ".midiarranger"
+    state_dir.mkdir()
+    (state_dir / "brief.sha256").write_text(f"{brief_hash(brief)}\n")
+    _, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert not (state_dir / "archive").exists()
+    assert (project / "arrangement-plan.json").read_text() == '{"current":"plan"}\n'
+    progress = (project / "progress.txt").read_text()
+    assert progress.startswith("current progress\n---\n")
+    assert progress.count("current progress") == 1
     assert "## run started " in progress
 
 

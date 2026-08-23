@@ -62,7 +62,12 @@ flowchart TD
 
 **Estourar as iterações é falha**, com código de saída diferente de zero. O harness nunca finge sucesso.
 Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midiarranger/` quando
-necessário e garante que `progress.txt` exista. Se o log já existe, ele é preservado e recebe append.
+necessário e compara o hash atual do brief com `.midiarranger/brief.sha256`. Se o hash mudou desde a
+última execução, o harness move o `arrangement-plan.json` e o `progress.txt` anteriores para
+`.midiarranger/archive/<data>-<slug>/`, onde o slug vem do MIDI citado no brief quando isso está
+disponível. Só depois disso ele grava o novo hash, garante que `progress.txt` exista e acrescenta a
+entrada de início de execução. Se o hash do brief é o mesmo, nada é arquivado: o log existente é
+preservado e recebe append.
 
 ---
 
@@ -174,8 +179,14 @@ reescreve o que você pediu. Requisito novo é brief novo.
 
 No começo do `run`, o harness valida que `arrangement-brief.json` existe antes de invocar o agente.
 Sem brief, o comando falha cedo e manda rodar `midi-arranger brief <input.mid>`. Com brief presente,
-o harness cria `.midiarranger/`, cria `progress.txt` com cabeçalho quando o arquivo ainda não existe
-e sempre acrescenta uma entrada de início de execução, sem truncar conteúdo anterior.
+o harness cria `.midiarranger/`, registra o hash do brief em `.midiarranger/brief.sha256` e usa esse
+valor para detectar se a demanda mudou desde a execução anterior.
+
+Quando o brief muda, um plano ou log antigo pode pertencer a outra música. Para evitar reutilização
+silenciosa, o harness arquiva `arrangement-plan.json` e `progress.txt` em
+`.midiarranger/archive/<data>-<slug>/` antes de recriar o log. Quando o brief não mudou,
+`progress.txt` continua append-only: o conteúdo anterior fica no lugar e recebe uma nova entrada de
+início de execução.
 
 ---
 
@@ -193,4 +204,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: a01807fbc8fe9ce845cf08df71d53d3996859cfb8c6c396c1a2852c683aefa4a -->
+<!-- harness-sha256: 50c8424968ee0425d78ab3c60dc4d20b7a451b368c118c30a78b0b9f49b1b687 -->
