@@ -3,6 +3,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -590,7 +591,7 @@ def test_agent_output_is_streamed_and_captured_for_inspection(tmp_path: Path) ->
 set -euo pipefail
 printf 'stdout before sleep\\n'
 printf 'stderr before sleep\\n' >&2
-sleep 1
+sleep 3
 printf 'stdout after sleep\\n'
 printf 'stderr after sleep\\n' >&2
 printf '<promise>COMPLETE</promise>\\n'
@@ -610,6 +611,9 @@ printf '<promise>COMPLETE</promise>\\n'
     )
 
     assert process.stdout is not None
+    # O laco imprime as proprias linhas antes da saida do agente, entao le ate
+    # achar o marcador em vez de assumir que ele e a primeira linha.
+    started = time.monotonic()
     observed_lines: list[str] = []
     while True:
         line = process.stdout.readline()
@@ -617,9 +621,20 @@ printf '<promise>COMPLETE</promise>\\n'
         observed_lines.append(line)
         if line == "stdout before sleep\n":
             break
-    assert process.poll() is None
+    elapsed = time.monotonic() - started
 
-    stdout_remainder, stderr = process.communicate(timeout=5)
+    # A prova de streaming e o TEMPO, nao `process.poll() is None`. Aquela versao
+    # corria com o `sleep`: sob contencao de CPU o mock terminava antes de o teste
+    # chegar no poll, e o teste quebrava sem nada estar errado no harness. Aqui a
+    # linha chegar bem antes dos 3s do sleep so e possivel se a saida foi
+    # transmitida em vez de bufferizada ate o fim.
+    assert elapsed < 2.0, (
+        f"a linha do agente levou {elapsed:.2f}s; com o mock dormindo 3s, isso "
+        "indica que a saida foi bufferizada ate o processo terminar em vez de "
+        "transmitida"
+    )
+
+    stdout_remainder, stderr = process.communicate(timeout=15)
     stdout = "".join(observed_lines) + stdout_remainder
 
     assert process.returncode == 0, stderr
