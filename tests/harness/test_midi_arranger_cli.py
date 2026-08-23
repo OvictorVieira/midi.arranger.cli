@@ -57,6 +57,14 @@ def install_mock_binary(tmp_path: Path, binary_name: str) -> tuple[Path, dict[st
     return log_path, env
 
 
+def prepare_run_project(tmp_path: Path, name: str = "project") -> Path:
+    project = tmp_path / name
+    project.mkdir()
+    (project / ".git").mkdir()
+    (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
+    return project
+
+
 def install_model_discovery_binary(
     tmp_path: Path,
     binary_name: str,
@@ -324,8 +332,10 @@ def test_agent_adapter_builds_expected_command_line(
     expected_args: list[str],
 ) -> None:
     log_path, env = install_mock_binary(tmp_path, binary)
+    project = prepare_run_project(tmp_path)
+    expected_args = [str(project) if value == str(REPO_ROOT) else value for value in expected_args]
 
-    result = run_cli("run", "--tool", tool, *options, "12", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", tool, *options, "12", env=env)
 
     assert result.returncode == 0, result.stderr
     blocks = read_mock_log(log_path)
@@ -369,8 +379,9 @@ def test_agent_adapter_does_not_pass_model_or_effort_when_not_requested(
     unexpected_args: list[str],
 ) -> None:
     log_path, env = install_mock_binary(tmp_path, binary)
+    project = prepare_run_project(tmp_path)
 
-    result = run_cli("run", "--tool", tool, "2", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", tool, "2", env=env)
 
     assert result.returncode == 0, result.stderr
     joined_args = "\n".join(logged_args(read_mock_log(log_path)))
@@ -395,6 +406,7 @@ def test_agent_output_is_streamed_and_captured_for_inspection(tmp_path: Path) ->
     project = tmp_path / "project"
     project.mkdir()
     (project / ".git").mkdir()
+    (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     binary = bin_dir / "claude"
@@ -442,9 +454,10 @@ printf 'stderr after sleep\\n' >&2
 
 
 def test_missing_agent_binary_fails_before_invocation(tmp_path: Path) -> None:
+    project = prepare_run_project(tmp_path)
     env = {"PATH": "/usr/bin:/bin", "MOCK_LOG": str(tmp_path / "missing.log")}
 
-    result = run_cli("run", "--tool", "claude", env=env)
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
 
     assert result.returncode == 69
     assert "claude was not found in PATH" in result.stderr
@@ -478,6 +491,7 @@ def test_project_root_detection_climbs_to_git_root(tmp_path: Path) -> None:
     nested = project / "a" / "b"
     nested.mkdir(parents=True)
     (project / ".git").mkdir()
+    (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     log_path, env = install_mock_binary(tmp_path, "codex")
 
     result = run_cli("run", cwd=nested, env=env)
@@ -506,12 +520,61 @@ def test_cwd_overrides_auto_detected_root(tmp_path: Path) -> None:
     nested.mkdir(parents=True)
     override.mkdir()
     (outer / ".git").mkdir()
+    (override / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
     log_path, env = install_mock_binary(tmp_path, "codex")
 
     result = run_cli("run", "--cwd", str(override), cwd=nested, env=env)
 
     assert result.returncode == 0, result.stderr
     assert f"project_root={override}" in read_mock_log(log_path)["STDIN"]
+
+
+def test_run_without_brief_fails_before_agent_invocation(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    log_path, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+
+    assert result.returncode == 66
+    assert "arrangement-brief.json not found" in result.stderr
+    assert "midi-arranger brief <input.mid>" in result.stderr
+    assert not log_path.exists()
+    assert not (project / ".midiarranger").exists()
+    assert not (project / "progress.txt").exists()
+
+
+def test_run_creates_state_directory_and_progress_header(tmp_path: Path) -> None:
+    project = prepare_run_project(tmp_path)
+    log_path, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "3", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert log_path.exists()
+    assert (project / ".midiarranger").is_dir()
+    progress = (project / "progress.txt").read_text()
+    assert progress.startswith("# midi-arranger progress\n---\n")
+    assert "## run started " in progress
+    assert "- tool=claude\n" in progress
+    assert "- max_iterations=3\n" in progress
+
+
+def test_run_preserves_existing_progress_and_appends(tmp_path: Path) -> None:
+    project = prepare_run_project(tmp_path)
+    existing_progress = "existing progress\n---\n"
+    (project / "progress.txt").write_text(existing_progress)
+    _, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", env=env)
+
+    assert result.returncode == 0, result.stderr
+    progress = (project / "progress.txt").read_text()
+    assert progress.startswith(existing_progress)
+    assert len(progress) > len(existing_progress)
+    assert progress.count("existing progress") == 1
+    assert "## run started " in progress
 
 
 def test_shellcheck_passes_for_bin_scripts() -> None:

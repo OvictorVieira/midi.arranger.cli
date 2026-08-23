@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly EX_USAGE=64
+readonly EX_NOINPUT=66
 readonly EX_UNAVAILABLE=69
 
 SUPPORTED_TOOLS="claude codex agy cursor opencode amp gemini"
@@ -50,6 +51,11 @@ die_usage() {
 die_unavailable() {
   printf 'Error: %s\n' "$1" >&2
   exit "$EX_UNAVAILABLE"
+}
+
+die_noinput() {
+  printf 'Error: %s\n' "$1" >&2
+  exit "$EX_NOINPUT"
 }
 
 die_missing_binary() {
@@ -386,6 +392,11 @@ build_agent_prompt() {
   printf 'midi-arranger %s\nproject_root=%s\n%s\n' "$mode" "$PROJECT_ROOT" "$detail"
 }
 
+run_prompt_detail() {
+  printf 'max_iterations=%s\narrangement_brief=%s\narrangement_plan=%s\nprogress_file=%s\nstate_dir=%s\n' \
+    "$MAX_ITERATIONS" "$BRIEF_FILE" "$PLAN_FILE" "$PROGRESS_FILE" "$STATE_DIR"
+}
+
 invoke_agent_once() {
   local mode="$1"
   local detail="$2"
@@ -483,6 +494,43 @@ resolve_project_root() {
   done
 
   pwd -P
+}
+
+initialize_project_paths() {
+  BRIEF_FILE="$PROJECT_ROOT/arrangement-brief.json"
+  PLAN_FILE="$PROJECT_ROOT/arrangement-plan.json"
+  PROGRESS_FILE="$PROJECT_ROOT/progress.txt"
+  STATE_DIR="$PROJECT_ROOT/.midiarranger"
+  AGENT_OUTPUT_FILE="$STATE_DIR/last-agent-output.txt"
+}
+
+ensure_run_state() {
+  if [[ ! -f "$BRIEF_FILE" ]]; then
+    die_noinput "arrangement-brief.json not found in '$PROJECT_ROOT'. Run 'midi-arranger brief <input.mid>' first."
+  fi
+
+  mkdir -p "$STATE_DIR" \
+    || die_unavailable "could not create state directory: $STATE_DIR"
+
+  if [[ ! -e "$PROGRESS_FILE" ]]; then
+    {
+      printf '# midi-arranger progress\n'
+      printf '%s\n' '---'
+    } > "$PROGRESS_FILE" \
+      || die_unavailable "could not create progress log: $PROGRESS_FILE"
+  fi
+
+  if [[ ! -f "$PROGRESS_FILE" ]]; then
+    die_unavailable "progress path exists but is not a file: $PROGRESS_FILE"
+  fi
+
+  {
+    printf '## run started %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+    printf -- '- tool=%s\n' "$TOOL"
+    printf -- '- max_iterations=%s\n' "$MAX_ITERATIONS"
+    printf '%s\n' '---'
+  } >> "$PROGRESS_FILE" \
+    || die_unavailable "could not append to progress log: $PROGRESS_FILE"
 }
 
 parse_positive_integer() {
@@ -589,7 +637,7 @@ if [[ -n "$PROJECT_ROOT" ]]; then
 else
   PROJECT_ROOT="$(resolve_project_root "$PWD")"
 fi
-AGENT_OUTPUT_FILE="$PROJECT_ROOT/.midiarranger/last-agent-output.txt"
+initialize_project_paths
 
 case "$COMMAND" in
   brief)
@@ -608,7 +656,9 @@ case "$COMMAND" in
     else
       MAX_ITERATIONS="10"
     fi
-    invoke_agent_once "run" "max_iterations=$MAX_ITERATIONS"
+    validate_effort_support "$TOOL"
+    ensure_run_state
+    invoke_agent_once "run" "$(run_prompt_detail)"
     ;;
   tool)
     if [[ "${#POSITIONAL[@]}" -lt 1 ]]; then

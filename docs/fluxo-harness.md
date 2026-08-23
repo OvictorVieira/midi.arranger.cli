@@ -41,7 +41,8 @@ Cada iteração é um **processo novo, sem memória da anterior**. Todo estado v
 flowchart TD
     Start([midi-arranger run N]) --> Check{brief existe?}
     Check -->|não| Die[/erro: rode a skill de brief antes/]
-    Check -->|sim| Arch{brief mudou<br/>desde a última vez?}
+    Check -->|sim| State[cria .midiarranger/<br/>e garante progress.txt]
+    State --> Arch{brief mudou<br/>desde a última vez?}
     Arch -->|sim| Archive[arquiva plano e log<br/>em .midiarranger/archive]
     Arch -->|não| Loop
     Archive --> Loop
@@ -60,6 +61,8 @@ flowchart TD
 ```
 
 **Estourar as iterações é falha**, com código de saída diferente de zero. O harness nunca finge sucesso.
+Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midiarranger/` quando
+necessário e garante que `progress.txt` exista. Se o log já existe, ele é preservado e recebe append.
 
 ---
 
@@ -169,6 +172,11 @@ flowchart TD
 **O brief é contrato.** Se o agente concluir que ele está errado, ele para e reporta — nunca
 reescreve o que você pediu. Requisito novo é brief novo.
 
+No começo do `run`, o harness valida que `arrangement-brief.json` existe antes de invocar o agente.
+Sem brief, o comando falha cedo e manda rodar `midi-arranger brief <input.mid>`. Com brief presente,
+o harness cria `.midiarranger/`, cria `progress.txt` com cabeçalho quando o arquivo ainda não existe
+e sempre acrescenta uma entrada de início de execução, sem truncar conteúdo anterior.
+
 ---
 
 ## 6. Manter em dia
@@ -185,4 +193,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: caa2ce50687ec77d759d11821c977b90619ffa3629ae8c9ebc1eb1c0c7acf8e5 -->
+<!-- harness-sha256: a01807fbc8fe9ce845cf08df71d53d3996859cfb8c6c396c1a2852c683aefa4a -->
