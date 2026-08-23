@@ -231,10 +231,8 @@ _ROLES: tuple[str, ...] = tuple(_ROLE_SPECS.keys())
 # Roles com anti-padroes ainda ativos. A key e o role, o value e a story
 # que endereca a correcao. `strict=True`: quando o fix landar, o teste
 # passa e o xfail vira `XPASS` — a story tem que remover o marker aqui
-# alem de aplicar o fix. Zerar este dict e requisito da US-008.
-_KNOWN_ARTIFICE_XFAILS: dict[str, str] = {
-    "shadow": "US-008 (duplicates_source: decidir isencao musicalmente justificada)",
-}
+# alem de aplicar o fix. Zerar este dict e requisito da US-008 (fechado).
+_KNOWN_ARTIFICE_XFAILS: dict[str, str] = {}
 
 
 def _param(role: str):

@@ -9,6 +9,7 @@ from tools.constants import GATE_RATIOS, REGISTER_BANDS, VELOCITY_RANGES
 from tools.palette.rhythmic import (
     DEFAULT_MOTOR_REGISTER,
     DEFAULT_SHADOW_REGISTER,
+    MIN_NOTE_DURATION_S,
     MOTOR_DEFAULT_ARTICULATION,
     MOTOR_DEFAULT_SUBDIVISION,
     MOTOR_FILTER_CYCLE_BARS_ALLOWED,
@@ -33,10 +34,12 @@ from tools.palette.rhythmic import (
     RhythmicNote,
     _assert_motor_catalog_has_gaps,
     _clamp_pitch_to_register,
+    _guitar_notes_in_section,
     _max_gap_run,
     _phrases_by_silence,
     _phrases_by_unisons,
     _pick_motor_pattern,
+    _unisons_in_section,
     _validate_motor_custom_steps,
     generate_motor,
     generate_shadow,
@@ -888,3 +891,91 @@ def test_generate_shadow_pre_phrase_included_when_unisons_late():
     )
     onsets = sorted({n.start_s for n in layers[0].notes})
     assert onsets == [0.5, 1.9]
+
+
+def test_generate_shadow_ignores_guitar_notes_before_section_start():
+    """Guitarra fora dos bars da secao (antes) e filtrada — shadow so olha
+    para o range da secao."""
+    guitar = [
+        GuitarNote(start=0.5, pitch=30, track="G1"),  # bar 0 — fora
+        GuitarNote(start=1.5, pitch=31, track="G1"),  # bar 0 — fora
+        GuitarNote(start=4.5, pitch=40, track="G1"),  # bar 2 — dentro
+        GuitarNote(start=5.0, pitch=41, track="G1"),  # bar 2 — dentro
+    ]
+    ana = _analysis(
+        4, guitar_notes=guitar, guitar_unison_positions=[4.5],
+    )
+    layers = generate_shadow(
+        ana, _section(start_bar=2, end_bar=4),
+        tail_notes=2, register=(0, 127), seed=0,
+    )
+    onsets = sorted({n.start_s for n in layers[0].notes})
+    assert onsets == [4.5, 5.0]
+
+
+def test_generate_shadow_ignores_guitar_notes_past_section_end():
+    """Guitarra apos section_end e filtrada."""
+    guitar = [
+        GuitarNote(start=0.5, pitch=40, track="G1"),
+        GuitarNote(start=1.5, pitch=41, track="G1"),
+        GuitarNote(start=5.0, pitch=50, track="G1"),  # bar 2 — fora
+        GuitarNote(start=6.0, pitch=51, track="G1"),  # bar 3 — fora
+    ]
+    ana = _analysis(
+        4, guitar_notes=guitar, guitar_unison_positions=[0.5],
+    )
+    layers = generate_shadow(
+        ana, _section(start_bar=0, end_bar=2),
+        tail_notes=2, register=(0, 127), seed=0,
+    )
+    onsets = sorted({n.start_s for n in layers[0].notes})
+    assert onsets == [0.5, 1.5]
+
+
+def test_generate_shadow_end_floors_at_min_when_next_guitar_is_immediate():
+    """Quando a proxima nota de guitarra chega dentro de MIN_NOTE_DURATION_S
+    do tail, `max_end` cai abaixo de `start` e o gerador aplica o piso
+    defensivo `start + MIN_NOTE_DURATION_S` — nunca emitir nota <= 0s."""
+    # Frase de 3 notas; tail_notes=2 pega [B, C]. B em t=1.0 tem C como
+    # proxima guitarra em t=1.0 + MIN/2 => max_end colapsa abaixo de start.
+    guitar = [
+        GuitarNote(start=0.0, pitch=59, track="G1"),
+        GuitarNote(start=1.0, pitch=60, track="G1"),
+        GuitarNote(start=1.0 + MIN_NOTE_DURATION_S / 2.0, pitch=61, track="G1"),
+    ]
+    ana = _analysis(
+        2, guitar_notes=guitar, guitar_unison_positions=[0.0],
+    )
+    layers = generate_shadow(
+        ana, _section(end_bar=2),
+        tail_notes=2, note_duration_s=0.5,
+        register=(30, 100), seed=0,
+    )
+    tail_b = [n for n in layers[0].notes if n.start_s == pytest.approx(1.0)]
+    assert tail_b, "tail B em t=1.0 nao emitido"
+    assert tail_b[0].end_s - tail_b[0].start_s == pytest.approx(
+        MIN_NOTE_DURATION_S
+    )
+
+
+def test_guitar_notes_in_section_returns_empty_when_no_bars_match():
+    """Helper defensivo: secao inteiramente fora do range dos bars devolve
+    lista vazia sem levantar erro. Contrato usado como pre-condicao pelos
+    call sites."""
+    guitar = [
+        GuitarNote(start=0.5, pitch=40, track="G1"),
+        GuitarNote(start=1.5, pitch=41, track="G1"),
+    ]
+    ana = _analysis(2, guitar_notes=guitar)
+    outside = _section(start_bar=10, end_bar=12)
+    assert _guitar_notes_in_section(ana, outside) == []
+
+
+def test_unisons_in_section_returns_empty_when_no_bars_match():
+    """Mesmo contrato defensivo para as ancoras de unisono."""
+    ana = _analysis(
+        2, guitar_notes=[GuitarNote(start=0.0, pitch=40, track="G1")],
+        guitar_unison_positions=[0.0, 1.0],
+    )
+    outside = _section(start_bar=10, end_bar=12)
+    assert _unisons_in_section(ana, outside) == []
