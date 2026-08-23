@@ -18,5 +18,5 @@ Started: Sáb 22 Ago 2026 22:28:25 -03
 - **Learnings for future iterations:**
   - Harness work should stay in `bin/`, `prompts/`, and `tests/harness/`; `tools/` remains independent from the AI harness.
   - Use structured, observable CLI behavior for tests; the current skeleton returns exit 69 after successful parsing because adapter dispatch is a later story.
-  - `shellcheck` is not installed in this local PATH, so the pytest check skips it here; install it to enforce the acceptance gate locally.
+  - `shellcheck` is required for harness Bash scripts; it was installed locally with Homebrew during this iteration and now runs through pytest.
 ---
