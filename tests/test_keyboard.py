@@ -17,7 +17,6 @@ from tools.palette.harmonic import (
     MIN_NOTE_DURATION_S,
     PIANO_GAP_MS,
     RHODES_LEGATO_RATIO_RANGE,
-    RHODES_OVERLAP_MS,
     KeyboardLayer,
     KeyboardNote,
     _enforce_same_pitch_contract,
@@ -381,8 +380,14 @@ def test_enforce_same_pitch_contract_empty():
     assert out == []
 
 
-def test_enforce_same_pitch_contract_rhodes_reaches_at_least_touching():
-    """Quando o par ja tem gap, o legato do rhodes puxa ate touching (end == start)."""
+def test_enforce_same_pitch_contract_rhodes_legato_is_touching_not_overlap():
+    """Legato do rhodes cria par TOUCHING (end_s == start_s), nunca overlap.
+
+    MIDI mesma altura no mesmo canal nao expressa overlap — o primeiro
+    note_off termina o P atualmente soando, truncando o segundo ataque.
+    A ordem note_off-antes-de-note_on no mesmo tick garante o segundo
+    ataque limpo quando a primeira nota termina exatamente no onset da
+    segunda."""
     notes = [
         KeyboardNote(pitch=60, velocity=90, start_s=0.0, end_s=0.5),
         KeyboardNote(pitch=60, velocity=90, start_s=1.0, end_s=1.5),
@@ -390,10 +395,22 @@ def test_enforce_same_pitch_contract_rhodes_reaches_at_least_touching():
     rng = random.Random(0)
     out = _enforce_same_pitch_contract(notes, role="rhodes", rng=rng)
     # Um unico par => n_min=max(1, int(0.12)) = 1 => vira legato.
-    assert out[0].end_s >= 1.0 - 1e-9
-    # E o overlap se cair extra fica dentro de RHODES_OVERLAP_MS.
-    overlap_ms = max(0.0, (out[0].end_s - 1.0) * 1000.0)
-    assert overlap_ms <= RHODES_OVERLAP_MS[1] + 1e-9
+    assert out[0].end_s == pytest.approx(1.0)
+    # Segundo ataque permanece intocado — o legato so alonga o primeiro.
+    assert out[1].start_s == pytest.approx(1.0)
+    assert out[1].end_s == pytest.approx(1.5)
+
+
+def test_enforce_same_pitch_contract_rhodes_legato_truncates_prior_overlap():
+    """Se a primeira nota ja invade o onset da segunda, o legato TRUNCA
+    para touching — nunca mantem overlap na saida."""
+    notes = [
+        KeyboardNote(pitch=60, velocity=90, start_s=0.0, end_s=1.05),
+        KeyboardNote(pitch=60, velocity=90, start_s=1.0, end_s=1.5),
+    ]
+    rng = random.Random(0)
+    out = _enforce_same_pitch_contract(notes, role="rhodes", rng=rng)
+    assert out[0].end_s == pytest.approx(1.0)
 
 
 def test_role_in_keyboard_roles():

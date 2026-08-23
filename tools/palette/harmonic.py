@@ -298,12 +298,6 @@ touching'. Sorteio uniforme na faixa; a contagem final e arredondada e
 travada dentro de [12%, 47%] via `_legato_pair_count` para o teste
 determinstico nunca escapar do intervalo."""
 
-RHODES_OVERLAP_MS: tuple[float, float] = (5.0, 25.0)
-"""LEGATO_OVERLAP_MS espelhado da rodada 1 (constants.LEGATO_OVERLAP_MS).
-Duplicado como constante local para nao amarrar o comportamento de
-teclado a uma constante compartilhada entre motores — o Rhodes pode
-divergir dessa faixa em rodadas futuras sem quebrar guitar/bass."""
-
 PIANO_GAP_MS: tuple[float, float] = (10.0, 40.0)
 """AC: 'modo piano e 100% gapped (release limpo)'. Release cai pelo menos
 10 ms antes do proximo onset da mesma altura. Faixa larga o suficiente
@@ -445,12 +439,14 @@ def _enforce_same_pitch_contract(
     for pair_idx, (a, b) in enumerate(pairs):
         start_b = out[b].start_s
         if pair_idx in legato_indices:
-            # start_b + overlap_s > start_b, e overlap_s > 0 sempre — se a nota
-            # ja invade o proximo onset, esticamos ate `start_b + overlap`;
-            # se estava com gap, o mesmo new_end garante touching-com-overlap.
-            new_end = start_b + rng.uniform(*RHODES_OVERLAP_MS) / 1000.0
-            if new_end > out[a].end_s:
-                out[a] = replace(out[a], end_s=new_end)
+            # MIDI nao expressa overlap de mesma altura no mesmo canal:
+            # note_on(P), note_on(P), note_off(P) trunca a segunda nota
+            # (o primeiro note_off encerra o P atualmente soando). A ordem
+            # de eventos em `_notes_to_track` ja resolve note_off antes de
+            # note_on no mesmo tick, entao TOUCHING (end_s do a == start_s
+            # do b) preserva o segundo ataque limpo. E o mais proximo que
+            # MIDI same-pitch/same-channel permite de legato.
+            out[a] = replace(out[a], end_s=start_b)
             continue
         # Gap obrigatorio (piano OU rhodes fora da cota de legato).
         if out[a].end_s >= start_b:
@@ -1436,7 +1432,6 @@ __all__ = [
     "PadLayer",
     "PadNote",
     "RHODES_LEGATO_RATIO_RANGE",
-    "RHODES_OVERLAP_MS",
     "STRINGS_BASE_VELOCITY_BUCKET",
     "STRINGS_CHUG_MIN_NOTES",
     "STRINGS_CHUG_PITCH_CEILING",
