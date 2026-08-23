@@ -9,6 +9,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "bin" / "midi-arranger"
+FIXTURE_BIN_DIR = REPO_ROOT / "tests" / "harness" / "fixtures" / "bin"
+SUPPORTED_MOCK_BINARIES = [
+    "claude",
+    "codex",
+    "agy",
+    "cursor-agent",
+    "opencode",
+    "amp",
+    "gemini",
+]
 
 
 def run_cli(
@@ -35,27 +45,14 @@ def install_mock_binary(tmp_path: Path, binary_name: str) -> tuple[Path, dict[st
     bin_dir.mkdir(exist_ok=True)
     log_path = tmp_path / f"{binary_name}.log"
     binary = bin_dir / binary_name
-    binary.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-{
-  printf 'BIN<<END\\n%s\\nEND\\n' "$(basename "$0")"
-  index=0
-  for arg in "$@"; do
-    printf 'ARG_%s<<END\\n%s\\nEND\\n' "$index" "$arg"
-    index=$((index + 1))
-  done
-  printf 'STDIN<<END\\n'
-  cat
-  printf '\\nEND\\n'
-} > "$MOCK_LOG"
-printf 'mock output from %s\\n' "$(basename "$0")"
-""",
-    )
+    shutil.copy2(FIXTURE_BIN_DIR / binary_name, binary)
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
 
     env = {
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(home),
         "MOCK_LOG": str(log_path),
     }
     return log_path, env
@@ -143,6 +140,15 @@ def test_script_is_executable_bash_with_strict_mode() -> None:
     text = SCRIPT.read_text()
     assert text.startswith("#!/usr/bin/env bash\n")
     assert "set -euo pipefail" in text
+
+
+def test_mock_binary_fixtures_exist_for_all_supported_agent_clis() -> None:
+    for binary_name in SUPPORTED_MOCK_BINARIES:
+        fixture = FIXTURE_BIN_DIR / binary_name
+
+        assert fixture.is_file()
+        assert fixture.stat().st_mode & stat.S_IXUSR
+        assert "MOCK_LOG" in fixture.read_text()
 
 
 def test_help_documents_subcommands_options_and_examples() -> None:
@@ -320,10 +326,13 @@ def test_agent_adapter_builds_expected_command_line(
         assert "max_iterations=12" in args[prompt_index]
         assert args[prompt_index + 1 :] == expected_args[prompt_index + 1 :]
         assert blocks["STDIN"].strip() == ""
+        assert blocks["PROMPT"].startswith("midi-arranger run")
+        assert "max_iterations=12" in blocks["PROMPT"]
     else:
         assert args == expected_args
         assert blocks["STDIN"].startswith("midi-arranger run")
         assert "max_iterations=12" in blocks["STDIN"]
+        assert blocks["PROMPT"] == blocks["STDIN"]
 
     assert f"mock output from {binary}" in result.stdout
 
@@ -366,6 +375,7 @@ def test_brief_invokes_selected_agent_with_input_midi_prompt(tmp_path: Path) -> 
     assert logged_args(blocks) == ["--print", "--dangerously-skip-permissions"]
     assert blocks["STDIN"].startswith("midi-arranger brief")
     assert "input_midi=song.mid" in blocks["STDIN"]
+    assert blocks["PROMPT"] == blocks["STDIN"]
 
 
 def test_agent_output_is_streamed_and_captured_for_inspection(tmp_path: Path) -> None:

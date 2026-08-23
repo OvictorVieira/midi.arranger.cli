@@ -6,6 +6,7 @@
 - Harness tests mock AI CLIs by putting fake binaries first on `PATH` and using `MOCK_LOG` to assert argv/stdin; never call real agent CLIs from tests.
 - Agent output inspection state lives in `.midiarranger/last-agent-output.txt`; the harness writes the combined stdout/stderr stream there while echoing it to the user.
 - `--list-models` must query installed CLIs and parse their live output; do not add baked-in model tables. Tests should isolate `PATH` and `HOME` so real local CLIs do not affect assertions.
+- Reusable AI CLI mocks live in `tests/harness/fixtures/bin/`; harness tests copy them into a temp `PATH` and assert `MOCK_LOG` blocks for `ARG_*`, `STDIN`, and normalized `PROMPT`.
 
 Started: Sáb 22 Ago 2026 22:28:25 -03
 ---
@@ -62,4 +63,25 @@ Started: Sáb 22 Ago 2026 22:28:25 -03
   - Discovery tests should isolate both `PATH` and `HOME`; otherwise a locally installed CLI or opencode fallback path can make tests nondeterministic.
   - Prefer BSD-compatible awk in harness scripts; macOS awk does not support GNU-only conveniences like `IGNORECASE`, and `index` is a built-in name.
   - Model discovery should parse CLI output and honestly report missing announcements instead of maintaining a model table in the harness.
+---
+## 2026-08-22 22:51:12 -0300 - US-005
+- Added reusable mocked AI CLI binaries for claude, codex, agy, cursor-agent, opencode, amp, and gemini under `tests/harness/fixtures/bin/`.
+- Refactored harness tests to install those fixtures into isolated temp `PATH` directories, preserve isolated `HOME`, and assert captured argv, stdin, and normalized prompt logs without calling real AI CLIs.
+- Verified the full suite and shellcheck, including the new fixture scripts.
+- Files changed:
+  - `AGENTS.md`
+  - `prd.json`
+  - `progress.txt`
+  - `tests/harness/fixtures/bin/agy`
+  - `tests/harness/fixtures/bin/amp`
+  - `tests/harness/fixtures/bin/claude`
+  - `tests/harness/fixtures/bin/codex`
+  - `tests/harness/fixtures/bin/cursor-agent`
+  - `tests/harness/fixtures/bin/gemini`
+  - `tests/harness/fixtures/bin/opencode`
+  - `tests/harness/test_midi_arranger_cli.py`
+- **Learnings for future iterations:**
+  - Use the reusable fixture binaries for adapter tests instead of generating ad hoc mock CLIs inside each test.
+  - The fixture log exposes `PROMPT` consistently across stdin, positional, and `--prompt` transports, which keeps adapter assertions independent from each CLI's prompt channel.
+  - Shellcheck can be run directly against the fixture binaries as well as `bin/midi-arranger`.
 ---

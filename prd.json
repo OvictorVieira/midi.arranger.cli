@@ -86,7 +86,7 @@
         "shellcheck passa sem erro em todos os scripts de bin/"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": ""
     }
   ]
