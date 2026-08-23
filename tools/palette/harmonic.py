@@ -724,10 +724,26 @@ def _strings_ghost_velocity() -> int:
     return min(STRINGS_GHOST_MAX_ABS_VELOCITY, (lo + STRINGS_GHOST_MAX_ABS_VELOCITY) // 2)
 
 
+def _pitch_class_within(pc: int, lo: int, hi: int) -> int:
+    """Menor pitch com pitch class `pc` que caiba em [lo, hi]. Se a classe
+    nao ocorre dentro do registro, devolve `lo` — fallback rigido que
+    preserva determinismo e mantem a nota dentro do registro declarado."""
+    base = lo + ((pc - lo) % 12)
+    return base if base <= hi else lo
+
+
 def _tutti_pitches(chord: Chord, register: tuple[int, int]) -> list[int]:
     """Constroi ate STRINGS_TUTTI_MAX_VOICES notas do acorde espalhadas em
     ~STRINGS_TUTTI_SPREAD_ST semitons. Comeca no minimo do registro e
-    empilha pitches do acorde (raiz+3a/7a) em oitavas ate cobrir o span."""
+    empilha pitches do acorde (raiz+3a/7a) em oitavas ate cobrir o span.
+
+    Se o registro for estreito demais para caber qualquer grau do acorde
+    dentro do span do tutti (ex.: register=(60,63) com raiz F, todos os
+    graus caem acima do teto), degrada para uma unica voz na tonica
+    snapped ao registro. Decisao: degradar em vez de erro — o path
+    nao-tutti (`_initial_voice_pitches`) ja segue essa politica, e o
+    plano continua renderizavel. O operador ouve tutti anemico e ajusta
+    o register."""
     lo, hi = register
     span = min(STRINGS_TUTTI_SPREAD_ST, hi - lo)
     ceiling = lo + span
@@ -752,6 +768,8 @@ def _tutti_pitches(chord: Chord, register: tuple[int, int]) -> list[int]:
             break
         octave += 1
     pitches = sorted(set(pitches))
+    if not pitches:
+        pitches = [_pitch_class_within(chord.root, lo, hi)]
     return pitches[:STRINGS_TUTTI_MAX_VOICES]
 
 
@@ -781,7 +799,10 @@ def _initial_voice_pitches(
         octave += 1
     candidates = sorted(set(candidates))
     if not candidates:
-        return [_apply_register_constraint([root_base])[0]] * voices
+        # Registro estreito demais para caber qualquer grau do acorde:
+        # degrada para a tonica snapped em [lo, hi] em vez de devolver
+        # `root_base` — que pode cair acima de `hi` e violar o registro.
+        return [_pitch_class_within(chord.root, lo, hi)] * voices
     if len(candidates) >= voices:
         # Amostragem uniforme de N pitches distintos.
         step = (len(candidates) - 1) / max(1, voices - 1) if voices > 1 else 0
