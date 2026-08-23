@@ -14,3 +14,6 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+
+prd.json
+progress.txt
