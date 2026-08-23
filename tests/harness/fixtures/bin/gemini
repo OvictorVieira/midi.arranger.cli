@@ -32,6 +32,17 @@ if [[ "${MOCK_REWRITE_BRIEF_ON:-}" == "$invocation" ]]; then
   fi
 fi
 
+if [[ "${MOCK_WRITE_PROGRESS:-}" == "1" ]]; then
+  progress_file="$(printf '%s\n' "$prompt_payload" | sed -n 's/^progress_file=//p' | head -n 1)"
+  if [[ -n "$progress_file" ]]; then
+    {
+      printf '## mock iteration %s\n' "$invocation"
+      printf -- '- binary=%s\n' "$binary_name"
+      printf '%s\n' '---'
+    } >> "$progress_file"
+  fi
+fi
+
 printf 'mock output from %s\n' "$binary_name"
 if [[ "${MOCK_COMPLETE_ON:-}" == "$invocation" ]]; then
   printf '<promise>COMPLETE</promise>\n'

@@ -57,6 +57,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `n` emitirá a sentinela literal `<promise>COMPLETE</promise>`.
 - Para testes em que o agente altera o brief durante o `run`, defina `MOCK_REWRITE_BRIEF_ON=<n>` nos
   mocks do harness; a invocação `n` reescreverá `arrangement-brief.json` no `project_root` do prompt.
+- Para testes de ponta a ponta do `run`, defina `MOCK_WRITE_PROGRESS=1` nos mocks do harness; cada
+  invocação acrescentará uma entrada determinística ao `progress_file` anunciado no prompt.
 
 ## Commits
 

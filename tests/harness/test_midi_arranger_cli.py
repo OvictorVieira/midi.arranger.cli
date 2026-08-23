@@ -9,7 +9,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "bin" / "midi-arranger"
+UPDATE_FLOW_LOCK = REPO_ROOT / "scripts" / "update-flow-lock.sh"
 FIXTURE_BIN_DIR = REPO_ROOT / "tests" / "harness" / "fixtures" / "bin"
+FIXTURE_BRIEF = REPO_ROOT / "tests" / "harness" / "fixtures" / "arrangement-brief.json"
 SUPPORTED_MOCK_BINARIES = [
     "claude",
     "codex",
@@ -75,11 +77,25 @@ def rewrite_brief_on(
     return env
 
 
+def write_progress(env: dict[str, str]) -> dict[str, str]:
+    env = env.copy()
+    env["MOCK_WRITE_PROGRESS"] = "1"
+    return env
+
+
 def prepare_run_project(tmp_path: Path, name: str = "project") -> Path:
     project = tmp_path / name
     project.mkdir()
     (project / ".git").mkdir()
     (project / "arrangement-brief.json").write_text('{"input_midi":"song.mid"}\n')
+    return project
+
+
+def prepare_run_project_from_fixture(tmp_path: Path, name: str = "project") -> Path:
+    project = tmp_path / name
+    project.mkdir()
+    (project / ".git").mkdir()
+    shutil.copy2(FIXTURE_BRIEF, project / "arrangement-brief.json")
     return project
 
 
@@ -466,6 +482,30 @@ def test_run_loop_stops_when_agent_emits_completion_sentinel(tmp_path: Path) -> 
     assert "midi-arranger run completed at iteration 2/5" in result.stdout
 
 
+def test_run_end_to_end_with_mock_cli_completes_on_second_iteration_and_records_progress(
+    tmp_path: Path,
+) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(write_progress(env), 2)
+    project = prepare_run_project_from_fixture(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "5", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert count_mock_invocations(log_path) == 2
+    assert "== midi-arranger run iteration 1/5 ==" in result.stdout
+    assert "== midi-arranger run iteration 2/5 ==" in result.stdout
+    assert "== midi-arranger run iteration 3/5 ==" not in result.stdout
+    assert "midi-arranger run completed at iteration 2/5" in result.stdout
+
+    progress = (project / "progress.txt").read_text()
+    assert progress.startswith("# midi-arranger progress\n---\n")
+    assert progress.count("## run started ") == 1
+    assert progress.count("## mock iteration ") == 2
+    assert "## mock iteration 1\n- binary=claude\n---\n" in progress
+    assert "## mock iteration 2\n- binary=claude\n---\n" in progress
+
+
 def test_run_prompt_tells_agent_that_brief_is_read_only(tmp_path: Path) -> None:
     log_path, env = install_mock_binary(tmp_path, "claude")
     env = complete_on(env, 1)
@@ -583,7 +623,7 @@ printf '<promise>COMPLETE</promise>\\n'
     stdout = "".join(observed_lines) + stdout_remainder
 
     assert process.returncode == 0, stderr
-    assert "stderr before sleep" in stdout
+    assert "stdout before sleep" in stdout
     assert "stdout after sleep" in stdout
     assert "stderr after sleep" in stdout
 
@@ -773,13 +813,13 @@ def test_run_does_not_archive_when_brief_hash_matches_last_run(tmp_path: Path) -
     assert "## run started " in progress
 
 
-def test_shellcheck_passes_for_bin_scripts() -> None:
+def test_shellcheck_passes_for_bin_and_shell_scripts() -> None:
     shellcheck = shutil.which("shellcheck")
     if shellcheck is None:
         pytest.skip("shellcheck is required by the project but is not installed in PATH")
 
     result = subprocess.run(
-        [shellcheck, str(SCRIPT)],
+        [shellcheck, str(SCRIPT), str(UPDATE_FLOW_LOCK)],
         text=True,
         capture_output=True,
         check=False,
