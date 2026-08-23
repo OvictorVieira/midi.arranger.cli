@@ -146,6 +146,21 @@ cursor_model_argument() {
   printf '%s[effort=%s]\n' "$model" "$effort"
 }
 
+capture_agent_output() {
+  local output_file="$1"
+  shift
+
+  mkdir -p "$(dirname "$output_file")"
+  : > "$output_file"
+
+  set +e
+  "$@" 2>&1 | tee "$output_file"
+  local command_status=${PIPESTATUS[0]}
+  set -e
+
+  return "$command_status"
+}
+
 build_agent_prompt() {
   local mode="$1"
   local detail="$2"
@@ -169,19 +184,19 @@ invoke_agent_once() {
       local claude_args=(--print --dangerously-skip-permissions)
       [[ -n "$MODEL" ]] && claude_args+=(--model "$MODEL")
       [[ "$EFFORT_EXPLICIT" -eq 1 ]] && claude_args+=(--effort "$EFFORT")
-      printf '%s\n' "$prompt" | "$binary" "${claude_args[@]}"
+      printf '%s\n' "$prompt" | capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${claude_args[@]}"
       ;;
     codex)
       local codex_args=(exec --dangerously-bypass-approvals-and-sandbox -C "$PROJECT_ROOT")
       [[ -n "$MODEL" ]] && codex_args+=(--model "$MODEL")
       [[ "$EFFORT_EXPLICIT" -eq 1 ]] && codex_args+=(-c "model_reasoning_effort=\"$EFFORT\"")
-      printf '%s\n' "$prompt" | "$binary" "${codex_args[@]}" -
+      printf '%s\n' "$prompt" | capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${codex_args[@]}" -
       ;;
     agy)
       local agy_args=(--print --dangerously-skip-permissions)
       [[ -n "$MODEL" ]] && agy_args+=(--model "$MODEL")
       [[ "$EFFORT_EXPLICIT" -eq 1 ]] && agy_args+=(--effort "$EFFORT")
-      printf '%s\n' "$prompt" | "$binary" "${agy_args[@]}"
+      printf '%s\n' "$prompt" | capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${agy_args[@]}"
       ;;
     cursor)
       local cursor_args=(--print --force)
@@ -190,23 +205,23 @@ invoke_agent_once() {
         cursor_model="$(cursor_model_argument "$MODEL" "$EFFORT")"
       fi
       [[ -n "$cursor_model" ]] && cursor_args+=(--model "$cursor_model")
-      "$binary" "${cursor_args[@]}" "$prompt"
+      capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${cursor_args[@]}" "$prompt"
       ;;
     opencode)
       local opencode_args=(run --auto)
       [[ -n "$MODEL" ]] && opencode_args+=(--model "$MODEL")
       [[ "$EFFORT_EXPLICIT" -eq 1 ]] && opencode_args+=(--variant "$EFFORT")
-      "$binary" "${opencode_args[@]}" "$prompt"
+      capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${opencode_args[@]}" "$prompt"
       ;;
     amp)
       local amp_args=(--dangerously-allow-all)
       [[ -n "$MODEL" ]] && amp_args+=(--model "$MODEL")
-      printf '%s\n' "$prompt" | "$binary" "${amp_args[@]}"
+      printf '%s\n' "$prompt" | capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${amp_args[@]}"
       ;;
     gemini)
       local gemini_args=(--approval-mode yolo)
       [[ -n "$MODEL" ]] && gemini_args+=(--model "$MODEL")
-      "$binary" "${gemini_args[@]}" --prompt "$prompt"
+      capture_agent_output "$AGENT_OUTPUT_FILE" "$binary" "${gemini_args[@]}" --prompt "$prompt"
       ;;
   esac
 }
@@ -350,6 +365,7 @@ if [[ -n "$PROJECT_ROOT" ]]; then
 else
   PROJECT_ROOT="$(resolve_project_root "$PWD")"
 fi
+AGENT_OUTPUT_FILE="$PROJECT_ROOT/.midiarranger/last-agent-output.txt"
 
 case "$COMMAND" in
   brief)

@@ -275,6 +275,56 @@ def test_brief_invokes_selected_agent_with_input_midi_prompt(tmp_path: Path) -> 
     assert "input_midi=song.mid" in blocks["STDIN"]
 
 
+def test_agent_output_is_streamed_and_captured_for_inspection(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "claude"
+    binary.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf 'stdout before sleep\\n'
+printf 'stderr before sleep\\n' >&2
+sleep 1
+printf 'stdout after sleep\\n'
+printf 'stderr after sleep\\n' >&2
+""",
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    process = subprocess.Popen(
+        [str(SCRIPT), "run", "--cwd", str(project), "--tool", "claude"],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    assert process.stdout is not None
+    first_line = process.stdout.readline()
+    assert first_line == "stdout before sleep\n"
+    assert process.poll() is None
+
+    stdout_remainder, stderr = process.communicate(timeout=5)
+    stdout = first_line + stdout_remainder
+
+    assert process.returncode == 0, stderr
+    assert "stderr before sleep" in stdout
+    assert "stdout after sleep" in stdout
+    assert "stderr after sleep" in stdout
+
+    captured = (project / ".midiarranger" / "last-agent-output.txt").read_text()
+    assert "stdout before sleep" in captured
+    assert "stderr before sleep" in captured
+    assert "stdout after sleep" in captured
+    assert "stderr after sleep" in captured
+
+
 def test_missing_agent_binary_fails_before_invocation(tmp_path: Path) -> None:
     env = {"PATH": "/usr/bin:/bin", "MOCK_LOG": str(tmp_path / "missing.log")}
 
