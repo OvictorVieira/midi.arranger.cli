@@ -29,6 +29,7 @@ from dataclasses import dataclass, replace
 
 from ..analyze import Analysis, BarAnalysis, Chord
 from ..constants import GATE_RATIOS, REGISTER_BANDS, VELOCITY_RANGES
+from ..humanize import DurationEngine, DurationRequest
 from ..plan import ArrangementPlan, PlanSection
 from ..voicing import (
     C2_PITCH,
@@ -297,12 +298,6 @@ touching'. Sorteio uniforme na faixa; a contagem final e arredondada e
 travada dentro de [12%, 47%] via `_legato_pair_count` para o teste
 determinstico nunca escapar do intervalo."""
 
-RHODES_OVERLAP_MS: tuple[float, float] = (5.0, 25.0)
-"""LEGATO_OVERLAP_MS espelhado da rodada 1 (constants.LEGATO_OVERLAP_MS).
-Duplicado como constante local para nao amarrar o comportamento de
-teclado a uma constante compartilhada entre motores — o Rhodes pode
-divergir dessa faixa em rodadas futuras sem quebrar guitar/bass."""
-
 PIANO_GAP_MS: tuple[float, float] = (10.0, 40.0)
 """AC: 'modo piano e 100% gapped (release limpo)'. Release cai pelo menos
 10 ms antes do proximo onset da mesma altura. Faixa larga o suficiente
@@ -321,6 +316,21 @@ esta no pos-processamento de pares de mesma altura."""
 MIN_NOTE_DURATION_S: float = 0.001
 """Piso absoluto de duracao de nota — 1 ms garante que note_off cai depois
 de note_on mesmo apos jitter e gate agressivos, sem virar nota-fantasma."""
+
+PEDAL_PHRASE_GAP_S: float = 0.005
+"""Threshold de gap para considerar 'nova frase' e repisar o pedal.
+
+Fixado em 5 ms para ser estritamente menor que o menor gap do
+`_enforce_same_pitch_contract` do piano (`PIANO_GAP_MS[0]` = 10 ms). Isso
+garante duas coisas:
+
+- Pares touching (gap 0) nao quebram frase — legato do rhodes preserva
+  continuidade sonora exatamente onde o contrato deixa o note_off encostado
+  no proximo note_on.
+- Todo gap same-pitch escrito pelo contrato (10-40 ms) e maior que o
+  threshold, entao o pedal repisado a cada bar deixa esses gaps AUDIVEIS
+  no som (o AC US-007 exige isso).
+"""
 
 
 @dataclass(frozen=True)
@@ -444,12 +454,14 @@ def _enforce_same_pitch_contract(
     for pair_idx, (a, b) in enumerate(pairs):
         start_b = out[b].start_s
         if pair_idx in legato_indices:
-            # start_b + overlap_s > start_b, e overlap_s > 0 sempre — se a nota
-            # ja invade o proximo onset, esticamos ate `start_b + overlap`;
-            # se estava com gap, o mesmo new_end garante touching-com-overlap.
-            new_end = start_b + rng.uniform(*RHODES_OVERLAP_MS) / 1000.0
-            if new_end > out[a].end_s:
-                out[a] = replace(out[a], end_s=new_end)
+            # MIDI nao expressa overlap de mesma altura no mesmo canal:
+            # note_on(P), note_on(P), note_off(P) trunca a segunda nota
+            # (o primeiro note_off encerra o P atualmente soando). A ordem
+            # de eventos em `_notes_to_track` ja resolve note_off antes de
+            # note_on no mesmo tick, entao TOUCHING (end_s do a == start_s
+            # do b) preserva o segundo ataque limpo. E o mais proximo que
+            # MIDI same-pitch/same-channel permite de legato.
+            out[a] = replace(out[a], end_s=start_b)
             continue
         # Gap obrigatorio (piano OU rhodes fora da cota de legato).
         if out[a].end_s >= start_b:
@@ -464,21 +476,69 @@ def _enforce_same_pitch_contract(
 
 def _pedal_events_for_layer(
     notes: tuple[KeyboardNote, ...],
+    *,
+    bar_starts: tuple[float, ...] = (),
 ) -> tuple[KeyboardPedal, ...]:
-    """CC64 apertado no primeiro onset da camada, solto apos a ultima nota.
+    """CC64 sincopado por frase (bar-a-bar).
 
-    Uma unica ativacao por camada casa com o AC ('referencia usa CC64 uma
-    unica vez'): quem quiser sustain multi-secao rica edita o plano para
-    outra camada com use_sustain_cc64=True em outra faixa de secoes.
+    Modelo: pianista pisa CC64 no primeiro onset de cada bar e solta
+    quando o ultimo som daquele bar termina, repisando no proximo. Sem
+    isso o pedal segurado a camada inteira apaga (a) a articulacao de
+    cada novo acorde e (b) o gap entre notas de mesma altura que o
+    `_enforce_same_pitch_contract` escreve (piano 100% gapped) — ambos
+    inaudiveis com sustain pisado a musica toda.
+
+    Referencia: knowledge/persona/persona_produtor_metal_moderno.md:421
+    ('piano ... reduzir sustain nos trechos densos'). Pedal continuo
+    e o oposto do trabalho de articulacao do teclado.
+
+    Args:
+      notes: notas ja finalizadas da camada (pos-`_enforce_same_pitch_
+        contract`).
+      bar_starts: inicios absolutos dos bars da secao, em segundos e
+        ordenados. Sem esse dado, cai para uma unica pisada por camada
+        (fallback backward-compat, sem quebra do AC de gap mas tambem
+        sem repisa por frase).
     """
     if not notes:
         return ()
-    first = min(n.start_s for n in notes)
-    last = max(n.end_s for n in notes)
-    return (
-        KeyboardPedal(time_s=first, value=127),
-        KeyboardPedal(time_s=last, value=0),
-    )
+
+    if not bar_starts:
+        first = min(n.start_s for n in notes)
+        last = max(n.end_s for n in notes)
+        return (
+            KeyboardPedal(time_s=first, value=127),
+            KeyboardPedal(time_s=last, value=0),
+        )
+
+    bars_sorted = sorted(bar_starts)
+    per_bar: list[list[KeyboardNote]] = [[] for _ in bars_sorted]
+    for n in notes:
+        # Bar cujo intervalo cobre o onset da nota: maior bar_start <= n.start_s.
+        idx = 0
+        for i, bs in enumerate(bars_sorted):
+            if n.start_s + 1e-9 >= bs:
+                idx = i
+            else:
+                break
+        per_bar[idx].append(n)
+
+    events: list[KeyboardPedal] = []
+    for group in per_bar:
+        if not group:
+            continue
+        press_at = min(n.start_s for n in group)
+        lift_at = max(n.end_s for n in group)
+        if events and press_at < events[-1].time_s:
+            # Bar cujo primeiro onset comeca antes do lift do bar anterior
+            # (rhodes tocando touching entre bars): alinha o press no lift
+            # para preservar monotonicidade sem cruzar eventos.
+            press_at = events[-1].time_s
+        events.append(KeyboardPedal(time_s=press_at, value=127))
+        if lift_at < press_at:
+            lift_at = press_at
+        events.append(KeyboardPedal(time_s=lift_at, value=0))
+    return tuple(events)
 
 
 def generate_keyboard(
@@ -535,7 +595,13 @@ def generate_keyboard(
         ]
 
     base = _keyboard_base_velocity()
-    gate = _keyboard_gate(articulation)
+    # Articulacao normalizada — motor de duracao usa GATE_RATIOS diretamente e
+    # exige articulacao do vocabulario (`let_ring` etc caem para tight, igual
+    # a `_keyboard_gate`).
+    duration_art = (
+        articulation if articulation in GATE_RATIOS
+        else DEFAULT_KEYBOARD_ARTICULATION
+    )
 
     layer_offsets_s: list[float] = [0.0]
     for _ in range(1, layers):
@@ -548,6 +614,10 @@ def generate_keyboard(
         # Engine independente por camada — evita correlacao de onset spread
         # entre camadas quando duas dividem o mesmo bar/acorde.
         engine = VoicingEngine(seed=seed + layer_idx * 1_000_003)
+        # Motor de duracao independente por camada; sem isso o `note_dur`
+        # ficaria constante e `_check_duration_uniform` certificaria a track
+        # como duracao chapada.
+        dur_engine = DurationEngine(seed=seed + layer_idx * 1_000_009)
 
         # Passo 1: por bar, resolve onset base do acorde e pitches.
         bar_chords: list[tuple[float, list[int], int] | None] = []
@@ -565,7 +635,10 @@ def generate_keyboard(
             pitches = _voice_keyboard_chord(bar.chord, register)
             bar_chords.append((onset, pitches, bar_pos))
 
-        # Passo 2: emite notas com natural end = proximo onset OU fim da secao.
+        # Passo 2: emite notas com duracao sorteada por voz via motor de
+        # duracao — cada voz recebe uma proporcao independente de
+        # GATE_RATIOS[articulation] * gap ate o proximo acorde, quebrando a
+        # duracao chapada que originava `duration_uniform`.
         raw: list[KeyboardNote] = []
         for i, item in enumerate(bar_chords):
             if item is None:
@@ -579,18 +652,22 @@ def generate_keyboard(
             boundary = next_onset if next_onset is not None else bars[-1].end
             # window > 0 por construcao: onset < bar.end <= boundary (proximo
             # bar comeca em bar.end, e o guard de linha 562 assegura o resto).
-            note_dur = (boundary - chord_onset) * gate
             v_bar = _velocity_for_bar(bar_pos, dyn, section.kind, base)
             voiced = engine.voice(VoicingRequest(pitches=tuple(pitches), role=role))
             for vn in voiced:
                 note_onset = chord_onset + vn.onset_offset_ms / 1000.0
                 velocity = max(1, min(127, v_bar + vn.velocity_delta))
-                end_s = note_onset + note_dur
+                gap_s = boundary - note_onset
+                gap_ms = gap_s * 1000.0 if gap_s > 0 else None
+                dur_ms = dur_engine.compute(
+                    DurationRequest(articulation=duration_art, gap_ms=gap_ms),
+                )
+                dur_s = max(MIN_NOTE_DURATION_S, dur_ms / 1000.0)
                 raw.append(KeyboardNote(
                     pitch=vn.pitch,
                     velocity=velocity,
                     start_s=note_onset,
-                    end_s=end_s,
+                    end_s=note_onset + dur_s,
                 ))
 
         # Passo 3: contrato de par de mesma altura por role.
@@ -599,7 +676,10 @@ def generate_keyboard(
 
         pedal: tuple[KeyboardPedal, ...] = ()
         if use_sustain_cc64:
-            pedal = _pedal_events_for_layer(tuple(finalized))
+            pedal = _pedal_events_for_layer(
+                tuple(finalized),
+                bar_starts=tuple(b.start for b in bars),
+            )
 
         result.append(KeyboardLayer(
             index=layer_idx,
@@ -706,10 +786,26 @@ def _strings_ghost_velocity() -> int:
     return min(STRINGS_GHOST_MAX_ABS_VELOCITY, (lo + STRINGS_GHOST_MAX_ABS_VELOCITY) // 2)
 
 
+def _pitch_class_within(pc: int, lo: int, hi: int) -> int:
+    """Menor pitch com pitch class `pc` que caiba em [lo, hi]. Se a classe
+    nao ocorre dentro do registro, devolve `lo` — fallback rigido que
+    preserva determinismo e mantem a nota dentro do registro declarado."""
+    base = lo + ((pc - lo) % 12)
+    return base if base <= hi else lo
+
+
 def _tutti_pitches(chord: Chord, register: tuple[int, int]) -> list[int]:
     """Constroi ate STRINGS_TUTTI_MAX_VOICES notas do acorde espalhadas em
     ~STRINGS_TUTTI_SPREAD_ST semitons. Comeca no minimo do registro e
-    empilha pitches do acorde (raiz+3a/7a) em oitavas ate cobrir o span."""
+    empilha pitches do acorde (raiz+3a/7a) em oitavas ate cobrir o span.
+
+    Se o registro for estreito demais para caber qualquer grau do acorde
+    dentro do span do tutti (ex.: register=(60,63) com raiz F, todos os
+    graus caem acima do teto), degrada para uma unica voz na tonica
+    snapped ao registro. Decisao: degradar em vez de erro — o path
+    nao-tutti (`_initial_voice_pitches`) ja segue essa politica, e o
+    plano continua renderizavel. O operador ouve tutti anemico e ajusta
+    o register."""
     lo, hi = register
     span = min(STRINGS_TUTTI_SPREAD_ST, hi - lo)
     ceiling = lo + span
@@ -734,6 +830,8 @@ def _tutti_pitches(chord: Chord, register: tuple[int, int]) -> list[int]:
             break
         octave += 1
     pitches = sorted(set(pitches))
+    if not pitches:
+        pitches = [_pitch_class_within(chord.root, lo, hi)]
     return pitches[:STRINGS_TUTTI_MAX_VOICES]
 
 
@@ -763,7 +861,10 @@ def _initial_voice_pitches(
         octave += 1
     candidates = sorted(set(candidates))
     if not candidates:
-        return [_apply_register_constraint([root_base])[0]] * voices
+        # Registro estreito demais para caber qualquer grau do acorde:
+        # degrada para a tonica snapped em [lo, hi] em vez de devolver
+        # `root_base` — que pode cair acima de `hi` e violar o registro.
+        return [_pitch_class_within(chord.root, lo, hi)] * voices
     if len(candidates) >= voices:
         # Amostragem uniforme de N pitches distintos.
         step = (len(candidates) - 1) / max(1, voices - 1) if voices > 1 else 0
@@ -954,12 +1055,10 @@ def generate_strings(
             voice_pitches_per_bar.append(next_pitches)
             prev = next_pitches
 
-    # Coleta candidatos a ghost (indices absolutos de notas nao-extremas).
-    total_notes = 0
-    inner_note_indices: list[tuple[int, int]] = []  # (voice_idx, bar_pos)
     chug_map: list[bool] = [_bar_has_chug(b, analysis) for b in bars]
 
     voices_notes_raw: list[list[StringsNote]] = [[] for _ in range(voices)]
+    voices_bar_pos: list[list[int]] = [[] for _ in range(voices)]
     for bar_pos, bar in enumerate(bars):
         if bar.chord is None:
             continue
@@ -988,13 +1087,58 @@ def generate_strings(
                 start_s=start, end_s=end, is_ghost=False,
             )
             voices_notes_raw[vi].append(n)
-            total_notes += 1
-            if 0 < vi < voices - 1:
-                inner_note_indices.append((vi, len(voices_notes_raw[vi]) - 1))
+            voices_bar_pos[vi].append(bar_pos)
 
-    # Distribuicao de ghost: seleciona floor(ghost_ratio * total_notes) das
-    # notas internas. Vozes extremas nunca sao ghost (grave sustenta o
-    # arco, aguda entrega a nota focal).
+    # Consolida `nota comum sustentada` — knowledge/persona/persona_produtor_
+    # metal_moderno.md linhas 524 ("nota comum: uma voz permanece enquanto o
+    # acorde muda") e 699 ("uma voz sustenta nota comum") descrevem UM arco
+    # segurado, nao um ataque por compasso. Ataques repetidos com mesmo
+    # pitch/velocity/duracao/espacamento sao literalmente o padrao que o
+    # artifice `_check_repeated_notes` denuncia como robotico — o conserto
+    # e no gerador, colapsando corridas de bars contiguos no mesmo pitch
+    # numa unica nota longa.
+    for vi in range(voices):
+        raw_notes = voices_notes_raw[vi]
+        raw_bp = voices_bar_pos[vi]
+        if len(raw_notes) < 2:
+            continue
+        merged_notes: list[StringsNote] = []
+        merged_bp: list[int] = []
+        cur = raw_notes[0]
+        cur_bp = raw_bp[0]
+        for i in range(1, len(raw_notes)):
+            nxt = raw_notes[i]
+            nxt_bp = raw_bp[i]
+            if (
+                nxt.pitch == cur.pitch
+                and nxt.velocity == cur.velocity
+                and nxt_bp == cur_bp + 1
+            ):
+                cur = StringsNote(
+                    pitch=cur.pitch, velocity=cur.velocity,
+                    start_s=cur.start_s, end_s=nxt.end_s,
+                    is_ghost=cur.is_ghost,
+                )
+                cur_bp = nxt_bp
+            else:
+                merged_notes.append(cur)
+                merged_bp.append(cur_bp)
+                cur = nxt
+                cur_bp = nxt_bp
+        merged_notes.append(cur)
+        merged_bp.append(cur_bp)
+        voices_notes_raw[vi] = merged_notes
+        voices_bar_pos[vi] = merged_bp
+
+    # Ghost roda DEPOIS do merge — a fracao de ghost e sobre notas MUSICAIS
+    # (arcos), nao sobre re-ataques que nem existem musicalmente. Vozes
+    # extremas nunca sao ghost (grave sustenta o arco, aguda entrega a nota
+    # focal).
+    total_notes = sum(len(v) for v in voices_notes_raw)
+    inner_note_indices: list[tuple[int, int]] = []
+    for vi in range(1, voices - 1):
+        for ni in range(len(voices_notes_raw[vi])):
+            inner_note_indices.append((vi, ni))
     target_ghost = int(round(ghost_ratio * total_notes))
     ghost_pool = list(inner_note_indices)
     rng.shuffle(ghost_pool)
@@ -1350,11 +1494,11 @@ __all__ = [
     "OPEN_AT_CHORUS_BONUS",
     "PAD_BASE_VELOCITY_BUCKET",
     "PAD_LAYER_ONSET_STAGGER_MS",
+    "PEDAL_PHRASE_GAP_S",
     "PIANO_GAP_MS",
     "PadLayer",
     "PadNote",
     "RHODES_LEGATO_RATIO_RANGE",
-    "RHODES_OVERLAP_MS",
     "STRINGS_BASE_VELOCITY_BUCKET",
     "STRINGS_CHUG_MIN_NOTES",
     "STRINGS_CHUG_PITCH_CEILING",

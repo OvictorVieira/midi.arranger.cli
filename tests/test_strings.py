@@ -117,18 +117,27 @@ def test_generate_strings_no_chord_bar_returns_empty():
 def test_common_tone_preserved_when_pitch_class_matches():
     """Voz externa (top) mantem tom comum entre acordes consecutivos que
     compartilham pitch class. C major={C,E,G}, Em={E,G,B}: G (pc 7) e
-    tom comum — a voz do topo deve manter a mesma pitch class."""
+    tom comum — a voz do topo deve manter a mesma pitch class.
+
+    Como o gerador colapsa runs contiguos de mesmo pitch numa unica nota
+    sustentada (KB linhas 524/699), a assercao aceita tanto 2 notas com
+    mesma pitch class quanto 1 nota longa cobrindo os dois bars."""
     chords = [Chord(root=0, quality="major"), Chord(root=4, quality="minor")]
     ana = _analysis(chords)
     voices = generate_strings(ana, _section(end_bar=2), voices=3, seed=0)
     top = voices[-1].notes
-    assert len(top) == 2
-    # A pitch class do primeiro topo esta em C={0,4,7}. Comum com Em={4,7,11}
-    # sao 4 e 7. Se a primeira nota do topo cair em pc {4,7}, a segunda deve
-    # ficar na mesma pitch class (common tone preservado).
-    first_pc = top[0].pitch % 12
-    if first_pc in {4, 7}:
-        assert top[1].pitch % 12 == first_pc
+    assert len(top) in {1, 2}
+    if len(top) == 1:
+        # Merge de nota comum: cobre os dois bars com uma unica nota.
+        assert top[0].start_s < BAR_S
+        assert top[0].end_s > BAR_S
+    else:
+        # A pitch class do primeiro topo esta em C={0,4,7}. Comum com
+        # Em={4,7,11} sao 4 e 7. Se a primeira nota do topo cair em pc
+        # {4,7}, a segunda deve ficar na mesma pitch class.
+        first_pc = top[0].pitch % 12
+        if first_pc in {4, 7}:
+            assert top[1].pitch % 12 == first_pc
 
 
 def test_inner_voice_moves_by_step_when_possible():

@@ -360,6 +360,30 @@ def test_velocity_random_no_accent_flagged_when_downbeat_not_stronger():
     assert "random jitter" in rand[0].message
 
 
+def test_velocity_random_ignores_notes_outside_declared_bars():
+    """Nota alem do ultimo bar declarado nao entra na estatistica de acento
+    (placement pega ela em outro validador). O check ainda avalia normalmente
+    o resto e dispara `velocity_random_no_accent` se as notas in-bar
+    caracterizarem jitter — a nota extra nao poder mascarar o padrao."""
+    ana = _analysis(4)
+    notes = []
+    for b in range(2):
+        for i in range(8):
+            start = b * BAR_S + 0.007 + i * 0.24
+            vel = 40 if i == 0 else (100 if i % 2 else 90)
+            notes.append(_note(
+                pitch=60 + (i % 3), start_s=start,
+                end_s=start + 0.10 + (i % 3) * 0.04, velocity=vel,
+            ))
+    # Uma nota bem alem dos bars declarados — cai no `bar is None` branch.
+    notes.append(_note(pitch=72, start_s=999.0, end_s=999.15, velocity=42))
+    tr = _track(notes)
+    plan = _plan([_element()])
+    issues = validate_artifice([tr], plan, ana)
+    rand = [i for i in issues if i.pattern == PATTERN_VELOCITY_RANDOM]
+    assert len(rand) == 1
+
+
 def test_velocity_random_not_flagged_when_downbeat_accented():
     """Downbeat mais alto que offbeat => tem acento, passa."""
     ana = _analysis(4)
@@ -478,6 +502,62 @@ def test_duplicates_skipped_when_source_lists_are_empty():
     plan = _plan([_element()])
     issues = validate_artifice([tr], plan, ana)
     assert not any(i.pattern == PATTERN_DUPLICATES_SOURCE for i in issues)
+
+
+def test_duplicates_source_exempt_for_shadow_role():
+    """Shadow por contrato dobra o fim da frase de guitarra — 100% de
+    alinhamento de onset e o efeito pretendido, nao artificialidade. A
+    justificativa musical vive na docstring de
+    `DUPLICATES_SOURCE_EXEMPT_ROLES`. Sem essa isencao, US-001 falha em
+    shadow com 'no rhythmic content of its own'."""
+    guitar = [
+        GuitarNote(start=i * 0.35, pitch=50 + (i % 5), track="Guitar")
+        for i in range(16)
+    ]
+    ana = _analysis(bars=8, guitar=guitar)
+    notes = [
+        _note(pitch=62, start_s=g.start + 0.005,
+              end_s=g.start + 0.35, velocity=70 + (i % 4))
+        for i, g in enumerate(guitar[:12])
+    ]
+    tr = _track(notes, element_id="shadow_main", name="Shadow")
+    shadow_elem = Element(
+        id="shadow_main", role="shadow", sections=["MAIN"],
+        register=[48, 84], layers=1,
+        sync_role="response", articulation="sustained",
+        harmony="free",
+    )
+    plan = _plan([shadow_elem])
+    issues = validate_artifice([tr], plan, ana)
+    assert not any(i.pattern == PATTERN_DUPLICATES_SOURCE for i in issues), (
+        "shadow role must be exempt from duplicates_source — a shadow that "
+        "does NOT align with guitar onsets is a broken shadow"
+    )
+
+
+def test_duplicates_source_still_flags_other_roles_over_guitar():
+    """A isencao e por role, nao global. Pad/arp/motor continuam sujeitos
+    ao check — copiar guitarra sem ser shadow ainda e artificialidade."""
+    guitar = [
+        GuitarNote(start=i * 0.35, pitch=50 + (i % 5), track="Guitar")
+        for i in range(16)
+    ]
+    ana = _analysis(bars=8, guitar=guitar)
+    notes = [
+        _note(pitch=62, start_s=g.start + 0.005,
+              end_s=g.start + 0.10, velocity=70 + (i % 4))
+        for i, g in enumerate(guitar[:12])
+    ]
+    tr = _track(notes, element_id="motor_main", name="Motor")
+    motor_elem = Element(
+        id="motor_main", role="motor", sections=["MAIN"],
+        register=[48, 71], layers=1,
+        sync_role="sustain_through", articulation="staccato",
+        harmony="follow_chords",
+    )
+    plan = _plan([motor_elem])
+    issues = validate_artifice([tr], plan, ana)
+    assert any(i.pattern == PATTERN_DUPLICATES_SOURCE for i in issues)
 
 
 # --- guards defensivos -----------------------------------------------------

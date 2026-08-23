@@ -541,9 +541,13 @@ def test_render_piano_with_sustain_emits_cc64(tmp_path):
     mid = mido.MidiFile(str(out))
     piano_tr = mid.tracks[-1]
     cc64s = [m for m in piano_tr if m.type == "control_change" and m.control == 64]
-    assert len(cc64s) == 2
+    # AC US-007: pedal sincopado — pisa/solta por frase, nao ativa uma vez
+    # e segura ate o fim. Comeca em 127, termina em 0, e alterna no meio.
+    assert len(cc64s) >= 4
     assert cc64s[0].value == 127
-    assert cc64s[1].value == 0
+    assert cc64s[-1].value == 0
+    for i, m in enumerate(cc64s):
+        assert m.value == (127 if i % 2 == 0 else 0)
 
 
 def test_iter_element_sections_skips_unknown_labels(tmp_path):

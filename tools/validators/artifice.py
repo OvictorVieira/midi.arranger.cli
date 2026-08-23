@@ -114,6 +114,21 @@ SUSTAINED_ARTICULATIONS: frozenset[str] = frozenset({"sustained", "let_ring"})
 notas seguradas legitimamente caem no downbeat, cobrem a secao inteira e
 tem duracao homogenea."""
 
+DUPLICATES_SOURCE_EXEMPT_ROLES: frozenset[str] = frozenset({"shadow"})
+"""Roles cuja definicao musical E dobrar o source — o alerta 'sem conteudo
+ritmico proprio' nao se aplica porque a duplicacao E o conteudo.
+
+- shadow: `knowledge/persona/persona_produtor_metal_moderno.md` linha 569
+  documenta 'synth dobra apenas o final do riff, uma oitava acima ou
+  abaixo'. Cada onset do shadow por contrato coincide com um onset de
+  guitarra (fim de frase); o que separa shadow de 'guitarra copiada' e
+  pitch (+/-12), envelope (`sustained` contra staccato de picking) e
+  velocity (offset default -25). O gerador ja garante essas diferencas
+  (ver `SHADOW_OCTAVE_SHIFT_ALLOWED`, `SHADOW_DEFAULT_ARTICULATION`,
+  `SHADOW_DEFAULT_VELOCITY_OFFSET` em `tools/palette/rhythmic.py`); o
+  validador de duplicacao nao tem como diferenciar 'dobra intencional
+  do fim' de 'copia servil do source' apenas pelo tempo de onset."""
+
 # Chaves nomeadas dos anti-padroes — string curto usado no relatorio e em
 # `ArtificeIssue.pattern` para o consumidor filtrar por tipo sem parsear
 # mensagem. Vocabulario fechado.
@@ -363,10 +378,9 @@ def _count_matches(
     track_times: list[float],
 ) -> int:
     """Numero de `track_times` que casam com algum `source_times` dentro
-    de `DUPLICATE_ONSET_WINDOW_S`. `source_times` deve chegar ordenado
-    (analysis ja garante para kick_positions e guitar_notes)."""
-    if not source_times:
-        return 0
+    de `DUPLICATE_ONSET_WINDOW_S`. `source_times` deve chegar ordenado e
+    nao-vazio (o unico chamador, `_check_duplicates_source`, filtra em
+    `len(source_times) < MIN_NOTES_FOR_CHECK` antes de chamar)."""
     matched = 0
     j = 0
     for t in track_times:
@@ -449,9 +463,10 @@ def _validate_track(
     repeated = _check_repeated_notes(element.id, track, analysis)
     if repeated is not None:
         issues.append(repeated)
-    dupes = _check_duplicates_source(element.id, track, analysis)
-    if dupes is not None:
-        issues.append(dupes)
+    if element.role not in DUPLICATES_SOURCE_EXEMPT_ROLES:
+        dupes = _check_duplicates_source(element.id, track, analysis)
+        if dupes is not None:
+            issues.append(dupes)
     return issues
 
 
@@ -495,6 +510,7 @@ __all__ = [
     "ALL_PATTERNS",
     "ArtificeIssue",
     "DOWNBEAT_TOLERANCE_RATIO",
+    "DUPLICATES_SOURCE_EXEMPT_ROLES",
     "DUPLICATE_ONSET_RATIO",
     "DUPLICATE_ONSET_WINDOW_S",
     "DURATION_BUCKET_S",

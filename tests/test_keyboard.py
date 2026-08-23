@@ -17,7 +17,6 @@ from tools.palette.harmonic import (
     MIN_NOTE_DURATION_S,
     PIANO_GAP_MS,
     RHODES_LEGATO_RATIO_RANGE,
-    RHODES_OVERLAP_MS,
     KeyboardLayer,
     KeyboardNote,
     _enforce_same_pitch_contract,
@@ -313,17 +312,23 @@ def test_default_generation_emits_no_pedal_events():
         assert layer.pedal_events == ()
 
 
-def test_use_sustain_cc64_emits_paired_events():
+def test_use_sustain_cc64_syncopated_pedal_invariants():
+    """AC US-007: pedal sincopado (repisa por frase). O que fica garantido
+    aqui e o CONTRATO da sequencia — press/lift alternados, comecando em
+    127 e terminando em 0, com tempos nao-decrescentes."""
     ana = _analysis_with_chord_run(Chord(root=0, quality="major"), n_bars=4)
     sec = _section(end_bar=4)
     layers = generate_keyboard(
         ana, sec, role="piano", layers=1, seed=0, use_sustain_cc64=True,
     )
     pedals = layers[0].pedal_events
-    assert len(pedals) == 2
+    assert len(pedals) >= 2
     assert pedals[0].value == 127
-    assert pedals[1].value == 0
-    assert pedals[0].time_s < pedals[1].time_s
+    assert pedals[-1].value == 0
+    for i, ev in enumerate(pedals):
+        assert ev.value == (127 if i % 2 == 0 else 0)
+    for a, b in zip(pedals, pedals[1:], strict=False):
+        assert a.time_s <= b.time_s
 
 
 def test_pedal_events_for_layer_empty_notes_returns_empty():
@@ -381,8 +386,14 @@ def test_enforce_same_pitch_contract_empty():
     assert out == []
 
 
-def test_enforce_same_pitch_contract_rhodes_reaches_at_least_touching():
-    """Quando o par ja tem gap, o legato do rhodes puxa ate touching (end == start)."""
+def test_enforce_same_pitch_contract_rhodes_legato_is_touching_not_overlap():
+    """Legato do rhodes cria par TOUCHING (end_s == start_s), nunca overlap.
+
+    MIDI mesma altura no mesmo canal nao expressa overlap — o primeiro
+    note_off termina o P atualmente soando, truncando o segundo ataque.
+    A ordem note_off-antes-de-note_on no mesmo tick garante o segundo
+    ataque limpo quando a primeira nota termina exatamente no onset da
+    segunda."""
     notes = [
         KeyboardNote(pitch=60, velocity=90, start_s=0.0, end_s=0.5),
         KeyboardNote(pitch=60, velocity=90, start_s=1.0, end_s=1.5),
@@ -390,10 +401,22 @@ def test_enforce_same_pitch_contract_rhodes_reaches_at_least_touching():
     rng = random.Random(0)
     out = _enforce_same_pitch_contract(notes, role="rhodes", rng=rng)
     # Um unico par => n_min=max(1, int(0.12)) = 1 => vira legato.
-    assert out[0].end_s >= 1.0 - 1e-9
-    # E o overlap se cair extra fica dentro de RHODES_OVERLAP_MS.
-    overlap_ms = max(0.0, (out[0].end_s - 1.0) * 1000.0)
-    assert overlap_ms <= RHODES_OVERLAP_MS[1] + 1e-9
+    assert out[0].end_s == pytest.approx(1.0)
+    # Segundo ataque permanece intocado — o legato so alonga o primeiro.
+    assert out[1].start_s == pytest.approx(1.0)
+    assert out[1].end_s == pytest.approx(1.5)
+
+
+def test_enforce_same_pitch_contract_rhodes_legato_truncates_prior_overlap():
+    """Se a primeira nota ja invade o onset da segunda, o legato TRUNCA
+    para touching — nunca mantem overlap na saida."""
+    notes = [
+        KeyboardNote(pitch=60, velocity=90, start_s=0.0, end_s=1.05),
+        KeyboardNote(pitch=60, velocity=90, start_s=1.0, end_s=1.5),
+    ]
+    rng = random.Random(0)
+    out = _enforce_same_pitch_contract(notes, role="rhodes", rng=rng)
+    assert out[0].end_s == pytest.approx(1.0)
 
 
 def test_role_in_keyboard_roles():
