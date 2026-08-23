@@ -43,11 +43,12 @@ família de instrumento a arranjar, mais folga para correções.
 flowchart TD
     Start([midi-arranger run N]) --> Check{brief existe?}
     Check -->|não| Die[/erro: rode a skill de brief antes/]
-    Check -->|sim| State[cria .midiarranger/<br/>e garante progress.txt]
+    Check -->|sim| State[cria .midiarranger/<br/>e calcula hash do brief]
     State --> Arch{brief mudou<br/>desde a última vez?}
     Arch -->|sim| Archive[arquiva plano e log<br/>em .midiarranger/archive]
-    Arch -->|não| Loop
-    Archive --> Loop
+    Arch -->|não| Progress
+    Archive --> Progress[grava hash aceito<br/>e garante progress.txt]
+    Progress --> Loop
 
     Loop[i = 1] --> Invoke[monta prompt com iteration=i<br/>e linha de comando do adaptador]
     Invoke --> Run[executa a CLI de IA<br/>ecoa e captura a saída]
@@ -76,9 +77,10 @@ Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midia
 necessário e compara o hash atual do brief com `.midiarranger/brief.sha256`. Se o hash mudou desde a
 última execução, o harness move o `arrangement-plan.json` e o `progress.txt` anteriores para
 `.midiarranger/archive/<data>-<slug>/`, onde o slug vem do MIDI citado no brief quando isso está
-disponível. Só depois disso ele grava o novo hash, garante que `progress.txt` exista e acrescenta a
-entrada de início de execução. Se o hash do brief é o mesmo, nada é arquivado: o log existente é
-preservado e recebe append.
+disponível. Se nenhum desses arquivos existir, o diretório de arquivo vazio é removido. Só depois
+disso ele grava o novo hash, garante que `progress.txt` exista e acrescenta a entrada de início de
+execução. Se o hash do brief é o mesmo, nada é arquivado: o log existente é preservado e recebe
+append.
 
 ---
 
@@ -167,7 +169,7 @@ flowchart TD
         PROG[(progress.txt<br/>log append-only)]
     end
     subgraph escrita_pelo_harness [escrito pelo harness]
-        STATE[(.midiarranger/<br/>estado e arquivo)]
+        STATE[(.midiarranger/<br/>brief.sha256<br/>last-agent-output.txt<br/>archive/)]
     end
 
     BRIEF -->|somente leitura no run| PLAN
@@ -183,7 +185,7 @@ flowchart TD
 | `arrangement-brief.json` | O que você quer. **Somente leitura durante o `run`** | a skill de brief |
 | `arrangement-plan.json` | O que será construído. **Fonte de verdade da conclusão** | o agente |
 | `progress.txt` | O que cada iteração fez. Só log — nunca consultado para decidir se acabou | o agente |
-| `.midiarranger/` | Última execução e arquivo das anteriores | o harness |
+| `.midiarranger/` | `brief.sha256`, última saída capturada e arquivo das execuções anteriores | o harness |
 
 **O brief é contrato.** Se o agente concluir que ele está errado, ele para e reporta — nunca
 reescreve o que você pediu. Requisito novo é brief novo.
