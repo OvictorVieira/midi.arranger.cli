@@ -1,0 +1,18 @@
+# Ferramentas do quality gate. Nao sao dependencia do pacote.
+#
+# Instale com:
+#   python3 -m pip install --user --break-system-packages -r requirements-dev.txt
+#
+# `--user` porque esta maquina usa Homebrew Python, que e externally-managed
+# (PEP 668): escrever na arvore do brew e bloqueado, mas o user site
+# (~/Library/Python/X.Y/lib/python/site-packages) nao e gerenciado por ele.
+# As tres deps de runtime ja vivem la, entao isto mantem a consistencia.
+#
+# Os binarios vao para ~/Library/Python/X.Y/bin, que costuma ficar fora do
+# PATH. O gate detecta as ferramentas por `python3 -m <modulo>` justamente
+# por isso — nao dependa de o bin estar no PATH.
+-r requirements.txt
+pytest==9.1.1
+coverage==7.15.4
+pip-audit==2.10.1
+ruff>=0.15

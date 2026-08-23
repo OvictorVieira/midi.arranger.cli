@@ -1,0 +1,7 @@
+#!/bin/sh
+# Gate completo contra o baseline de origin/main.
+# --check nunca escreve baseline: a branch tem que provar que nao piorou
+# nada em relacao a main, mesmo que o baseline local ja tenha avancado.
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+exec python3 "$ROOT/scripts/quality_gate.py" --check

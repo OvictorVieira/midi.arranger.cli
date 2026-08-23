@@ -1,0 +1,30 @@
+# Config do ruff fixada para o quality gate.
+#
+# Sem isto o conjunto de regras default do ruff muda entre versoes e o gate
+# passa a medir coisas diferentes ao longo do tempo — uma metrica que muda de
+# definicao sozinha nao serve de baseline.
+
+target-version = "py311"
+line-length = 100
+exclude = [
+    "**/__pycache__",
+    ".worktrees",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes — import morto, variavel nao usada
+    "I",    # isort — ordem de import
+    "UP",   # pyupgrade
+    "B",    # bugbear — armadilhas comuns
+    "SIM",  # simplificacoes
+]
+ignore = [
+    "E501",  # comprimento de linha: line-length ja cobre, sem duplicar
+]
+
+[lint.per-file-ignores]
+# Testes acessam membros privados de proposito (ex.: _deterministic_components)
+# para checar a fronteira interna do motor, e usam asserts longos.
+"tests/**/*.py" = ["SLF001"]
