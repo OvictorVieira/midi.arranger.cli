@@ -317,6 +317,21 @@ MIN_NOTE_DURATION_S: float = 0.001
 """Piso absoluto de duracao de nota — 1 ms garante que note_off cai depois
 de note_on mesmo apos jitter e gate agressivos, sem virar nota-fantasma."""
 
+PEDAL_PHRASE_GAP_S: float = 0.005
+"""Threshold de gap para considerar 'nova frase' e repisar o pedal.
+
+Fixado em 5 ms para ser estritamente menor que o menor gap do
+`_enforce_same_pitch_contract` do piano (`PIANO_GAP_MS[0]` = 10 ms). Isso
+garante duas coisas:
+
+- Pares touching (gap 0) nao quebram frase — legato do rhodes preserva
+  continuidade sonora exatamente onde o contrato deixa o note_off encostado
+  no proximo note_on.
+- Todo gap same-pitch escrito pelo contrato (10-40 ms) e maior que o
+  threshold, entao o pedal repisado a cada bar deixa esses gaps AUDIVEIS
+  no som (o AC US-007 exige isso).
+"""
+
 
 @dataclass(frozen=True)
 class KeyboardNote:
@@ -461,21 +476,69 @@ def _enforce_same_pitch_contract(
 
 def _pedal_events_for_layer(
     notes: tuple[KeyboardNote, ...],
+    *,
+    bar_starts: tuple[float, ...] = (),
 ) -> tuple[KeyboardPedal, ...]:
-    """CC64 apertado no primeiro onset da camada, solto apos a ultima nota.
+    """CC64 sincopado por frase (bar-a-bar).
 
-    Uma unica ativacao por camada casa com o AC ('referencia usa CC64 uma
-    unica vez'): quem quiser sustain multi-secao rica edita o plano para
-    outra camada com use_sustain_cc64=True em outra faixa de secoes.
+    Modelo: pianista pisa CC64 no primeiro onset de cada bar e solta
+    quando o ultimo som daquele bar termina, repisando no proximo. Sem
+    isso o pedal segurado a camada inteira apaga (a) a articulacao de
+    cada novo acorde e (b) o gap entre notas de mesma altura que o
+    `_enforce_same_pitch_contract` escreve (piano 100% gapped) — ambos
+    inaudiveis com sustain pisado a musica toda.
+
+    Referencia: knowledge/persona/persona_produtor_metal_moderno.md:421
+    ('piano ... reduzir sustain nos trechos densos'). Pedal continuo
+    e o oposto do trabalho de articulacao do teclado.
+
+    Args:
+      notes: notas ja finalizadas da camada (pos-`_enforce_same_pitch_
+        contract`).
+      bar_starts: inicios absolutos dos bars da secao, em segundos e
+        ordenados. Sem esse dado, cai para uma unica pisada por camada
+        (fallback backward-compat, sem quebra do AC de gap mas tambem
+        sem repisa por frase).
     """
     if not notes:
         return ()
-    first = min(n.start_s for n in notes)
-    last = max(n.end_s for n in notes)
-    return (
-        KeyboardPedal(time_s=first, value=127),
-        KeyboardPedal(time_s=last, value=0),
-    )
+
+    if not bar_starts:
+        first = min(n.start_s for n in notes)
+        last = max(n.end_s for n in notes)
+        return (
+            KeyboardPedal(time_s=first, value=127),
+            KeyboardPedal(time_s=last, value=0),
+        )
+
+    bars_sorted = sorted(bar_starts)
+    per_bar: list[list[KeyboardNote]] = [[] for _ in bars_sorted]
+    for n in notes:
+        # Bar cujo intervalo cobre o onset da nota: maior bar_start <= n.start_s.
+        idx = 0
+        for i, bs in enumerate(bars_sorted):
+            if n.start_s + 1e-9 >= bs:
+                idx = i
+            else:
+                break
+        per_bar[idx].append(n)
+
+    events: list[KeyboardPedal] = []
+    for group in per_bar:
+        if not group:
+            continue
+        press_at = min(n.start_s for n in group)
+        lift_at = max(n.end_s for n in group)
+        if events and press_at < events[-1].time_s:
+            # Bar cujo primeiro onset comeca antes do lift do bar anterior
+            # (rhodes tocando touching entre bars): alinha o press no lift
+            # para preservar monotonicidade sem cruzar eventos.
+            press_at = events[-1].time_s
+        events.append(KeyboardPedal(time_s=press_at, value=127))
+        if lift_at < press_at:
+            lift_at = press_at
+        events.append(KeyboardPedal(time_s=lift_at, value=0))
+    return tuple(events)
 
 
 def generate_keyboard(
@@ -613,7 +676,10 @@ def generate_keyboard(
 
         pedal: tuple[KeyboardPedal, ...] = ()
         if use_sustain_cc64:
-            pedal = _pedal_events_for_layer(tuple(finalized))
+            pedal = _pedal_events_for_layer(
+                tuple(finalized),
+                bar_starts=tuple(b.start for b in bars),
+            )
 
         result.append(KeyboardLayer(
             index=layer_idx,
@@ -1428,6 +1494,7 @@ __all__ = [
     "OPEN_AT_CHORUS_BONUS",
     "PAD_BASE_VELOCITY_BUCKET",
     "PAD_LAYER_ONSET_STAGGER_MS",
+    "PEDAL_PHRASE_GAP_S",
     "PIANO_GAP_MS",
     "PadLayer",
     "PadNote",

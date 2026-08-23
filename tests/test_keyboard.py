@@ -312,17 +312,23 @@ def test_default_generation_emits_no_pedal_events():
         assert layer.pedal_events == ()
 
 
-def test_use_sustain_cc64_emits_paired_events():
+def test_use_sustain_cc64_syncopated_pedal_invariants():
+    """AC US-007: pedal sincopado (repisa por frase). O que fica garantido
+    aqui e o CONTRATO da sequencia — press/lift alternados, comecando em
+    127 e terminando em 0, com tempos nao-decrescentes."""
     ana = _analysis_with_chord_run(Chord(root=0, quality="major"), n_bars=4)
     sec = _section(end_bar=4)
     layers = generate_keyboard(
         ana, sec, role="piano", layers=1, seed=0, use_sustain_cc64=True,
     )
     pedals = layers[0].pedal_events
-    assert len(pedals) == 2
+    assert len(pedals) >= 2
     assert pedals[0].value == 127
-    assert pedals[1].value == 0
-    assert pedals[0].time_s < pedals[1].time_s
+    assert pedals[-1].value == 0
+    for i, ev in enumerate(pedals):
+        assert ev.value == (127 if i % 2 == 0 else 0)
+    for a, b in zip(pedals, pedals[1:], strict=False):
+        assert a.time_s <= b.time_s
 
 
 def test_pedal_events_for_layer_empty_notes_returns_empty():
