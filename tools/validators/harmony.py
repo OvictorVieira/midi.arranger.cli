@@ -34,8 +34,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from .analyze import Analysis, BarAnalysis, GuitarNote, bar_number, find_bar
-from .plan import ArrangementPlan, Element
+from ..analyze import Analysis, BarAnalysis, GuitarNote, bar_number, find_bar
+from ..plan import ArrangementPlan, Element
 
 # --- constantes -------------------------------------------------------------
 

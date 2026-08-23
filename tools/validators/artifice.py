@@ -40,13 +40,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import fmean, pstdev
 
-from .analyze import Analysis, bar_number, find_bar
-from .harmony_validator import (
+from ..analyze import Analysis, bar_number, find_bar
+from ..plan import ArrangementPlan, Element
+from .harmony import (
     SEVERITY_ERROR,
     RenderedTrack,
     pitch_name,
 )
-from .plan import ArrangementPlan, Element
 
 # --- constantes -------------------------------------------------------------
 

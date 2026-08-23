@@ -439,7 +439,7 @@ def test_format_render_report_shows_collision_details(tmp_path):
 def test_format_render_report_prints_warnings_and_notes(tmp_path):
     """Exercita os ramos de warnings e notes do pretty-print — que so
     aparecem quando o render acumula avisos ou anota o elemento."""
-    from tools.collision import (
+    from tools.validators.collision import (
         CollisionReport,
         CollisionWarning,
     )
@@ -568,8 +568,8 @@ def test_render_piano_passes_harmony_and_placement_validators(tmp_path):
     report = render(plan, out)
 
     # Nenhum erro em harmony/placement — avisos sao tolerados.
-    from tools.harmony_validator import has_errors as harmony_has_errors
-    from tools.placement import has_errors as placement_has_errors
+    from tools.validators.harmony import has_errors as harmony_has_errors
+    from tools.validators.placement import has_errors as placement_has_errors
     assert not harmony_has_errors(report.harmony_issues), [
         i.message for i in report.harmony_issues if i.severity == "error"
     ]
@@ -641,8 +641,8 @@ def test_render_strings_passes_harmony_and_placement_validators(tmp_path):
     plan.elements[0] = _strings_element(role="strings", layers=3)
     out = tmp_path / "out.mid"
     report = render(plan, out)
-    from tools.harmony_validator import has_errors as harmony_has_errors
-    from tools.placement import has_errors as placement_has_errors
+    from tools.validators.harmony import has_errors as harmony_has_errors
+    from tools.validators.placement import has_errors as placement_has_errors
     assert not harmony_has_errors(report.harmony_issues), [
         i.message for i in report.harmony_issues if i.severity == "error"
     ]
@@ -759,8 +759,8 @@ def test_render_drone_passes_harmony_and_placement_validators(tmp_path):
     plan.elements[0] = _drone_element(pedal=True)
     out = tmp_path / "out.mid"
     report = render(plan, out)
-    from tools.harmony_validator import has_errors as harmony_has_errors
-    from tools.placement import has_errors as placement_has_errors
+    from tools.validators.harmony import has_errors as harmony_has_errors
+    from tools.validators.placement import has_errors as placement_has_errors
     assert not harmony_has_errors(report.harmony_issues), [
         i.message for i in report.harmony_issues if i.severity == "error"
     ]
@@ -855,8 +855,8 @@ def test_render_arp_passes_harmony_and_placement_validators(tmp_path):
     plan.elements[0] = _rhythmic_element(role="arp")
     out = tmp_path / "out.mid"
     report = render(plan, out)
-    from tools.harmony_validator import has_errors as harmony_has_errors
-    from tools.placement import has_errors as placement_has_errors
+    from tools.validators.harmony import has_errors as harmony_has_errors
+    from tools.validators.placement import has_errors as placement_has_errors
     assert not harmony_has_errors(report.harmony_issues), [
         i.message for i in report.harmony_issues if i.severity == "error"
     ]
@@ -1019,8 +1019,8 @@ def test_render_motor_passes_harmony_and_placement_validators(tmp_path):
     plan.elements[0] = _motor_element()
     out = tmp_path / "out.mid"
     report = render(plan, out)
-    from tools.harmony_validator import has_errors as harmony_has_errors
-    from tools.placement import has_errors as placement_has_errors
+    from tools.validators.harmony import has_errors as harmony_has_errors
+    from tools.validators.placement import has_errors as placement_has_errors
     assert not harmony_has_errors(report.harmony_issues), [
         i.message for i in report.harmony_issues if i.severity == "error"
     ]
@@ -1076,8 +1076,8 @@ def test_render_shadow_passes_harmony_and_placement_validators(tmp_path):
     plan.elements[0] = _shadow_element()
     out = tmp_path / "out.mid"
     report = render(plan, out)
-    from tools.harmony_validator import has_errors as harmony_has_errors
-    from tools.placement import has_errors as placement_has_errors
+    from tools.validators.harmony import has_errors as harmony_has_errors
+    from tools.validators.placement import has_errors as placement_has_errors
     assert not harmony_has_errors(report.harmony_issues), [
         i.message for i in report.harmony_issues if i.severity == "error"
     ]

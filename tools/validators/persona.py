@@ -22,10 +22,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .analyze import Analysis
-from .constants import REGISTER_BANDS
-from .harmony_validator import RenderedTrack
-from .plan import ArrangementPlan, Element
+from ..analyze import Analysis
+from ..constants import REGISTER_BANDS
+from ..plan import ArrangementPlan, Element
+from .harmony import RenderedTrack
 
 # --- constantes -------------------------------------------------------------
 

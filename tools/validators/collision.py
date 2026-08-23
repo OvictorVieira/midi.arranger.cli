@@ -24,8 +24,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from .constants import REGISTER_BANDS
-from .plan import ArrangementPlan, Element
+from ..constants import REGISTER_BANDS
+from ..plan import ArrangementPlan, Element
 
 # Fronteiras exatas (semitons MIDI). Alinhadas a REGISTER_BANDS do spec.
 C2_PITCH = 36

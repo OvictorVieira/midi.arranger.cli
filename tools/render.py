@@ -34,17 +34,7 @@ import mido
 import pretty_midi
 
 from .analyze import Analysis, analyze
-from .artifice import ArtificeIssue, validate_artifice
-from .artifice import format_issues as format_artifice_issues
-from .collision import CollisionReport, validate_collisions
 from .edits import EditReport, apply_edits, collect_track_names
-from .harmony_validator import (
-    HarmonyIssue,
-    RenderedNote,
-    RenderedTrack,
-    format_issues,
-    validate_harmony,
-)
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
@@ -68,10 +58,6 @@ from .palette.rhythmic import (
     generate_rhythmic,
     generate_shadow,
 )
-from .persona_validator import PersonaIssue, validate_persona
-from .persona_validator import format_issues as format_persona_issues
-from .placement import PlacementIssue, validate_placement
-from .placement import format_issues as format_placement_issues
 from .plan import (
     ArrangementPlan,
     Element,
@@ -80,6 +66,20 @@ from .plan import (
     validate_edits_against_midi,
 )
 from .tracks import name_for_element
+from .validators.artifice import ArtificeIssue, validate_artifice
+from .validators.artifice import format_issues as format_artifice_issues
+from .validators.collision import CollisionReport, validate_collisions
+from .validators.harmony import (
+    HarmonyIssue,
+    RenderedNote,
+    RenderedTrack,
+    format_issues,
+    validate_harmony,
+)
+from .validators.persona import PersonaIssue, validate_persona
+from .validators.persona import format_issues as format_persona_issues
+from .validators.placement import PlacementIssue, validate_placement
+from .validators.placement import format_issues as format_placement_issues
 
 # --- constantes -------------------------------------------------------------
 
