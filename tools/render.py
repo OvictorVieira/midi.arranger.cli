@@ -27,6 +27,7 @@ Determinismo:
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -99,10 +100,6 @@ MOTOR_CHANNEL = 0
 SHADOW_CHANNEL = 0
 SUSTAIN_CC = 64
 EXPRESSION_CC = 11
-SUPPORTED_ROLES: frozenset[str] = frozenset({
-    "pad", *KEYBOARD_ROLES, *STRINGS_ROLES, *DRONE_ROLES,
-    *RHYTHMIC_ROLES, *MOTOR_ROLES, *SHADOW_ROLES,
-})
 KEYBOARD_PATTERN_FIELDS: frozenset[str] = frozenset({"use_sustain_cc64"})
 STRINGS_PATTERN_FIELDS: frozenset[str] = frozenset({"tutti", "ghost_ratio"})
 DRONE_PATTERN_FIELDS: frozenset[str] = frozenset({
@@ -724,6 +721,52 @@ def _render_pad_element(
     return _layers_to_tracks(element, layer_notes, pm, channel)
 
 
+_RenderElementFn = Callable[
+    [Element, ArrangementPlan, Analysis, pretty_midi.PrettyMIDI, int],
+    tuple[list[mido.MidiTrack], list[RenderedTrack]],
+]
+
+
+@dataclass(frozen=True)
+class _RoleRenderer:
+    render: _RenderElementFn
+    channel: int
+
+
+def _build_role_renderers() -> dict[str, _RoleRenderer]:
+    return {
+        "pad": _RoleRenderer(_render_pad_element, PAD_CHANNEL),
+        **{
+            role: _RoleRenderer(_render_keyboard_element, KEYBOARD_CHANNEL)
+            for role in KEYBOARD_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_strings_element, STRINGS_CHANNEL)
+            for role in STRINGS_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_drone_element, DRONE_CHANNEL)
+            for role in DRONE_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_rhythmic_element, RHYTHMIC_CHANNEL)
+            for role in RHYTHMIC_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_motor_element, MOTOR_CHANNEL)
+            for role in MOTOR_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_shadow_element, SHADOW_CHANNEL)
+            for role in SHADOW_ROLES
+        },
+    }
+
+
+_ROLE_RENDERERS = _build_role_renderers()
+SUPPORTED_ROLES: frozenset[str] = frozenset(_ROLE_RENDERERS)
+
+
 # --- API principal ----------------------------------------------------------
 
 PlanArg = ArrangementPlan | str | Path
@@ -819,49 +862,10 @@ def render(
             sections=tuple(e.sections),
             rendered=False,
         )
-        if e.role == "pad":
-            midi_tracks, rendered = _render_pad_element(e, plan, analysis, pm, PAD_CHANNEL)
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in KEYBOARD_ROLES:
-            midi_tracks, rendered = _render_keyboard_element(
-                e, plan, analysis, pm, KEYBOARD_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in STRINGS_ROLES:
-            midi_tracks, rendered = _render_strings_element(
-                e, plan, analysis, pm, STRINGS_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in DRONE_ROLES:
-            midi_tracks, rendered = _render_drone_element(
-                e, plan, analysis, pm, DRONE_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in RHYTHMIC_ROLES:
-            midi_tracks, rendered = _render_rhythmic_element(
-                e, plan, analysis, pm, RHYTHMIC_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in MOTOR_ROLES:
-            midi_tracks, rendered = _render_motor_element(
-                e, plan, analysis, pm, MOTOR_CHANNEL,
-            )
-            out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
-            report_entry.rendered = True
-        elif e.role in SHADOW_ROLES:
-            midi_tracks, rendered = _render_shadow_element(
-                e, plan, analysis, pm, SHADOW_CHANNEL,
+        role_renderer = _ROLE_RENDERERS.get(e.role)
+        if role_renderer is not None:
+            midi_tracks, rendered = role_renderer.render(
+                e, plan, analysis, pm, role_renderer.channel,
             )
             out_mid.tracks.extend(midi_tracks)
             rendered_tracks.extend(rendered)
