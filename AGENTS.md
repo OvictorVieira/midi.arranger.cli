@@ -54,7 +54,13 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Os mocks do harness acrescentam cada invocação ao `MOCK_LOG`; para testes multi-iteração, conte
   blocos `BIN<<END`, enquanto `read_mock_log` continua representando a última invocação.
 - Para testes de conclusão do `run`, defina `MOCK_COMPLETE_ON=<n>` nos mocks do harness; a invocação
-  `n` emitirá a sentinela literal `<promise>COMPLETE</promise>`.
+  `n` emitirá a sentinela de conclusão.
+
+> **Nunca escreva a sentinela literal neste arquivo.** Ralph — e o nosso próprio harness — usam a
+> presença dela para distinguir um *driver prompt* de um arquivo de regras do projeto. Documentá-la
+> aqui faz o arquivo de regras ser confundido com driver e entregue ao agente como se fosse tarefa.
+> Isso já aconteceu e custou oito iterações. Refira-se a ela como "a sentinela de conclusão"; a
+> forma literal vive apenas em `prompts/` e no código que a procura.
 - Para testes em que o agente altera o brief durante o `run`, defina `MOCK_REWRITE_BRIEF_ON=<n>` nos
   mocks do harness; a invocação `n` reescreverá `arrangement-brief.json` no `project_root` do prompt.
 - Para testes de ponta a ponta do `run`, defina `MOCK_WRITE_PROGRESS=1` nos mocks do harness; cada
