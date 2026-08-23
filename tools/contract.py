@@ -24,6 +24,8 @@ import pretty_midi
 
 from . import analyze as analyze_mod
 from . import plan as plan_mod
+from . import plugins as plugins_mod
+from . import render as render_mod
 from . import sections as sections_mod
 from .constants import REGISTER_BANDS
 from .plan import (
@@ -47,6 +49,16 @@ from .plan import (
     SourceMidi,
 )
 from .registry import Tool, ToolError, register
+from .tracks import TrackNameError, name_for_element
+from .validators import (
+    RenderedNote,
+    RenderedTrack,
+    validate_artifice,
+    validate_collisions,
+    validate_harmony,
+    validate_persona,
+    validate_placement,
+)
 
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
@@ -217,9 +229,7 @@ def _plan_schema() -> dict[str, Any]:
                     },
                     "required": [
                         "id", "role", "sections", "register", "layers",
-                        "sync_role", "articulation", "harmony", "pattern",
-                        "degrees", "dynamics", "instrument", "rationale",
-                        "is_protagonist",
+                        "sync_role", "articulation", "harmony",
                     ],
                 },
             },
@@ -264,7 +274,6 @@ def _plan_schema() -> dict[str, Any]:
         },
         "required": [
             "version", "seed", "source_midi", "route", "sections", "elements",
-            "assumptions", "transitions", "edits",
         ],
     }
 
@@ -798,6 +807,713 @@ PLAN_VALIDATE_TOOL = Tool(
 )
 
 
+# --- helpers de reports para JSON ----------------------------------------
+
+def _harmony_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "harmony",
+        "severity": i.severity,
+        "element_id": i.element_id,
+        "track": i.track,
+        "bar": int(i.bar),
+        "pitch": int(i.pitch),
+        "expected": i.expected,
+        "message": i.message,
+    }
+
+
+def _placement_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "placement",
+        "severity": i.severity,
+        "element_id": i.element_id,
+        "track": i.track,
+        "bar": int(i.bar),
+        "pitch": int(i.pitch),
+        "section": i.section,
+        "message": i.message,
+    }
+
+
+def _artifice_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "artifice",
+        "severity": i.severity,
+        "element_id": i.element_id,
+        "track": i.track,
+        "bar": int(i.bar),
+        "pattern": i.pattern,
+        "message": i.message,
+    }
+
+
+def _persona_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "persona",
+        "severity": i.severity,
+        "check": i.check,
+        "section": i.section,
+        "element_ids": list(i.element_ids),
+        "message": i.message,
+    }
+
+
+def _collision_report_to_dict(rep) -> dict[str, Any]:
+    return {
+        "relocations": [
+            {
+                "element_id": r.element_id,
+                "section_label": r.section_label,
+                "from_register": list(r.from_register),
+                "to_register": list(r.to_register),
+                "reason": r.reason,
+            }
+            for r in rep.relocations
+        ],
+        "warnings": [
+            {
+                "element_ids": list(w.element_ids),
+                "section_label": w.section_label,
+                "bar_range": list(w.bar_range),
+                "band": w.band,
+                "reason": w.reason,
+            }
+            for w in rep.warnings
+        ],
+    }
+
+
+_HARMONY_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "harmony"},
+        "severity": {"type": "string"},
+        "element_id": {"type": "string"},
+        "track": {"type": "string"},
+        "bar": {"type": "integer"},
+        "pitch": {"type": "integer"},
+        "expected": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "element_id", "track", "bar", "pitch",
+        "expected", "message",
+    ],
+}
+
+_PLACEMENT_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "placement"},
+        "severity": {"type": "string"},
+        "element_id": {"type": "string"},
+        "track": {"type": "string"},
+        "bar": {"type": "integer"},
+        "pitch": {"type": "integer"},
+        "section": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "element_id", "track", "bar", "pitch",
+        "section", "message",
+    ],
+}
+
+_ARTIFICE_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "artifice"},
+        "severity": {"type": "string"},
+        "element_id": {"type": "string"},
+        "track": {"type": "string"},
+        "bar": {"type": "integer"},
+        "pattern": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "element_id", "track", "bar", "pattern",
+        "message",
+    ],
+}
+
+_PERSONA_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "persona"},
+        "severity": {"type": "string"},
+        "check": {"type": "string"},
+        "section": {"type": "string"},
+        "element_ids": {"type": "array", "items": {"type": "string"}},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "check", "section", "element_ids", "message",
+    ],
+}
+
+_COLLISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "relocations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "element_id": {"type": "string"},
+                    "section_label": {"type": "string"},
+                    "from_register": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2, "maxItems": 2,
+                    },
+                    "to_register": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2, "maxItems": 2,
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": [
+                    "element_id", "section_label", "from_register",
+                    "to_register", "reason",
+                ],
+            },
+        },
+        "warnings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "element_ids": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "section_label": {"type": "string"},
+                    "bar_range": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2, "maxItems": 2,
+                    },
+                    "band": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": [
+                    "element_ids", "section_label", "bar_range", "band", "reason",
+                ],
+            },
+        },
+    },
+    "required": ["relocations", "warnings"],
+}
+
+
+# --- render ----------------------------------------------------------------
+
+RENDER_DESCRIPTION = (
+    "Renderiza um arrangement-plan sobre um MIDI de origem. Cada elemento do "
+    "plano vira uma ou mais tracks novas nomeadas por convencao; as tracks "
+    "originais saem NOTA A NOTA IDENTICAS (nada declarado para edit fica "
+    "byte-identico no arquivo de saida). Roda todos os validadores (colisao, "
+    "harmonia, placement, artifice, persona) e devolve o relatorio LEGIVEL "
+    "POR MAQUINA — severidade por item — para o agente fechar o loop. Nunca "
+    "sobrescreve o MIDI de origem: se `output_path` colidir com `midi_path`, "
+    "erro. Mesmo plano + mesmo source + mesma seed produz arquivo byte-identico. "
+    "Use apos plan.validate estar limpo — nao gaste ciclo renderizando plano invalido."
+)
+
+
+def _render_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if ("plan" in payload) == ("plan_path" in payload):
+        raise ToolError(
+            "E_PLAN_INPUT",
+            "informe exatamente um: `plan` inline OU `plan_path`",
+        )
+
+    src = _resolve_midi(payload["midi_path"])
+    source_hash_before = _sha256_of_file(src)
+
+    if "plan_path" in payload:
+        pp = Path(payload["plan_path"]).expanduser()
+        if not pp.exists():
+            raise ToolError(
+                "E_PLAN_FILE_NOT_FOUND",
+                f"arquivo de plano nao encontrado: {pp}",
+                path="plan_path",
+            )
+        try:
+            plan_dict = json.loads(pp.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ToolError(
+                "E_PLAN_JSON",
+                f"erro lendo plano {pp}: {exc}",
+                path="plan_path",
+            ) from None
+    else:
+        plan_dict = payload["plan"]
+
+    try:
+        plan_obj = plan_mod.from_dict(plan_dict)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ToolError(
+            "E_PLAN_INVALID",
+            f"plano invalido: {exc}",
+            path="plan",
+        ) from None
+
+    if "seed" in payload:
+        plan_obj.seed = int(payload["seed"])
+
+    strict_persona = bool(payload.get("strict_persona", False))
+    output_path = payload.get("output_path")
+
+    try:
+        report = render_mod.render(
+            plan_obj,
+            output_path=output_path,
+            source_path=str(src),
+            strict_persona=strict_persona,
+        )
+    except plan_mod.PlanValidationError as exc:
+        raise ToolError(
+            "E_PLAN_INVALID",
+            exc.message,
+            path=exc.path,
+        ) from None
+    except render_mod.RenderError as exc:
+        raise ToolError(
+            "E_RENDER",
+            str(exc),
+        ) from None
+    except TrackNameError as exc:
+        raise ToolError(
+            "E_TRACK_NAME",
+            str(exc),
+        ) from None
+
+    source_hash_after = _sha256_of_file(src)
+    if source_hash_after != source_hash_before:
+        # Nao deveria ocorrer — render nao mexe no source. Se ocorreu, e bug
+        # do proprio render; nao mascare em warning silencioso.
+        raise ToolError(
+            "E_SOURCE_MUTATED",
+            f"hash do MIDI de origem mudou durante render "
+            f"(antes={source_hash_before[:12]}..., depois={source_hash_after[:12]}...)",
+            path="midi_path",
+        )
+
+    data = {
+        "output_path": str(report.output_path),
+        "source_sha256": report.source_sha256,
+        "seed": int(report.seed),
+        "elements": [
+            {
+                "element_id": e.element_id,
+                "role": e.role,
+                "rationale": e.rationale,
+                "plugin": e.plugin,
+                "preset": e.preset,
+                "verified": bool(e.verified),
+                "layers": int(e.layers),
+                "sections": list(e.sections),
+                "rendered": bool(e.rendered),
+                "note": e.note,
+            }
+            for e in report.elements
+        ],
+        "collision": _collision_report_to_dict(report.collision),
+        "harmony_issues": [_harmony_issue_to_dict(i) for i in report.harmony_issues],
+        "placement_issues": [_placement_issue_to_dict(i) for i in report.placement_issues],
+        "artifice_issues": [_artifice_issue_to_dict(i) for i in report.artifice_issues],
+        "persona_issues": [_persona_issue_to_dict(i) for i in report.persona_issues],
+        "edits": [
+            {
+                "track": ed.track,
+                "profile": ed.profile,
+                "intensity": float(ed.intensity),
+                "notes_touched": int(ed.notes_touched),
+                "mean_offset_ms": float(ed.mean_offset_ms),
+                "tracks_matched": int(ed.tracks_matched),
+            }
+            for ed in report.edits
+        ],
+    }
+
+    warnings: list[dict[str, Any]] = [
+        {"code": "W_RENDER", "message": w, "path": ""} for w in report.warnings
+    ]
+    return data, warnings
+
+
+_ELEMENT_REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "element_id": {"type": "string"},
+        "role": {"type": "string"},
+        "rationale": {"type": "string"},
+        "plugin": {"type": "string"},
+        "preset": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "layers": {"type": "integer"},
+        "sections": {"type": "array", "items": {"type": "string"}},
+        "rendered": {"type": "boolean"},
+        "note": {"type": "string"},
+    },
+    "required": [
+        "element_id", "role", "rationale", "plugin", "preset", "verified",
+        "layers", "sections", "rendered", "note",
+    ],
+}
+
+_EDIT_REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "track": {"type": "string"},
+        "profile": {"type": "string"},
+        "intensity": {"type": "number"},
+        "notes_touched": {"type": "integer"},
+        "mean_offset_ms": {"type": "number"},
+        "tracks_matched": {"type": "integer"},
+    },
+    "required": [
+        "track", "profile", "intensity", "notes_touched", "mean_offset_ms",
+        "tracks_matched",
+    ],
+}
+
+
+RENDER_TOOL = Tool(
+    name="render",
+    description=RENDER_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "midi_path": {"type": "string", "minLength": 1},
+            "plan": _plan_schema(),
+            "plan_path": {"type": "string", "minLength": 1},
+            "output_path": {"type": ["string", "null"]},
+            "seed": {"type": "integer", "minimum": 0},
+            "strict_persona": {"type": "boolean"},
+        },
+        "required": ["midi_path"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "output_path": {"type": "string"},
+            "source_sha256": {"type": "string"},
+            "seed": {"type": "integer"},
+            "elements": {"type": "array", "items": _ELEMENT_REPORT_SCHEMA},
+            "collision": _COLLISION_SCHEMA,
+            "harmony_issues": {"type": "array", "items": _HARMONY_ISSUE_SCHEMA},
+            "placement_issues": {"type": "array", "items": _PLACEMENT_ISSUE_SCHEMA},
+            "artifice_issues": {"type": "array", "items": _ARTIFICE_ISSUE_SCHEMA},
+            "persona_issues": {"type": "array", "items": _PERSONA_ISSUE_SCHEMA},
+            "edits": {"type": "array", "items": _EDIT_REPORT_SCHEMA},
+        },
+        "required": [
+            "output_path", "source_sha256", "seed", "elements", "collision",
+            "harmony_issues", "placement_issues", "artifice_issues",
+            "persona_issues", "edits",
+        ],
+    },
+    func=_render_impl,
+)
+
+
+# --- validate --------------------------------------------------------------
+
+VALIDATE_DESCRIPTION = (
+    "Roda os validadores (colisao, harmonia, placement, artifice, persona) "
+    "sobre um MIDI JA renderizado, casando as tracks do arquivo aos elementos "
+    "do plano pelo nome canonico. NAO reexecuta o render. Use para reauditar "
+    "um arquivo antes de aceita-lo, ou para checar um arquivo que veio de "
+    "outra origem contra o plano. Se o MIDI renderizado nao tiver as tracks "
+    "esperadas de algum elemento, o warning correspondente aparece — o agente "
+    "ve que o MIDI nao bate com o plano em vez de silenciar. Precisa do plano "
+    "(inline ou por caminho), do MIDI de origem (`midi_path`) e do MIDI "
+    "renderizado (`rendered_path`)."
+)
+
+
+def _rendered_tracks_from_midi(
+    midi_path: str, plan_obj: plan_mod.ArrangementPlan,
+) -> tuple[list[RenderedTrack], list[str]]:
+    """Reconstroi RenderedTracks a partir de um MIDI renderizado.
+
+    Casa por nome canonico usando `name_for_element`. Devolve tambem a lista
+    de elementos cujas tracks nao foram encontradas — sinal de que o arquivo
+    nao corresponde ao plano.
+    """
+    try:
+        pm = pretty_midi.PrettyMIDI(midi_path)
+    except (OSError, ValueError, EOFError, KeyError) as exc:
+        raise ToolError(
+            "E_MIDI_PARSE",
+            f"nao foi possivel carregar o MIDI renderizado: {exc}",
+            path="rendered_path",
+        ) from None
+
+    by_name: dict[str, list[pretty_midi.Instrument]] = {}
+    for inst in pm.instruments:
+        if inst.name:
+            by_name.setdefault(inst.name, []).append(inst)
+
+    rendered: list[RenderedTrack] = []
+    missing: list[str] = []
+    for el in plan_obj.elements:
+        inst_meta = el.instrument or {}
+        plugin = str(inst_meta.get("plugin", "")).strip()
+        preset = str(inst_meta.get("preset", "")).strip()
+        verified = bool(inst_meta.get("verified", False))
+        if not plugin or not preset:
+            missing.append(el.id)
+            continue
+        found_any = False
+        for layer_index in range(el.layers):
+            display = el.id if el.layers == 1 else f"{el.id} L{layer_index + 1}"
+            try:
+                tname = name_for_element(display, el.role, plugin, preset, verified)
+            except TrackNameError:
+                continue
+            for inst in by_name.get(tname, []):
+                notes = tuple(
+                    RenderedNote(
+                        pitch=int(n.pitch),
+                        start_s=float(n.start),
+                        end_s=float(n.end),
+                        velocity=int(n.velocity),
+                    )
+                    for n in inst.notes
+                )
+                rendered.append(RenderedTrack(
+                    element_id=el.id, track_name=tname, notes=notes,
+                ))
+                found_any = True
+        if not found_any:
+            missing.append(el.id)
+    return rendered, missing
+
+
+def _validate_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if ("plan" in payload) == ("plan_path" in payload):
+        raise ToolError(
+            "E_PLAN_INPUT",
+            "informe exatamente um: `plan` inline OU `plan_path`",
+        )
+
+    src = _resolve_midi(payload["midi_path"])
+    rendered_path = _resolve_midi(payload["rendered_path"])
+    if rendered_path.resolve() == src.resolve():
+        raise ToolError(
+            "E_RENDERED_IS_SOURCE",
+            f"rendered_path e o proprio midi_path: {src}",
+            path="rendered_path",
+        )
+
+    if "plan_path" in payload:
+        pp = Path(payload["plan_path"]).expanduser()
+        if not pp.exists():
+            raise ToolError(
+                "E_PLAN_FILE_NOT_FOUND",
+                f"arquivo de plano nao encontrado: {pp}",
+                path="plan_path",
+            )
+        try:
+            plan_dict = json.loads(pp.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ToolError(
+                "E_PLAN_JSON",
+                f"erro lendo plano {pp}: {exc}",
+                path="plan_path",
+            ) from None
+    else:
+        plan_dict = payload["plan"]
+
+    try:
+        plan_obj = plan_mod.from_dict(plan_dict)
+        plan_mod.validate(plan_obj)
+    except (KeyError, TypeError, ValueError, plan_mod.PlanValidationError) as exc:
+        raise ToolError(
+            "E_PLAN_INVALID",
+            f"plano invalido: {exc}",
+            path="plan",
+        ) from None
+
+    analysis = analyze_mod.analyze(str(src))
+    rendered_tracks, missing = _rendered_tracks_from_midi(str(rendered_path), plan_obj)
+
+    collision = validate_collisions(plan_obj)
+    harmony = validate_harmony(rendered_tracks, plan_obj, analysis)
+    placement = validate_placement(rendered_tracks, plan_obj, analysis)
+    artifice = validate_artifice(rendered_tracks, plan_obj, analysis)
+    persona = validate_persona(
+        plan_obj, rendered_tracks, analysis,
+        strict=bool(payload.get("strict_persona", False)),
+    )
+
+    data = {
+        "rendered_path": str(rendered_path),
+        "rendered_sha256": _sha256_of_file(rendered_path),
+        "collision": _collision_report_to_dict(collision),
+        "harmony_issues": [_harmony_issue_to_dict(i) for i in harmony],
+        "placement_issues": [_placement_issue_to_dict(i) for i in placement],
+        "artifice_issues": [_artifice_issue_to_dict(i) for i in artifice],
+        "persona_issues": [_persona_issue_to_dict(i) for i in persona],
+    }
+
+    warnings: list[dict[str, Any]] = []
+    if missing:
+        warnings.append({
+            "code": "W_ELEMENTS_MISSING_IN_RENDER",
+            "message": (
+                f"{len(missing)} elemento(s) do plano nao tem track correspondente "
+                f"no MIDI renderizado: {missing!r}"
+            ),
+            "path": "rendered_path",
+        })
+    return data, warnings
+
+
+VALIDATE_TOOL = Tool(
+    name="validate",
+    description=VALIDATE_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "midi_path": {"type": "string", "minLength": 1},
+            "rendered_path": {"type": "string", "minLength": 1},
+            "plan": _plan_schema(),
+            "plan_path": {"type": "string", "minLength": 1},
+            "strict_persona": {"type": "boolean"},
+        },
+        "required": ["midi_path", "rendered_path"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "rendered_path": {"type": "string"},
+            "rendered_sha256": {"type": "string"},
+            "collision": _COLLISION_SCHEMA,
+            "harmony_issues": {"type": "array", "items": _HARMONY_ISSUE_SCHEMA},
+            "placement_issues": {"type": "array", "items": _PLACEMENT_ISSUE_SCHEMA},
+            "artifice_issues": {"type": "array", "items": _ARTIFICE_ISSUE_SCHEMA},
+            "persona_issues": {"type": "array", "items": _PERSONA_ISSUE_SCHEMA},
+        },
+        "required": [
+            "rendered_path", "rendered_sha256", "collision", "harmony_issues",
+            "placement_issues", "artifice_issues", "persona_issues",
+        ],
+    },
+    func=_validate_impl,
+)
+
+
+# --- plugins.scan ---------------------------------------------------------
+
+PLUGINS_SCAN_DESCRIPTION = (
+    "Inventaria os plugins AU/VST/VST3 instalados na maquina, com o papel "
+    "sugerido para cada um (pad, arp, piano, strings, bass, sub, fx, drums, "
+    "sampler, amp). Use antes de sugerir plugin/preset — e a UNICA tool que "
+    "legitimamente varia entre maquinas. A saida declara `from_cache` para o "
+    "agente saber se esta vendo dado fresco. Passe `cache_path` para reutilizar "
+    "o cache; sem cache, sempre scan novo. `dirs` sobrescreve os diretorios "
+    "varridos (util em teste). Nao modifica o sistema; nao acessa rede."
+)
+
+
+def _plugins_scan_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    dirs_input = payload.get("dirs")
+    if dirs_input is None:
+        dirs = plugins_mod.DEFAULT_PLUGIN_DIRS
+    else:
+        dirs = tuple(Path(d).expanduser() for d in dirs_input)
+
+    cache_path = payload.get("cache_path")
+    from_cache = False
+
+    if cache_path:
+        cp = Path(cache_path).expanduser()
+        # Reproduz load_or_scan com sinal de cache-hit: precisamos DIZER ao
+        # agente se veio de cache, coisa que load_or_scan sozinha nao devolve.
+        current_mtimes = plugins_mod._dir_mtimes(dirs)
+        cached = plugins_mod._load_cache(cp)
+        if cached is not None and cached.get("mtimes") == current_mtimes:
+            try:
+                plugins = [plugins_mod.Plugin.from_dict(p) for p in cached["plugins"]]
+                from_cache = True
+            except (KeyError, TypeError):
+                plugins = plugins_mod.scan(dirs)
+                plugins_mod._write_cache(cp, current_mtimes, plugins)
+        else:
+            plugins = plugins_mod.scan(dirs)
+            plugins_mod._write_cache(cp, current_mtimes, plugins)
+    else:
+        plugins = plugins_mod.scan(dirs)
+
+    data = {
+        "from_cache": from_cache,
+        "plugins": [
+            {
+                "name": p.name,
+                "manufacturer": p.manufacturer,
+                "format": p.format,
+                "path": p.path,
+                "roles": list(p.roles),
+            }
+            for p in plugins
+        ],
+    }
+    return data, []
+
+
+PLUGINS_SCAN_TOOL = Tool(
+    name="plugins.scan",
+    description=PLUGINS_SCAN_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "dirs": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+            "cache_path": {"type": ["string", "null"]},
+        },
+        "required": [],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "from_cache": {"type": "boolean"},
+            "plugins": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "manufacturer": {"type": ["string", "null"]},
+                        "format": {"type": "string"},
+                        "path": {"type": ["string", "null"]},
+                        "roles": {
+                            "type": "array", "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["name", "manufacturer", "format", "path", "roles"],
+                },
+            },
+        },
+        "required": ["from_cache", "plugins"],
+    },
+    func=_plugins_scan_impl,
+)
+
+
 # --- registro --------------------------------------------------------------
 
 def bootstrap() -> None:
@@ -806,7 +1522,10 @@ def bootstrap() -> None:
     Idempotente: chamar duas vezes nao explode; ja registrada e mantida.
     """
     from .registry import get as _get
-    for tool in (ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL):
+    for tool in (
+        ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
+        RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL,
+    ):
         if _get(tool.name) is None:
             register(tool)
 
@@ -820,5 +1539,8 @@ __all__ = [
     "ANALYZE_TOOL",
     "PLAN_SKELETON_TOOL",
     "PLAN_VALIDATE_TOOL",
+    "PLUGINS_SCAN_TOOL",
+    "RENDER_TOOL",
+    "VALIDATE_TOOL",
     "bootstrap",
 ]
