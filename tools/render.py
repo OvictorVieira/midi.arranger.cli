@@ -67,6 +67,9 @@ from .plan import (
     load,
     validate_edits_against_midi,
 )
+from .plan import (
+    validate as validate_plan,
+)
 from .tracks import name_for_element
 from .validators.artifice import ArtificeIssue, validate_artifice
 from .validators.artifice import format_issues as format_artifice_issues
@@ -743,7 +746,8 @@ def render(
     Raises:
       RenderError: source inexistente, output apontaria para o source, ou
         elemento pad sem instrument.plugin/preset.
-      PlanValidationError: quando `plan` e caminho e o JSON e invalido.
+      PlanValidationError: quando `plan` e invalido, vindo de caminho ou
+        construido em memoria.
 
     Efeitos: cria diretorio-pai do output se nao existir. Nunca modifica o
     source. Pode mutar `Element.register` do plano em memoria via validator
@@ -751,6 +755,7 @@ def render(
     """
     if not isinstance(plan, ArrangementPlan):
         plan = load(plan)
+    validate_plan(plan)
 
     src = Path(source_path).expanduser() if source_path else _resolve_source_path(plan)
     if not src.exists():
