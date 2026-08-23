@@ -51,7 +51,9 @@ flowchart TD
 
     Loop[i = 1] --> Invoke[monta prompt com iteration=i<br/>e linha de comando do adaptador]
     Invoke --> Run[executa a CLI de IA<br/>ecoa e captura a saída]
-    Run --> Sentinel{saída contém<br/>&lt;promise&gt;COMPLETE&lt;/promise&gt;?}
+    Run --> RO{brief mudou<br/>durante a iteração?}
+    RO -->|sim| BriefFail([falha: requisito novo<br/>exige brief novo])
+    RO -->|não| Sentinel{saída contém<br/>&lt;promise&gt;COMPLETE&lt;/promise&gt;?}
     Sentinel -->|sim| Done([sucesso: exit 0])
     Sentinel -->|não| Next{i menor que N?}
     Next -->|sim| Inc[i = i + 1] --> Invoke
@@ -59,13 +61,17 @@ flowchart TD
 
     style Done fill:#d4edda,stroke:#28a745,color:#000
     style Fail fill:#f8d7da,stroke:#dc3545,color:#000
+    style BriefFail fill:#f8d7da,stroke:#dc3545,color:#000
     style Die fill:#f8d7da,stroke:#dc3545,color:#000
 ```
 
 O harness procura apenas a sentinela literal `<promise>COMPLETE</promise>` na saída capturada da
-iteração recém-executada. Encontrou, encerra com código 0. **Estourar as iterações é falha**, com
-código de saída diferente de zero e ponteiro para `progress.txt`. O harness nunca finge sucesso nem
-consulta `progress.txt` para decidir se acabou.
+iteração recém-executada, mas só depois de conferir que `arrangement-brief.json` continuou igual ao
+hash aceito no início do `run`. Se o agente alterar ou remover o brief durante uma iteração, o
+harness para com erro: requisito novo exige rodar a fase de brief de novo. Encontrou a sentinela com
+o brief intacto, encerra com código 0. **Estourar as iterações é falha**, com código de saída
+diferente de zero e ponteiro para `progress.txt`. O harness nunca finge sucesso nem consulta
+`progress.txt` para decidir se acabou.
 Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midiarranger/` quando
 necessário e compara o hash atual do brief com `.midiarranger/brief.sha256`. Se o hash mudou desde a
 última execução, o harness move o `arrangement-plan.json` e o `progress.txt` anteriores para
@@ -187,6 +193,11 @@ Sem brief, o comando falha cedo e manda rodar `midi-arranger brief <input.mid>`.
 o harness cria `.midiarranger/`, registra o hash do brief em `.midiarranger/brief.sha256` e usa esse
 valor para detectar se a demanda mudou desde a execução anterior.
 
+Durante o `run`, esse mesmo hash vira uma trava de somente leitura. O prompt driver passa
+`brief_readonly=true` e instrui o agente a não editar `arrangement-brief.json`; se o agente mudar o
+arquivo mesmo assim, o harness detecta ao fim da iteração e falha antes de aceitar qualquer sentinela
+de conclusão.
+
 Quando o brief muda, um plano ou log antigo pode pertencer a outra música. Para evitar reutilização
 silenciosa, o harness arquiva `arrangement-plan.json` e `progress.txt` em
 `.midiarranger/archive/<data>-<slug>/` antes de recriar o log. Quando o brief não mudou,
@@ -209,4 +220,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: 69e59ea316648f4912be1eaf731efc5f71d2362eaa113344e1313cbe319fb514 -->
+<!-- harness-sha256: 9dcad3c770a2473a167d9c93cd2430595118a2f976eaed50e7a23b50485034dc -->

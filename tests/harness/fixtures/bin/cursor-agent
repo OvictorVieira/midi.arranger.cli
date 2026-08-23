@@ -22,6 +22,14 @@ fi
   printf 'PROMPT<<END\n%s\nEND\n' "$prompt_payload"
 } >> "$MOCK_LOG"
 
+if [[ "${MOCK_REWRITE_BRIEF_ON:-}" == "$invocation" ]]; then
+  project_root="$(printf '%s\n' "$prompt_payload" | sed -n 's/^project_root=//p' | head -n 1)"
+  rewrite_content="${MOCK_BRIEF_REWRITE_CONTENT:-{\"input_midi\":\"changed.mid\"}}"
+  if [[ -n "$project_root" ]]; then
+    printf '%s\n' "$rewrite_content" > "$project_root/arrangement-brief.json"
+  fi
+fi
+
 printf 'mock output from %s\n' "$binary_name"
 if [[ "${MOCK_COMPLETE_ON:-}" == "$invocation" ]]; then
   printf '<promise>COMPLETE</promise>\n'

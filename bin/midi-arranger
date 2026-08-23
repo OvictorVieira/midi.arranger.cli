@@ -399,8 +399,33 @@ build_agent_prompt() {
 }
 
 run_prompt_detail() {
-  printf 'iteration=%s\nmax_iterations=%s\narrangement_brief=%s\narrangement_plan=%s\nprogress_file=%s\nstate_dir=%s\n' \
-    "$CURRENT_ITERATION" "$MAX_ITERATIONS" "$BRIEF_FILE" "$PLAN_FILE" "$PROGRESS_FILE" "$STATE_DIR"
+  printf 'iteration=%s\nmax_iterations=%s\narrangement_brief=%s\narrangement_plan=%s\nprogress_file=%s\nstate_dir=%s\nbrief_readonly=true\nbrief_readonly_rule=%s\n' \
+    "$CURRENT_ITERATION" "$MAX_ITERATIONS" "$BRIEF_FILE" "$PLAN_FILE" "$PROGRESS_FILE" "$STATE_DIR" \
+    "Do not edit arrangement-brief.json during run; if requirements change, stop and report that a new brief is required."
+}
+
+assert_brief_unchanged_during_run() {
+  local current_hash
+
+  if [[ ! -f "$BRIEF_FILE" ]]; then
+    {
+      printf '\nError: arrangement-brief.json was removed during run: %s\n' "$BRIEF_FILE"
+      printf 'A changed requirement requires a new brief. Run midi-arranger brief <input.mid> before retrying.\n'
+    } >&2
+    return 1
+  fi
+
+  current_hash="$(sha256_file "$BRIEF_FILE")" \
+    || die_unavailable "could not hash arrangement brief: $BRIEF_FILE"
+
+  if [[ "$current_hash" != "$RUN_BRIEF_HASH" ]]; then
+    {
+      printf '\nError: arrangement-brief.json changed during run: %s\n' "$BRIEF_FILE"
+      printf 'The brief is read-only while run is active; a changed requirement requires a new brief.\n'
+      printf 'Run midi-arranger brief <input.mid> before retrying.\n'
+    } >&2
+    return 1
+  fi
 }
 
 run_agent_loop() {
@@ -410,6 +435,7 @@ run_agent_loop() {
     CURRENT_ITERATION="$iteration"
     printf '\n== midi-arranger run iteration %s/%s ==\n' "$iteration" "$MAX_ITERATIONS"
     invoke_agent_once "run" "$(run_prompt_detail)"
+    assert_brief_unchanged_during_run
 
     if grep -qF "$COMPLETION_SENTINEL" "$AGENT_OUTPUT_FILE"; then
       printf '\nmidi-arranger run completed at iteration %s/%s.\n' "$iteration" "$MAX_ITERATIONS"
@@ -638,6 +664,7 @@ sync_brief_hash_and_archive_if_needed() {
 
   printf '%s\n' "$current_hash" > "$BRIEF_HASH_FILE" \
     || die_unavailable "could not record arrangement brief hash: $BRIEF_HASH_FILE"
+  RUN_BRIEF_HASH="$current_hash"
 }
 
 ensure_run_state() {
@@ -687,6 +714,7 @@ EFFORT=""
 CWD=""
 MAX_ITERATIONS=""
 CURRENT_ITERATION=""
+RUN_BRIEF_HASH=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do

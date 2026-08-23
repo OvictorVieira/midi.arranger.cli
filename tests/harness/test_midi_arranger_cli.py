@@ -64,6 +64,17 @@ def complete_on(env: dict[str, str], invocation: int) -> dict[str, str]:
     return env
 
 
+def rewrite_brief_on(
+    env: dict[str, str],
+    invocation: int,
+    content: str = '{"input_midi":"changed.mid"}',
+) -> dict[str, str]:
+    env = env.copy()
+    env["MOCK_REWRITE_BRIEF_ON"] = str(invocation)
+    env["MOCK_BRIEF_REWRITE_CONTENT"] = content
+    return env
+
+
 def prepare_run_project(tmp_path: Path, name: str = "project") -> Path:
     project = tmp_path / name
     project.mkdir()
@@ -453,6 +464,39 @@ def test_run_loop_stops_when_agent_emits_completion_sentinel(tmp_path: Path) -> 
     assert "== midi-arranger run iteration 2/5 ==" in result.stdout
     assert "== midi-arranger run iteration 3/5 ==" not in result.stdout
     assert "midi-arranger run completed at iteration 2/5" in result.stdout
+
+
+def test_run_prompt_tells_agent_that_brief_is_read_only(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 1)
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
+
+    assert result.returncode == 0, result.stderr
+    prompt = read_mock_log(log_path)["PROMPT"]
+    assert "brief_readonly=true" in prompt
+    assert "Do not edit arrangement-brief.json during run" in prompt
+    assert "a new brief is required" in prompt
+
+
+def test_run_stops_when_agent_changes_brief_during_iteration(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 1)
+    env = rewrite_brief_on(env, 1)
+    project = prepare_run_project(tmp_path)
+    original_brief = (project / "arrangement-brief.json").read_text()
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "3", env=env)
+
+    assert result.returncode != 0
+    assert count_mock_invocations(log_path) == 1
+    assert "arrangement-brief.json changed during run" in result.stderr
+    assert "a changed requirement requires a new brief" in result.stderr
+    assert "midi-arranger brief <input.mid>" in result.stderr
+    assert "midi-arranger run completed" not in result.stdout
+    assert (project / "arrangement-brief.json").read_text() != original_brief
+    assert (project / ".midiarranger" / "brief.sha256").read_text() == f"{brief_hash(original_brief)}\n"
 
 
 def test_run_loop_exhaustion_fails_and_points_to_progress(tmp_path: Path) -> None:

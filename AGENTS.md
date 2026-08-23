@@ -55,6 +55,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   blocos `BIN<<END`, enquanto `read_mock_log` continua representando a última invocação.
 - Para testes de conclusão do `run`, defina `MOCK_COMPLETE_ON=<n>` nos mocks do harness; a invocação
   `n` emitirá a sentinela literal `<promise>COMPLETE</promise>`.
+- Para testes em que o agente altera o brief durante o `run`, defina `MOCK_REWRITE_BRIEF_ON=<n>` nos
+  mocks do harness; a invocação `n` reescreverá `arrangement-brief.json` no `project_root` do prompt.
 
 ## Commits
 
