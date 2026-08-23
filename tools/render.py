@@ -40,6 +40,7 @@ from .palette.harmonic import (
     KEYBOARD_ROLES,
     STRINGS_GHOST_RATIO,
     STRINGS_ROLES,
+    STRINGS_TUTTI_MAX_VOICES,
     DroneNote,
     KeyboardNote,
     PadNote,
@@ -427,13 +428,13 @@ def _render_strings_element(
     count = `element.layers` (para strings o vocabulario 'layers' significa
     'vozes independentes', nao unisono). `tutti` e `ghost_ratio` sao lidos
     de `element.pattern`."""
-    voices = element.layers
-    layer_notes: list[list[StringsNote]] = [[] for _ in range(voices)]
-    layer_ccs: list[list[tuple[float, int, int]]] = [[] for _ in range(voices)]
     register = (int(element.register[0]), int(element.register[1]))
     dyn = element.dynamics or {}
     pattern = element.pattern or {}
     tutti = bool(pattern.get("tutti", False))
+    voices = min(element.layers, STRINGS_TUTTI_MAX_VOICES) if tutti else element.layers
+    layer_notes: list[list[StringsNote]] = [[] for _ in range(voices)]
+    layer_ccs: list[list[tuple[float, int, int]]] = [[] for _ in range(voices)]
     ghost_ratio = float(pattern.get("ghost_ratio", STRINGS_GHOST_RATIO))
 
     for section, seed in _iter_element_sections(element, plan):
@@ -455,6 +456,20 @@ def _render_strings_element(
                 layer_ccs[i].append((ev.time_s, EXPRESSION_CC, ev.value))
 
     return _layers_to_tracks(element, layer_notes, pm, channel, layer_ccs)
+
+
+def _strings_tutti_layer_warning(element: Element) -> str | None:
+    pattern = element.pattern or {}
+    if (
+        element.role in STRINGS_ROLES
+        and bool(pattern.get("tutti", False))
+        and element.layers > STRINGS_TUTTI_MAX_VOICES
+    ):
+        return (
+            f"{element.id}: element.layers={element.layers} reduced to "
+            f"{STRINGS_TUTTI_MAX_VOICES} for strings tutti"
+        )
+    return None
 
 
 def _accumulate_cc_layers(
@@ -784,6 +799,9 @@ def render(
     rendered_tracks: list[RenderedTrack] = []
     for e in plan.elements:
         warnings.extend(_unsupported_pattern_warnings(e))
+        layer_warning = _strings_tutti_layer_warning(e)
+        if layer_warning is not None:
+            warnings.append(layer_warning)
         inst = e.instrument or {}
         report_entry = ElementRationale(
             element_id=e.id,

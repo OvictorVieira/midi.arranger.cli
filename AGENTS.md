@@ -28,6 +28,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto
   `*_PATTERN_FIELDS` do role correspondente para evitar aviso falso de campo ignorado.
+- Em strings/choir com `pattern.tutti=true`, `element.layers` é limitado por
+  `STRINGS_TUTTI_MAX_VOICES`; dimensione buckets/tracks pelo número efetivo e avise quando reduzir.
 
 ## Qualidade
 
