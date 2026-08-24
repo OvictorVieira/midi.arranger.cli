@@ -33,6 +33,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `value`, sem `range` e sem `source` passa só com aviso, nunca com clamp silencioso.
 - Defaults de `style` são uma normalização em memória: use `tools.plan.normalize_style_defaults()`;
   `plan.validate()` continua read-only e a fachada `plan.validate` expõe a cópia em `normalized_plan`.
+- `tools.render.render()` normaliza defaults de `style` em memória antes de avisos/validadores;
+  `confidence: low` e `confidence: default` viram warning de render, nunca erro.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto

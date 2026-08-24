@@ -12,6 +12,7 @@ import pytest
 from tools.plan import (
     ArrangementPlan,
     Element,
+    FamilyStyle,
     PlanSection,
     SourceMidi,
     dump,
@@ -99,6 +100,17 @@ def _build_plan(source: Path, *, layers: int = 1) -> ArrangementPlan:
                 rationale="Sustained pad glues the arrangement.",
             ),
         ],
+    )
+
+
+def _family_style(confidence: str, *, reference: str = "Style Reference") -> FamilyStyle:
+    return FamilyStyle(
+        reference=reference,
+        researched_at="2026-08-24",
+        sources=["https://example.test/style"],
+        confidence=confidence,
+        techniques=[],
+        parameters={},
     )
 
 
@@ -289,6 +301,45 @@ def test_sha256_mismatch_is_warning_not_error(tmp_path):
     report = render(plan, out)
     assert any("sha256" in w.lower() for w in report.warnings)
     assert out.exists()
+
+
+def test_render_warns_for_low_style_confidence(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {"keys": _family_style("low", reference="Thin research")}
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out)
+
+    assert out.exists()
+    warning = next(w for w in report.warnings if "confidence low" in w)
+    assert "style.keys" in warning
+    assert "Thin research" in warning
+
+
+def test_render_warns_for_default_style_confidence_from_normalization(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out)
+
+    assert out.exists()
+    warning = next(w for w in report.warnings if "confidence default" in w)
+    assert "style.keys" in warning
+    assert "no style was researched" in warning
+
+
+@pytest.mark.parametrize("confidence", ["high", "medium"])
+def test_render_does_not_warn_for_high_or_medium_style_confidence(
+    tmp_path, confidence: str,
+):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {"keys": _family_style(confidence)}
+    report = render(plan, tmp_path / "out.mid")
+
+    assert not any("confidence" in w for w in report.warnings)
 
 
 # --- layers, track names, roles --------------------------------------------

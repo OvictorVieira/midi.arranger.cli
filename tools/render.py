@@ -62,10 +62,12 @@ from .palette.rhythmic import (
     generate_shadow,
 )
 from .plan import (
+    STYLE_FAMILIES,
     ArrangementPlan,
     Element,
     PlanSection,
     load,
+    normalize_style_defaults,
     validate_edits_against_midi,
 )
 from .plan import (
@@ -239,6 +241,29 @@ def _unsupported_pattern_warnings(element: Element) -> list[str]:
         for key in sorted(pattern)
         if key not in known
     ]
+
+
+def _style_confidence_warnings(plan: ArrangementPlan) -> list[str]:
+    """Avisos quando o render usa perfil de estilo fraco ou default."""
+    if not plan.style:
+        return []
+
+    warnings: list[str] = []
+    for family in STYLE_FAMILIES:
+        style = plan.style.get(family)
+        if style is None:
+            continue
+        if style.confidence == "low":
+            warnings.append(
+                f"style.{family}: confidence low for reference "
+                f"{style.reference!r}; rendering with weak research"
+            )
+        elif style.confidence == "default":
+            warnings.append(
+                f"style.{family}: confidence default; no style was researched "
+                f"for family {family!r}; using {style.reference!r}"
+            )
+    return warnings
 
 
 # --- conversao note -> mido -------------------------------------------------
@@ -799,6 +824,7 @@ def render(
     if not isinstance(plan, ArrangementPlan):
         plan = load(plan)
     validate_plan(plan)
+    plan = normalize_style_defaults(plan)
 
     src = Path(source_path).expanduser() if source_path else _resolve_source_path(plan)
     if not src.exists():
@@ -809,7 +835,7 @@ def render(
         raise RenderError(f"output would overwrite source: {out_path}")
 
     source_hash = sha256_of_file(src)
-    warnings: list[str] = []
+    warnings: list[str] = _style_confidence_warnings(plan)
     if plan.source_midi.sha256 and plan.source_midi.sha256 != source_hash:
         warnings.append(
             f"source_midi.sha256 mismatch (plan={plan.source_midi.sha256[:12]}..., "
