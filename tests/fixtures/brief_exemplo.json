@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "source_midi": {
+    "path": "tests/fixtures/ancora_arranjo_atual.mid",
+    "sha256": "e2727e269436ee09e0ced1e5b41345592ec3fec6d869938d4ac62ac0b41a35df",
+    "tempo": 174.0,
+    "key": null,
+    "bars": 163
+  },
+  "demanda": "Reimaginar Ancora com bateria estilo Steve Jordan e teclas com producao Nigel Godrich; baixo segue corpus proprio; guitarra na persona default.",
+  "route": "organica_inquietante",
+  "sections_confirmed": true,
+  "assumptions": [
+    "Guitarra sem referencia declarada — assumida a persona default.",
+    "Baixo em modo corpus proprio: learn ainda nao existe, o run le o corpus como dica textual."
+  ],
+  "requisitos": [
+    {
+      "id": "R-001",
+      "familia": "drums",
+      "tipo": "tecnica",
+      "alvo": "ghost notes",
+      "descricao": "Aplicar drums.ghost_notes com densidade media na estrofe pra abrir pocket."
+    },
+    {
+      "id": "R-002",
+      "familia": "arranjo",
+      "tipo": "reducao",
+      "alvo": "INTRO A",
+      "descricao": "Reduzir a intro para so bateria e piano — cortar guitarras e strings."
+    },
+    {
+      "id": "R-003",
+      "familia": "keys",
+      "tipo": "criacao",
+      "alvo": "pad de fundo no chorus",
+      "descricao": "Criar camada de pad em long-tone sob os choruses para colchao harmonico."
+    },
+    {
+      "id": "R-004",
+      "familia": "bass",
+      "tipo": "estilo",
+      "alvo": "referencia corpus",
+      "descricao": "Baixo deve seguir o comportamento medio das musicas do corpus proprio."
+    },
+    {
+      "id": "R-005",
+      "familia": "geral",
+      "tipo": "restricao",
+      "alvo": "double kick",
+      "descricao": "Nada de double kick — bateria organica, pe simples ao longo da musica."
+    },
+    {
+      "id": "R-006",
+      "familia": "geral",
+      "tipo": "intensidade",
+      "alvo": "climax",
+      "descricao": "Climax no CHORUS 3 com energia 9/10; VERSE 1 volta para 4/10."
+    }
+  ],
+  "style": {
+    "drums": {
+      "reference": "Steve Jordan",
+      "researched_at": "2026-08-23",
+      "sources": [
+        "Modern Drummer interview 2019",
+        "Drumeo lesson Steve Jordan pocket 2021"
+      ],
+      "confidence": "medium",
+      "techniques": [
+        {
+          "name": "drums.ghost_notes",
+          "density": 0.4,
+          "rationale": "Ghost notes discretas para textura de pocket."
+        },
+        {
+          "name": "drums.microtiming",
+          "density": 0.3,
+          "rationale": "Feel laid back caracteristico do Steve Jordan."
+        }
+      ],
+      "parameters": {
+        "timing_bias_ms": -8.0,
+        "velocity_ghost_max": 45.0
+      }
+    },
+    "bass": {
+      "reference": "corpus proprio",
+      "researched_at": null,
+      "sources": [
+        "tests/fixtures/corpus_drums"
+      ],
+      "confidence": "default",
+      "techniques": []
+    },
+    "keys": {
+      "reference": "Nigel Godrich",
+      "researched_at": "2026-08-23",
+      "sources": [
+        "Sound On Sound Nigel Godrich production 2003"
+      ],
+      "confidence": "low",
+      "techniques": [],
+      "parameters": {
+        "reverb_wetness": 0.35
+      }
+    },
+    "guitar": {
+      "reference": null,
+      "researched_at": null,
+      "sources": [],
+      "confidence": "default",
+      "techniques": []
+    }
+  },
+  "restricoes": [
+    "Nada de double kick.",
+    "Sem pedal steel."
+  ],
+  "antirreferencias": [
+    "Producao lo-fi mumble rap.",
+    "Trap beats de 808 saturado."
+  ]
+}

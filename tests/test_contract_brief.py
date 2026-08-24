@@ -1,0 +1,346 @@
+"""Testes do schema e da tool `brief.validate` (US-001).
+
+Cobrimos:
+- registro no registry global com descricao-prompt razoavel;
+- brief valido (com todas as familias e todos os tipos de requisito) passa;
+- brief com sequencia de notas em `style` (inteiros MIDI ou nomes de nota)
+  falha com `E_BRIEF_MUSICAL_CONTENT` citando o path;
+- tecnica declarada inexistente falha com `E_BRIEF_TECHNIQUE_NOT_FOUND`
+  citando o path e sugerindo tecnica parecida;
+- desvios estruturais (campo obrigatorio ausente, campo desconhecido,
+  confidence fora do vocabulario, etc.) falham com `E_BRIEF_INVALID`.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+import pytest
+
+from tools import contract as _contract  # noqa: F401  # registra as tools
+from tools import techniques as techniques_mod
+from tools.brief_schema import (
+    BRIEF_SCHEMA_VERSION,
+    _looks_like_note_sequence,
+    brief_schema,
+    validate_brief,
+)
+from tools.registry import ToolError, call, get
+
+
+def _valid_brief() -> dict[str, Any]:
+    return {
+        "version": BRIEF_SCHEMA_VERSION,
+        "source_midi": {
+            "path": "songs/ancora.mid",
+            "sha256": "a" * 64,
+            "tempo": 92.0,
+            "key": "Am",
+            "bars": 128,
+        },
+        "demanda": (
+            "Arranjo mais cinematografico da segunda parte, "
+            "mantendo a mao esquerda igual."
+        ),
+        "route": "cinematica_emocional",
+        "sections_confirmed": True,
+        "assumptions": [
+            "familia guitar sem referencia — usar persona default",
+        ],
+        "requisitos": [
+            {
+                "id": "R1", "familia": "drums", "tipo": "tecnica",
+                "alvo": "verse", "descricao": "ghost notes no snare",
+            },
+            {
+                "id": "R2", "familia": "drums", "tipo": "reducao",
+                "alvo": "verse", "descricao": "menos viradas",
+            },
+            {
+                "id": "R3", "familia": "bass", "tipo": "criacao",
+                "alvo": "bridge", "descricao": "linha nova em contraponto",
+            },
+            {
+                "id": "R4", "familia": "keys", "tipo": "estilo",
+                "alvo": "chorus", "descricao": "colchao rhodes vintage",
+            },
+            {
+                "id": "R5", "familia": "guitar", "tipo": "restricao",
+                "alvo": "outro", "descricao": "sem distorcao",
+            },
+            {
+                "id": "R6", "familia": "arranjo", "tipo": "intensidade",
+                "alvo": "chorus", "descricao": "energia 8/10",
+            },
+        ],
+        "style": {
+            "drums": {
+                "reference": "Jack DeJohnette",
+                "researched_at": "2026-08-23",
+                "sources": [
+                    "https://exemplo.tld/artigo",
+                    "Modern Drummer entrevista, mar/2018",
+                ],
+                "confidence": "high",
+                "techniques": [
+                    {"name": "ghost_notes", "density": 0.35,
+                     "rationale": "verse pede caixa quase falada"},
+                    {"name": "microtiming", "density": 0.5,
+                     "rationale": None},
+                ],
+                "parameters": {"timing_bias_ms": -8.0},
+            },
+            "bass": {
+                "reference": "Pino Palladino",
+                "researched_at": "2026-08-23",
+                "sources": ["https://exemplo.tld/pino"],
+                "confidence": "medium",
+                "techniques": [],
+                "parameters": {"ghost_density": 0.2},
+            },
+            "keys": {
+                "reference": None,
+                "researched_at": None,
+                "sources": [],
+                "confidence": "default",
+                "techniques": [],
+                "parameters": {},
+            },
+            "guitar": {
+                "reference": None,
+                "researched_at": None,
+                "sources": [],
+                "confidence": "default",
+                "techniques": [],
+                "parameters": {},
+            },
+        },
+        "restricoes": ["nao usar distorcao no outro"],
+        "antirreferencias": ["evitar soar como cover de X"],
+    }
+
+
+# --- registry -------------------------------------------------------------
+
+
+def test_brief_validate_registered_with_prompt_description():
+    t = get("brief.validate")
+    assert t is not None
+    assert len(t.description) > 80
+    assert "brief" in t.description.lower()
+
+
+def test_brief_schema_has_all_required_top_level_fields():
+    schema = brief_schema()
+    required = set(schema["required"])
+    assert required == {
+        "version", "source_midi", "demanda", "route", "sections_confirmed",
+        "assumptions", "requisitos", "style", "restricoes",
+        "antirreferencias",
+    }
+
+
+# --- valid --------------------------------------------------------------
+
+
+def test_valid_brief_passes():
+    env = call("brief.validate", {"brief": _valid_brief()})
+    assert env["ok"] is True, env
+    assert env["data"] == {"ok": True}
+    assert env["warnings"] == []
+
+
+# --- musical content in style ------------------------------------------
+
+
+def test_brief_with_note_name_list_in_style_fails_citing_path():
+    brief = _valid_brief()
+    # sources aceita strings; a varredura semantica pega o formato de nome
+    # de nota (C4, D4, E4) mesmo passando pelo schema estrutural.
+    brief["style"]["drums"]["sources"] = ["C4", "D4", "E4"]
+
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False, env
+    assert env["error"]["code"] == "E_BRIEF_MUSICAL_CONTENT"
+    assert env["error"]["path"].startswith("style.drums.sources")
+
+
+def test_brief_with_note_name_list_deep_inside_style_fails():
+    # Mesmo se o schema fosse mais permissivo, a varredura pega em qualquer
+    # profundidade — asseguramos passando lista de nomes de nota via um
+    # brief que respeita a estrutura ate a folha.
+    brief = _valid_brief()
+    brief["style"]["bass"]["sources"] = ["C#3", "Eb3"]
+
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_MUSICAL_CONTENT"
+    assert "style.bass.sources" in env["error"]["path"]
+
+
+# --- tecnica inexistente -----------------------------------------------
+
+
+def test_brief_with_unknown_technique_fails_citing_path():
+    brief = _valid_brief()
+    brief["style"]["drums"]["techniques"].append(
+        {"name": "inexistente_xyz", "density": None, "rationale": None},
+    )
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False, env
+    assert env["error"]["code"] == "E_BRIEF_TECHNIQUE_NOT_FOUND"
+    # tres tecnicas ja existentes precedem a que inserimos: indice 2
+    assert env["error"]["path"] == "style.drums.techniques[2].name"
+
+
+def test_brief_unknown_technique_hint_lists_similar():
+    brief = _valid_brief()
+    brief["style"]["drums"]["techniques"] = [
+        {"name": "ghost_notess"},  # typo — deveria ser ghost_notes
+    ]
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_TECHNIQUE_NOT_FOUND"
+    assert "ghost_notes" in env["error"]["hint"]
+
+
+def test_brief_technique_by_canonical_name_is_accepted():
+    brief = _valid_brief()
+    brief["style"]["drums"]["techniques"] = [
+        {"name": "drums.ghost_notes"},
+    ]
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is True, env
+
+
+# --- desvios estruturais ----------------------------------------------
+
+
+def test_brief_missing_required_field_fails_with_e_brief_invalid():
+    brief = _valid_brief()
+    del brief["restricoes"]
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert "restricoes" in env["error"]["message"]
+
+
+def test_brief_unknown_field_at_root_is_rejected():
+    brief = _valid_brief()
+    brief["surpresa"] = 42
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "surpresa"
+
+
+def test_brief_confidence_out_of_vocabulary_fails():
+    brief = _valid_brief()
+    brief["style"]["drums"]["confidence"] = "bastante"
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "style.drums.confidence"
+
+
+def test_brief_unknown_style_family_is_rejected():
+    brief = _valid_brief()
+    brief["style"]["vocal"] = {
+        "reference": None, "researched_at": None, "sources": [],
+        "confidence": "default", "techniques": [],
+    }
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "style.vocal"
+
+
+def test_brief_style_parameters_reject_non_number_values():
+    brief = _valid_brief()
+    brief["style"]["drums"]["parameters"] = {"melody": [60, 62, 64]}
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "style.drums.parameters.melody"
+
+
+def test_brief_requisito_type_out_of_vocabulary_fails():
+    brief = _valid_brief()
+    brief["requisitos"].append({
+        "id": "R7", "familia": "drums", "tipo": "improviso",
+        "alvo": "verse", "descricao": "vai que vai",
+    })
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert "requisitos" in env["error"]["path"]
+
+
+def test_brief_source_midi_sha256_pattern_enforced():
+    brief = _valid_brief()
+    brief["source_midi"]["sha256"] = "not-a-hash"
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "source_midi.sha256"
+
+
+def test_brief_route_out_of_vocabulary_fails():
+    brief = _valid_brief()
+    brief["route"] = "salsa_com_baiao"
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "route"
+
+
+# --- input schema (payload) ------------------------------------------
+
+
+def test_brief_validate_input_missing_brief_key_returns_schema_error():
+    env = call("brief.validate", {})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+
+
+def test_brief_valid_brief_is_not_mutated_by_validation():
+    brief = _valid_brief()
+    snapshot = copy.deepcopy(brief)
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is True
+    assert brief == snapshot
+
+
+# --- ramos defensivos ------------------------------------------------
+
+
+def test_looks_like_note_sequence_flags_midi_int_array():
+    # Cobre o ramo de deteccao de inteiros na faixa MIDI (a defesa fica no
+    # scanner mesmo que o schema atual nao aceite arrays de int em style —
+    # e a rede de seguranca contra afrouxar o schema no futuro).
+    reason = _looks_like_note_sequence([60, 62, 64])
+    assert reason is not None
+    assert "MIDI" in reason
+
+
+def test_looks_like_note_sequence_ignores_single_element_and_out_of_range():
+    assert _looks_like_note_sequence([60]) is None
+    assert _looks_like_note_sequence([60, 200]) is None
+    assert _looks_like_note_sequence([]) is None
+    assert _looks_like_note_sequence("C4") is None
+
+
+def test_validate_brief_maps_techniques_index_failure_to_e_techniques_index(
+    monkeypatch,
+):
+    def _boom(*_a, **_k):
+        raise techniques_mod.TechniqueError("manual sumiu")
+
+    monkeypatch.setattr(
+        "tools.brief_schema.techniques_mod.build_index", _boom,
+    )
+    with pytest.raises(ToolError) as exc:
+        validate_brief(_valid_brief())
+    assert exc.value.code == "E_TECHNIQUES_INDEX"
+    assert "manual sumiu" in exc.value.message

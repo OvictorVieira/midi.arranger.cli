@@ -87,6 +87,9 @@ argumentos.
 
 Tools disponiveis:
 
+- `brief.validate`: use na PRIMEIRA iteracao, antes de qualquer outra coisa, para conferir que o
+  brief e valido. Se falhar, PARE e reporte — nao conserte o brief. Ele e contrato do usuario e e
+  somente leitura durante o run; requisito novo exige rodar a skill de brief de novo.
 - `analyze`: use antes de qualquer decisao de arranjo para extrair estrutura e fatos do MIDI.
   Nao use como validador final e nao use para modificar arquivo.
 - `plan.skeleton`: use para iniciar um plano a partir da analise. Nao use para inventar elementos;

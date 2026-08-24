@@ -82,3 +82,10 @@ Nunca `--no-verify`. Nunca amend em commit publicado. Nunca force-push em `main`
 
 `.worktrees/<numero-da-issue>-<slug>/`, sempre dentro do repositório, sempre a partir de
 `origin/main` atualizado.
+
+## Skills
+
+- A entrevista de arranjo vive em `skills/midi-brief/SKILL.md`. Rode `./install.sh` para criar os
+  symlinks nos providers presentes (`~/.claude/skills/`, `~/.opencode/skills/`, `~/.agents/skills/`);
+  provider ausente é ignorado, rodar duas vezes não duplica. Um agente sem sistema de skill deve
+  ler `skills/midi-brief/SKILL.md` diretamente — é o mesmo contrato.
