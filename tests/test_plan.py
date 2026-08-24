@@ -338,6 +338,94 @@ def test_style_survives_dict_round_trip():
     assert from_dict(to_dict(plan)) == plan
 
 
+def test_from_dict_rejects_musical_content_key_inside_style():
+    data = to_dict(_valid_plan())
+    data["style"] = {
+        "bass": {
+            "reference": "James Jamerson",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/bass"],
+            "confidence": "high",
+            "techniques": [],
+            "parameters": {},
+            "notes": [40, 42, 45],
+        }
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+    assert exc.value.path == "style.bass.notes"
+    assert "nunca conteudo musical" in exc.value.message
+
+
+def test_validate_accepts_style_parameter_range_pair():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[],
+            parameters={"velocity": [20, 45]},
+        )
+    }
+    validate(plan)  # par [min, max] e parametro de tecnica, nao conteudo.
+
+
+def test_validate_rejects_midi_integer_sequence_under_innocent_style_parameter():
+    plan = _valid_plan()
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[],
+            parameters={"accent_shape": [40, 42, 45]},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.bass.parameters.accent_shape"
+    assert "nunca conteudo musical" in exc.value.message
+
+
+def test_from_dict_rejects_pitch_time_event_array_inside_style():
+    data = to_dict(_valid_plan())
+    data["style"] = {
+        "drums": {
+            "reference": "Steve Jordan",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/drums"],
+            "confidence": "medium",
+            "techniques": [],
+            "parameters": {"accent_map": [{"pitch": 38, "time": 0.0}]},
+        }
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+    assert exc.value.path == "style.drums.parameters.accent_map"
+    assert "altura e tempo" in exc.value.message
+
+
+def test_validate_rejects_musical_content_parameter_name_even_when_scalar():
+    plan = _valid_plan()
+    plan.style = {
+        "keys": FamilyStyle(
+            reference="Nigel Godrich",
+            researched_at="2026-08-24",
+            sources=["https://example.test/keys"],
+            confidence="low",
+            techniques=[],
+            parameters={"groove": 0.25},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.keys.parameters.groove"
+    assert "nunca conteudo musical" in exc.value.message
+
+
 def test_dump_writes_indented_json_that_parses(tmp_path: Path):
     """Serializacao gera JSON legivel (indent=2) — usuario edita a mao."""
     path = tmp_path / "plan.json"

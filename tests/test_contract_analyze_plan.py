@@ -337,6 +337,54 @@ def test_plan_validate_rejects_invalid_style_confidence_in_schema():
     assert env["error"]["path"] == "plan.style.drums.confidence"
 
 
+def test_plan_validate_rejects_musical_content_key_inside_style_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["bass"]["notes"] = [40, 42, 45]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == "plan.style.bass.notes"
+    assert "nunca conteudo musical" in env["error"]["message"]
+
+
+def test_plan_validate_accepts_style_parameter_range_pair_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["drums"]["parameters"] = {"velocity": [20, 45]}
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is True
+
+
+def test_plan_validate_rejects_midi_integer_sequence_under_innocent_style_parameter_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["bass"]["parameters"] = {"accent_shape": [40, 42, 45]}
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == "plan.style.bass.parameters.accent_shape"
+    assert "nunca conteudo musical" in env["error"]["message"]
+
+
+def test_plan_validate_rejects_pitch_time_event_array_inside_style_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["drums"]["parameters"] = {
+        "accent_map": [{"pitch": 38, "time": 0.0}],
+    }
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == "plan.style.drums.parameters.accent_map"
+    assert "altura e tempo" in env["error"]["message"]
+
+
 def test_plan_validate_reports_layers_lt_1_error():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()

@@ -64,6 +64,20 @@ STYLE_FAMILY_REQUIRED_FIELDS = (
     "parameters",
 )
 STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale")
+STYLE_MUSICAL_CONTENT_KEYS = (
+    "notes",
+    "pattern",
+    "riff",
+    "melody",
+    "groove",
+    "sequence",
+    "midi",
+    "phrase",
+    "lick",
+    "motif",
+)
+STYLE_PITCH_KEYS = ("pitch", "note", "midi_note", "note_number")
+STYLE_TIME_KEYS = ("time", "start", "start_tick", "tick", "ticks", "position", "offset")
 
 ENERGY_AXES = ("densidade", "impacto", "largura", "altura", "instabilidade")
 ENERGY_MIN = 0
@@ -169,7 +183,7 @@ class FamilyStyle:
     sources: list[str]
     confidence: str
     techniques: list[StyleTechnique]
-    parameters: dict[str, float]
+    parameters: dict[str, float | list[float]]
 
 
 @dataclass
@@ -257,6 +271,75 @@ def _validate_style_technique_name(index, family: str, name: str, path: str) -> 
     )
 
 
+def _is_parameter_pair(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
+    )
+
+
+def _raise_style_musical_content(path: str, reason: str) -> None:
+    raise PlanValidationError(
+        path,
+        (
+            f"{reason}; perfil de estilo aceita parametros de tecnica, "
+            "nunca conteudo musical"
+        ),
+    )
+
+
+def _object_has_pitch_and_time_keys(value: dict[str, Any]) -> bool:
+    keys = set(value)
+    return bool(keys.intersection(STYLE_PITCH_KEYS)) and bool(keys.intersection(STYLE_TIME_KEYS))
+
+
+def _reject_musical_content_in_style_value(
+    value: Any,
+    path: str,
+    *,
+    allow_parameter_pair: bool = False,
+) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else key
+            if key in STYLE_MUSICAL_CONTENT_KEYS:
+                _raise_style_musical_content(
+                    child_path,
+                    f"campo de conteudo musical proibido {key!r}",
+                )
+            _reject_musical_content_in_style_value(
+                child,
+                child_path,
+                allow_parameter_pair=path.endswith(".parameters"),
+            )
+        return
+
+    if isinstance(value, list):
+        if allow_parameter_pair and _is_parameter_pair(value):
+            return
+        if (
+            len(value) >= 3
+            and all(
+                isinstance(item, int)
+                and not isinstance(item, bool)
+                and MIDI_PITCH_MIN <= item <= MIDI_PITCH_MAX
+                for item in value
+            )
+        ):
+            _raise_style_musical_content(
+                path,
+                "sequencia de tres ou mais inteiros em faixa MIDI proibida",
+            )
+        if any(isinstance(item, dict) and _object_has_pitch_and_time_keys(item) for item in value):
+            _raise_style_musical_content(
+                path,
+                "array de eventos com altura e tempo proibido",
+            )
+        for i, item in enumerate(value):
+            _reject_musical_content_in_style_value(item, f"{path}[{i}]")
+
+
 def _validate_style(plan_style: Any) -> None:
     if plan_style is None:
         return
@@ -282,6 +365,7 @@ def _validate_style(plan_style: Any) -> None:
             )
         if not isinstance(entry, FamilyStyle):
             raise PlanValidationError(base, f"must be FamilyStyle, got {type(entry).__name__}")
+        _reject_musical_content_in_style_value(_family_style_to_dict(entry), base)
         _require_nonempty_str(entry.reference, f"{base}.reference")
         _require_nonempty_str(entry.researched_at, f"{base}.researched_at")
         try:
@@ -340,10 +424,12 @@ def _validate_style(plan_style: Any) -> None:
         for key, value in entry.parameters.items():
             if not isinstance(key, str) or not key:
                 raise PlanValidationError(f"{base}.parameters", "parameter names must be non-empty strings")
+            if _is_parameter_pair(value):
+                continue
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise PlanValidationError(
                     f"{base}.parameters.{key}",
-                    f"must be number, got {type(value).__name__}",
+                    f"must be number or [min, max] pair, got {type(value).__name__}",
                 )
 
 
@@ -709,6 +795,7 @@ def _family_style_from_dict(data: dict[str, Any], path: str) -> FamilyStyle:
 def _style_from_dict(data: Any) -> dict[str, FamilyStyle]:
     if not isinstance(data, dict):
         raise PlanValidationError("style", f"must be object, got {type(data).__name__}")
+    _reject_musical_content_in_style_value(data, "style")
     return {
         family: _family_style_from_dict(entry, f"style.{family}")
         for family, entry in data.items()

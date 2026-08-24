@@ -47,6 +47,8 @@ o unico permitido em tools/ e `mido` + `pretty_midi`. Os subsets aceitos:
 - `minimum`, `maximum` — para number/integer.
 - `minLength`, `maxLength`, `pattern` — para string.
 - `oneOf`, `anyOf` — combinadores.
+- `x_forbid_style_musical_content` — varredura recursiva usada pelo
+  arrangement-plan para impedir que `style` carregue conteudo musical.
 
 Suficiente para descrever as tools deste repo. Nao suporta `$ref`, `allOf`,
 `if/then/else` — se a necessidade surgir, adicione com teste, nao antes.
@@ -97,6 +99,99 @@ class SchemaError(ToolError):
     """Falha de validacao de entrada ou saida contra o schema declarado."""
 
 
+STYLE_MUSICAL_CONTENT_KEYS = (
+    "notes",
+    "pattern",
+    "riff",
+    "melody",
+    "groove",
+    "sequence",
+    "midi",
+    "phrase",
+    "lick",
+    "motif",
+)
+STYLE_PITCH_KEYS = ("pitch", "note", "midi_note", "note_number")
+STYLE_TIME_KEYS = ("time", "start", "start_tick", "tick", "ticks", "position", "offset")
+MIDI_PITCH_MIN = 0
+MIDI_PITCH_MAX = 127
+
+
+def _is_parameter_pair(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
+    )
+
+
+def _raise_style_musical_schema_error(code: str, path: str, reason: str) -> None:
+    raise SchemaError(
+        code,
+        (
+            f"{reason}; perfil de estilo aceita parametros de tecnica, "
+            "nunca conteudo musical"
+        ),
+        path=path,
+    )
+
+
+def _object_has_pitch_and_time_keys(value: dict[str, Any]) -> bool:
+    keys = set(value)
+    return bool(keys.intersection(STYLE_PITCH_KEYS)) and bool(keys.intersection(STYLE_TIME_KEYS))
+
+
+def _validate_no_style_musical_content(
+    value: Any,
+    path: str,
+    code: str,
+    *,
+    allow_parameter_pair: bool = False,
+) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = _join(path, key)
+            if key in STYLE_MUSICAL_CONTENT_KEYS:
+                _raise_style_musical_schema_error(
+                    code,
+                    child_path,
+                    f"campo de conteudo musical proibido {key!r}",
+                )
+            _validate_no_style_musical_content(
+                child,
+                child_path,
+                code,
+                allow_parameter_pair=path.endswith(".parameters"),
+            )
+        return
+
+    if isinstance(value, list):
+        if allow_parameter_pair and _is_parameter_pair(value):
+            return
+        if (
+            len(value) >= 3
+            and all(
+                isinstance(item, int)
+                and not isinstance(item, bool)
+                and MIDI_PITCH_MIN <= item <= MIDI_PITCH_MAX
+                for item in value
+            )
+        ):
+            _raise_style_musical_schema_error(
+                code,
+                path,
+                "sequencia de tres ou mais inteiros em faixa MIDI proibida",
+            )
+        if any(isinstance(item, dict) and _object_has_pitch_and_time_keys(item) for item in value):
+            _raise_style_musical_schema_error(
+                code,
+                path,
+                "array de eventos com altura e tempo proibido",
+            )
+        for i, item in enumerate(value):
+            _validate_no_style_musical_content(item, f"{path}[{i}]", code)
+
+
 def _type_matches(value: Any, expected: str) -> bool:
     if expected == "object":
         return isinstance(value, dict)
@@ -125,6 +220,9 @@ def _validate(value: Any, schema: dict[str, Any], path: str, code: str) -> None:
     apontar exatamente o campo em falha. `code` e o codigo de erro a atribuir
     (E_INPUT_SCHEMA ou E_OUTPUT_SCHEMA).
     """
+    if schema.get("x_forbid_style_musical_content"):
+        _validate_no_style_musical_content(value, path, code)
+
     # oneOf / anyOf sao avaliados antes de type — as branches costumam
     # divergir exatamente em type.
     if "oneOf" in schema:

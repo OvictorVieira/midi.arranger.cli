@@ -150,6 +150,20 @@ def _plan_style_technique_schema() -> dict[str, Any]:
     }
 
 
+def _plan_style_parameter_schema() -> dict[str, Any]:
+    return {
+        "oneOf": [
+            {"type": "number"},
+            {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+        ],
+    }
+
+
 def _plan_family_style_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -171,7 +185,7 @@ def _plan_family_style_schema() -> dict[str, Any]:
             },
             "parameters": {
                 "type": "object",
-                "additionalProperties": {"type": "number"},
+                "additionalProperties": _plan_style_parameter_schema(),
             },
         },
         "required": [
@@ -213,6 +227,7 @@ def _plan_schema() -> dict[str, Any]:
             "assumptions": {"type": "array", "items": {"type": "string"}},
             "style": {
                 "type": "object",
+                "x_forbid_style_musical_content": True,
                 "properties": {
                     family: _plan_family_style_schema()
                     for family in STYLE_FAMILIES

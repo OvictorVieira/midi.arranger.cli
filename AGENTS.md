@@ -26,6 +26,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - A pesquisa levanta **técnica e comportamento**, jamais conteúdo musical.
 - Em `style.<familia>.techniques[].name`, valide contra `tools.techniques.build_index()`; não
   duplique nem hardcode o índice no schema ou em `tools/plan.py`.
+- Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
+  notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto
