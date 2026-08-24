@@ -126,9 +126,9 @@ material de entrada ou de gerador; nota ornamental é a nota adicionada pela té
 
 A idempotência também fica no despacho central: ao reaplicar uma técnica, ornamentos com a mesma
 assinatura de track/canal/pitch/início/fim já presentes são descartados antes da validação do
-contrato. Depois que as técnicas rodam, o render reconstrói as notas renderizadas a partir do MIDI
-final dessas tracks, para que harmonia, placement, artificialidade e persona validem também os
-ornamentos.
+contrato, assim como CC e pitch bend com a mesma assinatura de track/canal/tick/valor. Depois que as
+técnicas rodam, o render reconstrói as notas renderizadas a partir do MIDI final dessas tracks, para
+que harmonia, placement, artificialidade e persona validem também os ornamentos.
 
 Exemplo mínimo válido:
 

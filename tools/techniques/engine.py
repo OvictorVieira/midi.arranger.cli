@@ -237,6 +237,7 @@ class TechniqueRegistry:
         if before_technique is not None:
             after_mid = _result_midi(result) or working_mid or before_technique.midi
             _drop_reapplied_notes(before_technique.snapshot, after_mid)
+            _drop_reapplied_continuous_events(before_technique.snapshot, after_mid)
             validate_physical_plausibility(
                 technique.canonical,
                 before_technique.midi,
@@ -454,9 +455,27 @@ class _IndexedNote:
     note_off_index: int
 
 
+@dataclass(frozen=True, order=True)
+class _ContinuousEventIdentity:
+    track_index: int
+    message_type: str
+    channel: int
+    tick: int
+    number: int
+    value: int
+
+
+@dataclass(frozen=True)
+class _IndexedContinuousEvent:
+    identity: _ContinuousEventIdentity
+    occurrence: int
+    message_index: int
+
+
 @dataclass(frozen=True)
 class _StructuralSnapshot:
     notes: dict[_StructuralKey, _StructuralNote]
+    continuous_events: dict[_ContinuousEventIdentity, int]
 
     @classmethod
     def from_midi(cls, mid: mido.MidiFile) -> _StructuralSnapshot:
@@ -483,7 +502,10 @@ class _StructuralSnapshot:
                 velocity=raw.velocity,
                 end_tick=raw.end_tick,
             )
-        return cls(notes=notes)
+        return cls(
+            notes=notes,
+            continuous_events=_continuous_event_counts(mid),
+        )
 
     def identity_counts(self) -> dict[_NoteIdentity, int]:
         counts: dict[_NoteIdentity, int] = {}
@@ -497,6 +519,9 @@ class _StructuralSnapshot:
             )
             counts[identity] = counts.get(identity, 0) + 1
         return counts
+
+    def continuous_event_counts(self) -> dict[_ContinuousEventIdentity, int]:
+        return dict(self.continuous_events)
 
 
 def _humanize_snapshot(
@@ -655,6 +680,26 @@ def _drop_reapplied_notes(
             _remove_track_messages(track, remove_indices)
 
 
+def _drop_reapplied_continuous_events(
+    before: _StructuralSnapshot,
+    mid: mido.MidiFile,
+) -> None:
+    """Remove CC e pitch bend extras que uma reaplicacao tentou empilhar."""
+
+    before_counts = before.continuous_event_counts()
+    if not before_counts:
+        return
+
+    for track_index, track in enumerate(mid.tracks):
+        remove_indices: set[int] = set()
+        for event in _indexed_continuous_events(track_index, track):
+            before_count = before_counts.get(event.identity, 0)
+            if before_count and event.occurrence >= before_count:
+                remove_indices.add(event.message_index)
+        if remove_indices:
+            _remove_track_messages(track, remove_indices)
+
+
 def _indexed_notes(
     track_index: int,
     track: mido.MidiTrack,
@@ -697,6 +742,64 @@ def _indexed_notes(
             occurrence=occurrence,
             note_on_index=note_on_index,
             note_off_index=note_off_index,
+        ))
+    return tuple(indexed)
+
+
+def _continuous_event_counts(
+    mid: mido.MidiFile,
+) -> dict[_ContinuousEventIdentity, int]:
+    counts: dict[_ContinuousEventIdentity, int] = {}
+    for track_index, track in enumerate(mid.tracks):
+        for event in _indexed_continuous_events(track_index, track):
+            counts[event.identity] = counts.get(event.identity, 0) + 1
+    return counts
+
+
+def _indexed_continuous_events(
+    track_index: int,
+    track: mido.MidiTrack,
+) -> tuple[_IndexedContinuousEvent, ...]:
+    collected: list[tuple[_ContinuousEventIdentity, int]] = []
+    tick = 0
+    for msg_index, msg in enumerate(track):
+        tick += msg.time
+        if msg.is_meta:
+            continue
+        if msg.type == "control_change":
+            collected.append((
+                _ContinuousEventIdentity(
+                    track_index=track_index,
+                    message_type=msg.type,
+                    channel=msg.channel,
+                    tick=tick,
+                    number=msg.control,
+                    value=msg.value,
+                ),
+                msg_index,
+            ))
+        elif msg.type == "pitchwheel":
+            collected.append((
+                _ContinuousEventIdentity(
+                    track_index=track_index,
+                    message_type=msg.type,
+                    channel=msg.channel,
+                    tick=tick,
+                    number=0,
+                    value=msg.pitch,
+                ),
+                msg_index,
+            ))
+
+    seen: dict[_ContinuousEventIdentity, int] = {}
+    indexed: list[_IndexedContinuousEvent] = []
+    for identity, msg_index in collected:
+        occurrence = seen.get(identity, 0)
+        seen[identity] = occurrence + 1
+        indexed.append(_IndexedContinuousEvent(
+            identity=identity,
+            occurrence=occurrence,
+            message_index=msg_index,
         ))
     return tuple(indexed)
 

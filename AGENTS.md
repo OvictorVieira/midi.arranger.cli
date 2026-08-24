@@ -47,8 +47,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   ornamentos, CC e pitch bend, mas pitch e posição das notas estruturais são intocáveis; velocity e
   duração estrutural só mudam com flags explícitas no registro da técnica.
 - A idempotência de ornamentos do nível `technique` também fica em `TechniqueRegistry.apply`: ao
-  reaplicar, nota extra com a mesma assinatura exata já existente (track/canal/pitch/início/fim) é
-  descartada antes da validação do contrato.
+  reaplicar, nota extra com a mesma assinatura exata já existente (track/canal/pitch/início/fim),
+  CC ou pitch bend com mesma assinatura (track/canal/tick/valor) é descartado antes da validação
+  do contrato.
 - A plausibilidade física de ornamentos do nível `technique` é validada em
   `tools/techniques/physical.py`, chamada pelo despacho central; parâmetros físicos explícitos como
   `tuning`/`afinacao`, `open_strings`, `max_fret`, `hand` e `max_hand_span` entram por

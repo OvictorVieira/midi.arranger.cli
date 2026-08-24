@@ -541,6 +541,7 @@ def test_technique_application_is_idempotent_in_memory_byte_for_byte():
     registry = _ornament_registry()
     once = _apply_two_ornament_techniques(registry, _midi_with_drums_and_bass())
     once_bytes = _midi_bytes(once)
+    once_events = _continuous_event_tuples(once)
 
     twice = _apply_two_ornament_techniques(registry, once)
 
@@ -550,6 +551,13 @@ def test_technique_application_is_idempotent_in_memory_byte_for_byte():
         (1, 9, 60, 0, 480, 96),
         (2, 0, 35, 240, 300, 28),
         (2, 0, 40, 0, 480, 96),
+    ]
+    assert _continuous_event_tuples(twice) == once_events
+    assert once_events == [
+        (1, "control_change", 9, 120, 4, 48),
+        (1, "pitchwheel", 9, 120, 0, -120),
+        (2, "control_change", 0, 240, 11, 64),
+        (2, "pitchwheel", 0, 240, 0, 80),
     ]
 
 
@@ -566,6 +574,47 @@ def test_technique_application_is_idempotent_after_saved_round_trip(
 
     assert _midi_bytes(twice) == once_path.read_bytes()
     assert _note_tuples(twice) == _note_tuples(once)
+    assert _continuous_event_tuples(twice) == _continuous_event_tuples(once)
+
+
+def test_technique_idempotence_preserves_pre_existing_cc_and_pitch_bend():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_event(
+            mid.tracks[1],
+            mido.Message("control_change", channel=9, control=4, value=48),
+            tick=120,
+        )
+        _insert_event(
+            mid.tracks[1],
+            mido.Message("pitchwheel", channel=9, pitch=-120),
+            tick=120,
+        )
+        return mid
+
+    source = _midi_with_two_notes()
+    _insert_event(
+        source.tracks[1],
+        mido.Message("control_change", channel=9, control=4, value=48),
+        tick=120,
+    )
+    _insert_event(
+        source.tracks[1],
+        mido.Message("pitchwheel", channel=9, pitch=-120),
+        tick=120,
+    )
+    source_events = _continuous_event_tuples(source)
+
+    result = registry.apply("drums.ghost_notes", source, seed=1)
+
+    assert _continuous_event_tuples(result) == source_events
 
 
 def test_technique_context_makes_seed_effect_explicit_and_deterministic():
@@ -1359,6 +1408,37 @@ def _note_tuples(mid: mido.MidiFile) -> list[tuple[int, int, int, int, int, int]
     return notes
 
 
+def _continuous_event_tuples(
+    mid: mido.MidiFile,
+) -> list[tuple[int, str, int, int, int, int]]:
+    events: list[tuple[int, str, int, int, int, int]] = []
+    for track_index, track in enumerate(mid.tracks):
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "control_change":
+                events.append((
+                    track_index,
+                    msg.type,
+                    msg.channel,
+                    tick,
+                    msg.control,
+                    msg.value,
+                ))
+            elif msg.type == "pitchwheel":
+                events.append((
+                    track_index,
+                    msg.type,
+                    msg.channel,
+                    tick,
+                    0,
+                    msg.pitch,
+                ))
+    return events
+
+
 def _ornament_registry() -> TechniqueRegistry:
     registry = TechniqueRegistry()
 
@@ -1377,6 +1457,16 @@ def _ornament_registry() -> TechniqueRegistry:
             start_tick=120,
             end_tick=180,
         )
+        _insert_event(
+            mid.tracks[1],
+            mido.Message("control_change", channel=9, control=4, value=48),
+            tick=120,
+        )
+        _insert_event(
+            mid.tracks[1],
+            mido.Message("pitchwheel", channel=9, pitch=-120),
+            tick=120,
+        )
         return mid
 
     @registry.register("bass.ghost_notes", "technique")
@@ -1393,6 +1483,16 @@ def _ornament_registry() -> TechniqueRegistry:
             velocity=28,
             start_tick=240,
             end_tick=300,
+        )
+        _insert_event(
+            mid.tracks[2],
+            mido.Message("control_change", channel=0, control=11, value=64),
+            tick=240,
+        )
+        _insert_event(
+            mid.tracks[2],
+            mido.Message("pitchwheel", channel=0, pitch=80),
+            tick=240,
         )
         return mid
 
@@ -1434,6 +1534,27 @@ def _insert_note(
     previous_tick = 0
     for absolute_tick, msg in sorted(absolute, key=lambda item: item[0]):
         rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+        previous_tick = absolute_tick
+    track[:] = rebuilt
+
+
+def _insert_event(
+    track: mido.MidiTrack,
+    msg: mido.Message,
+    *,
+    tick: int,
+) -> None:
+    absolute: list[tuple[int, mido.Message | mido.MetaMessage]] = []
+    current_tick = 0
+    for existing in track:
+        current_tick += existing.time
+        absolute.append((current_tick, existing))
+    absolute.append((tick, msg))
+
+    rebuilt = mido.MidiTrack()
+    previous_tick = 0
+    for absolute_tick, event in sorted(absolute, key=lambda item: item[0]):
+        rebuilt.append(event.copy(time=absolute_tick - previous_tick))
         previous_tick = absolute_tick
     track[:] = rebuilt
 
