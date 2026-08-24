@@ -18,6 +18,7 @@ consiga achar o campo sem ler o traceback inteiro.
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
@@ -123,6 +124,7 @@ SCHEMA_VERSION = 1
 
 MIDI_PITCH_MIN = 0
 MIDI_PITCH_MAX = 127
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 # --- excecao ----------------------------------------------------------------
@@ -149,6 +151,12 @@ class SourceMidi:
     tempo: float | None = None
     key: str | None = None
     bars: int | None = None
+
+
+@dataclass
+class BriefRef:
+    path: str
+    sha256: str
 
 
 @dataclass
@@ -230,6 +238,7 @@ class ArrangementPlan:
     route: str
     sections: list[PlanSection]
     elements: list[Element]
+    brief_ref: BriefRef | None = None
     assumptions: list[str] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
     edits: list[PlanEdit] = field(default_factory=list)
@@ -608,6 +617,13 @@ def validate(plan: ArrangementPlan) -> list[str]:
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
     _require_nonempty_str(plan.source_midi.sha256, "source_midi.sha256")
+    if plan.brief_ref is not None:
+        _require_nonempty_str(plan.brief_ref.path, "brief_ref.path")
+        if not isinstance(plan.brief_ref.sha256, str) or not SHA256_RE.fullmatch(plan.brief_ref.sha256):
+            raise PlanValidationError(
+                "brief_ref.sha256",
+                "must be 64 lowercase hexadecimal characters",
+            )
     warnings.extend(_validate_style(plan.style))
 
     section_labels: set[str] = set()
@@ -744,6 +760,13 @@ def _source_midi_to_dict(s: SourceMidi) -> dict[str, Any]:
     }
 
 
+def _brief_ref_to_dict(ref: BriefRef) -> dict[str, Any]:
+    return {
+        "path": ref.path,
+        "sha256": ref.sha256,
+    }
+
+
 def _section_to_dict(s: PlanSection) -> dict[str, Any]:
     return {
         "label": s.label,
@@ -831,6 +854,8 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
             family: _family_style_to_dict(entry)
             for family, entry in plan.style.items()
         }
+    if plan.brief_ref is not None:
+        data["brief_ref"] = _brief_ref_to_dict(plan.brief_ref)
     return data
 
 
@@ -841,6 +866,16 @@ def _source_midi_from_dict(data: dict[str, Any]) -> SourceMidi:
         tempo=data.get("tempo"),
         key=data.get("key"),
         bars=data.get("bars"),
+    )
+
+
+def _brief_ref_from_dict(data: Any) -> BriefRef:
+    if not isinstance(data, dict):
+        raise PlanValidationError("brief_ref", f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, ("path", "sha256"), "brief_ref")
+    return BriefRef(
+        path=_require_field(data, "path", "brief_ref"),
+        sha256=_require_field(data, "sha256", "brief_ref"),
     )
 
 
@@ -965,6 +1000,7 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         transitions=[_transition_from_dict(t) for t in data.get("transitions", [])],
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],
         style=_style_from_dict(data["style"]) if "style" in data else None,
+        brief_ref=_brief_ref_from_dict(data["brief_ref"]) if "brief_ref" in data else None,
     )
 
 

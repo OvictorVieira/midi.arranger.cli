@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from tools.brief_ref import brief_sha256
 from tools.plan import (
     ArrangementPlan,
+    BriefRef,
     Element,
     FamilyStyle,
     PlanEdit,
@@ -129,6 +132,60 @@ def test_dict_round_trip_is_identity():
     programatica sem passar por disco."""
     plan = _valid_plan()
     assert from_dict(to_dict(plan)) == plan
+
+
+def test_brief_sha256_hashes_exact_file_bytes(tmp_path: Path):
+    brief = tmp_path / "arrangement-brief.json"
+    content = b'{"input_midi":"song.mid"}\n'
+    brief.write_bytes(content)
+
+    assert brief_sha256(brief) == hashlib.sha256(content).hexdigest()
+
+
+def test_plan_accepts_valid_brief_ref():
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(
+        path="arrangement-brief.json",
+        sha256="0" * 64,
+    )
+
+    validate(plan)
+    assert from_dict(to_dict(plan)) == plan
+
+
+def test_validate_rejects_malformed_brief_ref_sha256():
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(
+        path="arrangement-brief.json",
+        sha256="A" * 64,
+    )
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "brief_ref.sha256"
+    assert "64 lowercase hexadecimal" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("path", "brief_ref.path"),
+        ("sha256", "brief_ref.sha256"),
+    ],
+)
+def test_from_dict_rejects_partial_brief_ref(field: str, path: str):
+    data = to_dict(_valid_plan())
+    data["brief_ref"] = {
+        "path": "arrangement-brief.json",
+        "sha256": "0" * 64,
+    }
+    del data["brief_ref"][field]
+
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+
+    assert exc.value.path == path
 
 
 def test_load_reads_hand_written_json(tmp_path: Path):

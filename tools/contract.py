@@ -65,6 +65,7 @@ from .validators import (
 )
 
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 # --- helpers de IO ---------------------------------------------------------
@@ -222,6 +223,15 @@ def _plan_schema() -> dict[str, Any]:
                     "bars": {"type": ["integer", "null"]},
                 },
                 "required": ["path", "sha256"],
+            },
+            "brief_ref": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "sha256": {"type": "string", "pattern": SHA256_PATTERN},
+                },
+                "required": ["path", "sha256"],
+                "additionalProperties": False,
             },
             "route": {"enum": list(ROUTES)},
             "assumptions": {"type": "array", "items": {"type": "string"}},

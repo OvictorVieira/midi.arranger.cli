@@ -35,6 +35,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `plan.validate()` continua read-only e a fachada `plan.validate` expõe a cópia em `normalized_plan`.
 - `tools.render.render()` normaliza defaults de `style` em memória antes de avisos/validadores;
   `confidence: low` e `confidence: default` viram warning de render, nunca erro.
+- `plan.brief_ref.sha256` deve ser calculado com `tools.brief_ref.brief_sha256()`; é o SHA-256 dos
+  bytes exatos do `arrangement-brief.json`, mesmo formato de `.midiarranger/brief.sha256`.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto

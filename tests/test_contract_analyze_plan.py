@@ -283,6 +283,59 @@ def test_plan_validate_accepts_complete_style_in_all_four_families():
     assert env["data"]["valid"] is True
 
 
+def test_plan_validate_accepts_valid_brief_ref():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["brief_ref"] = {
+        "path": "arrangement-brief.json",
+        "sha256": "0" * 64,
+    }
+
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+
+    assert env["ok"] is True
+    assert env["data"]["valid"] is True
+    assert env["data"]["normalized_plan"]["brief_ref"] == plan["brief_ref"]
+
+
+def test_plan_validate_rejects_malformed_brief_ref_sha256_in_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["brief_ref"] = {
+        "path": "arrangement-brief.json",
+        "sha256": "A" * 64,
+    }
+
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == "plan.brief_ref.sha256"
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("path", "plan.brief_ref.path"),
+        ("sha256", "plan.brief_ref.sha256"),
+    ],
+)
+def test_plan_validate_rejects_partial_brief_ref_in_schema(field: str, path: str):
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["brief_ref"] = {
+        "path": "arrangement-brief.json",
+        "sha256": "0" * 64,
+    }
+    del plan["brief_ref"][field]
+
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == path
+
+
 def test_plan_validate_resolves_simple_style_technique_name_by_family():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()

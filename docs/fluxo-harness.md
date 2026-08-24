@@ -209,7 +209,10 @@ reescreve o que você pediu. Requisito novo é brief novo.
 No começo do `run`, o harness valida que `arrangement-brief.json` existe antes de invocar o agente.
 Sem brief, o comando falha cedo e manda rodar `midi-arranger brief <input.mid>`. Com brief presente,
 o harness cria `.midiarranger/`, registra o hash do brief em `.midiarranger/brief.sha256` e usa esse
-valor para detectar se a demanda mudou desde a execução anterior.
+valor para detectar se a demanda mudou desde a execução anterior. Esse valor é o SHA-256 dos bytes
+exatos do arquivo, sem parse nem normalização de JSON; quando o pacote `tools/` está disponível, o
+harness chama `tools.brief_ref.brief_sha256()`, e cai para `shasum -a 256` só como fallback de
+ambiente.
 
 Durante o `run`, esse mesmo hash vira uma trava de somente leitura. O prompt driver passa
 `brief_readonly=true` e instrui o agente a não editar `arrangement-brief.json`; se o agente mudar o
@@ -238,4 +241,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: 8aabf2f9241a5c02b375db5024e726b54ed6b8ce1bbfd94792d39cb69cfd81d2 -->
+<!-- harness-sha256: cf6f96057edc825d0fa2c649a259571a2fa305cbf04b71b56f69ac92bdb4df08 -->
