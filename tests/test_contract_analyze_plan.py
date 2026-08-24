@@ -11,6 +11,7 @@ import pytest
 
 from tools import contract as _contract  # noqa: F401 — garante registro
 from tools.registry import call, get
+from tools.techniques import SUPPORTED_TECHNIQUES
 
 FIXTURE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -246,7 +247,7 @@ def _complete_style_dict() -> dict:
             "researched_at": "2026-08-24",
             "sources": ["https://example.test/bass"],
             "confidence": "high",
-            "techniques": [{"name": "ghost_notes", "density": 0.2}],
+            "techniques": [],
             "parameters": {"ghost_note_velocity": 35},
         },
         "drums": {
@@ -361,6 +362,20 @@ def test_plan_validate_rejects_unknown_style_technique_with_exact_path():
     assert "drums.flam" in err["message"]
 
 
+def test_plan_validate_rejects_documented_but_unimplemented_style_technique():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["keys"]["techniques"] = [{"name": "keys.hand_asynchrony"}]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is False
+    err = env["data"]["errors"][0]
+    assert err["path"] == "style.keys.techniques[0].name"
+    assert "not implemented by the engine" in err["message"]
+    assert "drums.accent_hierarchy" in err["message"]
+
+
 def test_plan_validate_rejects_style_technique_from_other_family():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
@@ -462,7 +477,11 @@ def test_plan_validate_rejects_style_parameter_outside_manual_range():
     assert "[20, 45]" in err["message"]
 
 
-def test_plan_validate_warns_for_style_parameter_source_gap():
+def test_plan_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "tools.techniques.SUPPORTED_TECHNIQUES",
+        (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
+    )
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()

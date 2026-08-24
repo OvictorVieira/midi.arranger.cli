@@ -289,10 +289,27 @@ def _build_techniques_index_for_style():
 def _resolve_style_technique(index, family: str, name: str, path: str):
     import difflib
 
+    from .techniques import SUPPORTED_TECHNIQUES
+
     found = index.candidates(name)
     in_family = tuple(t for t in found if t.family == family)
     if in_family:
-        return in_family[0]
+        technique = in_family[0]
+        if technique.canonical in SUPPORTED_TECHNIQUES:
+            return technique
+        listing = (
+            ", ".join(SUPPORTED_TECHNIQUES)
+            if SUPPORTED_TECHNIQUES
+            else "(nenhuma tecnica implementada)"
+        )
+        raise PlanValidationError(
+            path,
+            (
+                f"technique {technique.canonical!r} exists in techniques index "
+                "but is not implemented by the engine; implemented techniques: "
+                f"{listing}"
+            ),
+        )
 
     if found:
         raise PlanValidationError(

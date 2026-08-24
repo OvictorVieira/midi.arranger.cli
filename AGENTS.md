@@ -26,6 +26,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - A pesquisa levanta **técnica e comportamento**, jamais conteúdo musical.
 - Em `style.<familia>.techniques[].name`, valide contra `tools.techniques.build_index()`; não
   duplique nem hardcode o índice no schema ou em `tools/plan.py`.
+- `plan.validate` só aceita `style.<familia>.techniques[].name` quando a técnica existe no manual
+  **e** está em `SUPPORTED_TECHNIQUES`; técnica apenas documentada é erro de validação, não erro tardio
+  de render.
 - `tools/techniques/index.py` apenas lê os manuais; técnicas aplicáveis pelo motor são registradas
   explicitamente em `tools/techniques/engine.py`, e `SUPPORTED_TECHNIQUES` deve ser derivado desse
   registro.

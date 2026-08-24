@@ -30,7 +30,12 @@ from tools.render import (
     render,
     sha256_of_file,
 )
-from tools.techniques import TechniqueApplyResult, UnknownTechniqueError, build_index
+from tools.techniques import (
+    SUPPORTED_TECHNIQUES,
+    TechniqueApplyResult,
+    UnknownTechniqueError,
+    build_index,
+)
 
 # --- fixtures ---------------------------------------------------------------
 
@@ -351,6 +356,10 @@ def test_render_applies_style_techniques_to_generated_tracks(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(
+        "tools.techniques.SUPPORTED_TECHNIQUES",
+        (*SUPPORTED_TECHNIQUES, "keys.hand_asynchrony"),
+    )
     src = _build_synthetic_source(tmp_path)
     plan = _build_plan(src)
     plan.style = {
@@ -440,6 +449,26 @@ def test_render_applies_style_techniques_to_generated_tracks(
         ]
 
 
+def test_render_accepts_plan_validated_with_supported_style_technique(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Drummer research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            parameters={},
+        ),
+    }
+
+    report = render(plan, tmp_path / "out.mid")
+
+    assert report.output_path.exists()
+    assert all("unknown" not in warning.lower() for warning in report.warnings)
+
+
 def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_path):
     src = _build_synthetic_source(tmp_path)
     plan = _build_plan(src)
@@ -491,6 +520,10 @@ def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_p
 
 
 def test_render_wraps_style_technique_engine_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tools.techniques.SUPPORTED_TECHNIQUES",
+        (*SUPPORTED_TECHNIQUES, "keys.hand_asynchrony"),
+    )
     src = _build_synthetic_source(tmp_path)
     plan = _build_plan(src)
     plan.style = {
