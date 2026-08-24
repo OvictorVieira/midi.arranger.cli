@@ -24,6 +24,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   intenções determinísticas.
 - Perfil de artista pesquisado **nunca** vira base de conhecimento — vive no plano daquela música.
 - A pesquisa levanta **técnica e comportamento**, jamais conteúdo musical.
+- Em `style.<familia>.techniques[].name`, valide contra `tools.techniques.build_index()`; não
+  duplique nem hardcode o índice no schema ou em `tools/plan.py`.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto

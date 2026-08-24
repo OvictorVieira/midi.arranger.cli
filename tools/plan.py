@@ -219,6 +219,44 @@ def _validate_energy(energy: Any, path: str) -> None:
             raise PlanValidationError(f"{path}.{ax}", f"must be in {ENERGY_MIN}-{ENERGY_MAX}, got {v}")
 
 
+def _build_techniques_index_for_style():
+    from .techniques import TechniqueError, build_index
+
+    try:
+        return build_index()
+    except TechniqueError as exc:
+        raise PlanValidationError(
+            "style.techniques",
+            f"could not build techniques index: {exc}",
+        ) from None
+
+
+def _validate_style_technique_name(index, family: str, name: str, path: str) -> None:
+    import difflib
+
+    found = index.candidates(name)
+    in_family = tuple(t for t in found if t.family == family)
+    if in_family:
+        return
+
+    if found:
+        raise PlanValidationError(
+            path,
+            (
+                f"technique {name!r} is not available for style family {family!r}; "
+                f"candidates: {[t.canonical for t in found]}"
+            ),
+        )
+
+    candidates = list(index.names()) + [t.name for t in index.techniques]
+    matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
+    hint = f"; close candidates: {matches}" if matches else ""
+    raise PlanValidationError(
+        path,
+        f"technique {name!r} does not exist in techniques index{hint}",
+    )
+
+
 def _validate_style(plan_style: Any) -> None:
     if plan_style is None:
         return
@@ -227,6 +265,14 @@ def _validate_style(plan_style: Any) -> None:
             "style",
             f"must be dict with families {list(STYLE_FAMILIES)}, got {type(plan_style).__name__}",
         )
+    technique_index = (
+        _build_techniques_index_for_style()
+        if any(
+            isinstance(entry, FamilyStyle) and entry.techniques
+            for entry in plan_style.values()
+        )
+        else None
+    )
     for family, entry in plan_style.items():
         base = f"style.{family}"
         if family not in STYLE_FAMILIES:
@@ -268,7 +314,7 @@ def _validate_style(plan_style: Any) -> None:
                     raise PlanValidationError(
                         f"{technique_base}.density",
                         f"must be number, got {type(technique.density).__name__}",
-                    )
+                )
                 if not 0.0 <= float(technique.density) <= 1.0:
                     raise PlanValidationError(
                         f"{technique_base}.density",
@@ -278,6 +324,13 @@ def _validate_style(plan_style: Any) -> None:
                 raise PlanValidationError(
                     f"{technique_base}.rationale",
                     f"must be string or null, got {type(technique.rationale).__name__}",
+                )
+            if technique_index is not None:
+                _validate_style_technique_name(
+                    technique_index,
+                    family,
+                    technique.name,
+                    f"{technique_base}.name",
                 )
         if not isinstance(entry.parameters, dict):
             raise PlanValidationError(

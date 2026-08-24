@@ -154,7 +154,7 @@ def _complete_style() -> dict[str, FamilyStyle]:
             researched_at="2026-08-24",
             sources=["https://example.test/drums"],
             confidence="medium",
-            techniques=[StyleTechnique(name="backbeat", rationale="Caixa seca no pulso.")],
+            techniques=[StyleTechnique(name="drums.ghost_notes", rationale="Caixa seca no pulso.")],
             parameters={"swing": 0.12},
         ),
         "guitar": FamilyStyle(
@@ -180,6 +180,73 @@ def test_validate_accepts_complete_style_for_all_four_families():
     plan = _valid_plan()
     plan.style = _complete_style()
     validate(plan)  # nao levanta
+
+
+def test_validate_resolves_simple_style_technique_name_by_family():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="ghost_notes")],
+            parameters={},
+        )
+    }
+    validate(plan)  # `ghost_notes` existe em drums e bass; o path desambigua.
+
+
+def test_validate_accepts_canonical_style_technique_name():
+    plan = _valid_plan()
+    plan.style = {
+        "guitar": FamilyStyle(
+            reference="Tom Morello",
+            researched_at="2026-08-24",
+            sources=["https://example.test/guitar"],
+            confidence="high",
+            techniques=[StyleTechnique(name="guitar.palm_mute")],
+            parameters={},
+        )
+    }
+    validate(plan)  # nao levanta
+
+
+def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="flanm")],
+            parameters={},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+    assert "drums.flam" in exc.value.message
+
+
+def test_validate_rejects_style_technique_from_other_family():
+    plan = _valid_plan()
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.flam")],
+            parameters={},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.bass.techniques[0].name"
+    assert "drums.flam" in exc.value.message
+    assert "bass" in exc.value.message
 
 
 @pytest.mark.parametrize(

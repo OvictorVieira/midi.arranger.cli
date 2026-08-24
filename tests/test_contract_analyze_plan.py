@@ -219,7 +219,7 @@ def _complete_style_dict() -> dict:
             "researched_at": "2026-08-24",
             "sources": ["https://example.test/drums"],
             "confidence": "medium",
-            "techniques": [{"name": "backbeat", "rationale": "Caixa seca."}],
+            "techniques": [{"name": "drums.ghost_notes", "rationale": "Caixa seca."}],
             "parameters": {"swing": 0.12},
         },
         "guitar": {
@@ -248,6 +248,42 @@ def test_plan_validate_accepts_complete_style_in_all_four_families():
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
+
+
+def test_plan_validate_resolves_simple_style_technique_name_by_family():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is True
+
+
+def test_plan_validate_rejects_unknown_style_technique_with_exact_path():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["drums"]["techniques"] = [{"name": "flanm"}]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is False
+    err = env["data"]["errors"][0]
+    assert err["path"] == "style.drums.techniques[0].name"
+    assert "drums.flam" in err["message"]
+
+
+def test_plan_validate_rejects_style_technique_from_other_family():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["bass"]["techniques"] = [{"name": "drums.flam"}]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is False
+    err = env["data"]["errors"][0]
+    assert err["path"] == "style.bass.techniques[0].name"
+    assert "drums.flam" in err["message"]
 
 
 def test_plan_validate_rejects_unknown_style_family_in_schema():
