@@ -28,6 +28,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   duplique nem hardcode o índice no schema ou em `tools/plan.py`.
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
+- Defaults de `style` são uma normalização em memória: use `tools.plan.normalize_style_defaults()`;
+  `plan.validate()` continua read-only e a fachada `plan.validate` expõe a cópia em `normalized_plan`.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto

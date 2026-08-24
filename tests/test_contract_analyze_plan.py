@@ -141,7 +141,9 @@ def test_plan_skeleton_returns_valid_plan_that_round_trips_through_validate():
 
     env2 = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env2["ok"] is True
-    assert env2["data"] == {"valid": True, "errors": []}
+    assert env2["data"]["valid"] is True
+    assert env2["data"]["errors"] == []
+    assert env2["data"]["normalized_plan"] == plan
 
 
 def test_plan_skeleton_writes_to_output_path_when_given(tmp_path: Path):
@@ -202,6 +204,37 @@ def test_plan_validate_accepts_skeleton_output():
     assert env["ok"] is True
     assert env["data"]["valid"] is True
     assert env["data"]["errors"] == []
+
+
+def test_plan_validate_returns_normalized_style_default_for_used_family():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["assumptions"] = []
+    plan["elements"] = [{
+        "id": "piano_default",
+        "role": "piano",
+        "sections": [plan["sections"][0]["label"]],
+        "register": [48, 80],
+        "layers": 1,
+        "sync_role": "sustain_through",
+        "articulation": "tight",
+        "harmony": "follow_chords",
+        "pattern": None, "degrees": None, "dynamics": None,
+        "instrument": None, "rationale": None, "is_protagonist": False,
+    }]
+
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+
+    assert env["ok"] is True
+    assert env["data"]["valid"] is True
+    normalized = env["data"]["normalized_plan"]
+    assert normalized["style"]["keys"]["confidence"] == "default"
+    assert any(
+        "keys" in assumption and "persona base" in assumption
+        for assumption in normalized["assumptions"]
+    )
+    assert "style" not in plan
+    assert plan["assumptions"] == []
 
 
 def _complete_style_dict() -> dict:

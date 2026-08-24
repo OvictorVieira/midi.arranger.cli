@@ -851,6 +851,11 @@ def _plan_validate_impl(
     data = {
         "valid": len(errors) == 0,
         "errors": errors,
+        "normalized_plan": (
+            plan_mod.to_dict(plan_mod.normalize_style_defaults(plan_obj))
+            if plan_obj is not None and not errors
+            else None
+        ),
     }
     warnings: list[dict[str, Any]] = [
         {"code": "W_PLAN", "message": w, "path": "plan"} for w in domain_warnings
@@ -885,8 +890,14 @@ PLAN_VALIDATE_TOOL = Tool(
                     "required": ["path", "message"],
                 },
             },
+            "normalized_plan": {
+                "anyOf": [
+                    _plan_schema(),
+                    {"type": "null"},
+                ],
+            },
         },
-        "required": ["valid", "errors"],
+        "required": ["valid", "errors", "normalized_plan"],
     },
     func=_plan_validate_impl,
 )

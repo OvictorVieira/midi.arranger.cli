@@ -18,6 +18,7 @@ consiga achar o campo sem ler o traceback inteiro.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -78,6 +79,41 @@ STYLE_MUSICAL_CONTENT_KEYS = (
 )
 STYLE_PITCH_KEYS = ("pitch", "note", "midi_note", "note_number")
 STYLE_TIME_KEYS = ("time", "start", "start_tick", "tick", "ticks", "position", "offset")
+DEFAULT_STYLE_REFERENCE = "persona base"
+DEFAULT_STYLE_RESEARCHED_AT = "0001-01-01"
+DEFAULT_STYLE_SOURCE = "knowledge/persona/persona_produtor_metal_moderno.md"
+DEFAULT_STYLE_ASSUMPTION_TEMPLATE = (
+    "Familia {family} sem style pesquisado; usando persona base como default."
+)
+ROLE_STYLE_FAMILIES = {
+    "bass": "bass",
+    "sub": "bass",
+    "sub_drop": "bass",
+    "growl_bass": "bass",
+    "drums": "drums",
+    "drum_groove": "drums",
+    "perc_elec": "drums",
+    "impact": "drums",
+    "snare_bomb": "drums",
+    "guitar": "guitar",
+    "rhythm_guitar": "guitar",
+    "lead_guitar": "guitar",
+    "shadow": "guitar",
+    "pad": "keys",
+    "piano": "keys",
+    "rhodes": "keys",
+    "strings": "keys",
+    "choir": "keys",
+    "drone": "keys",
+    "arp": "keys",
+    "arp_gated": "keys",
+    "rhythmic_machine": "keys",
+    "motor": "keys",
+    "pluck": "keys",
+    "riser": "keys",
+    "lead_agressivo": "keys",
+    "vox_chop": "keys",
+}
 
 ENERGY_AXES = ("densidade", "impacto", "largura", "altura", "instabilidade")
 ENERGY_MIN = 0
@@ -431,6 +467,66 @@ def _validate_style(plan_style: Any) -> None:
                     f"{base}.parameters.{key}",
                     f"must be number or [min, max] pair, got {type(value).__name__}",
                 )
+
+
+def _style_family_for_role(role: str) -> str | None:
+    if role in STYLE_FAMILIES:
+        return role
+    return ROLE_STYLE_FAMILIES.get(role)
+
+
+def style_families_used_by_plan(plan: ArrangementPlan) -> tuple[str, ...]:
+    """Familias de `style` que o plano efetivamente usa.
+
+    A fronteira do schema tem quatro familias musicais, enquanto elementos
+    usam roles de render. Este helper centraliza a traducao para que defaults
+    de estilo, validadores futuros e fachadas falem a mesma lingua.
+    """
+    used: set[str] = set()
+    for edit in plan.edits:
+        if edit.profile in STYLE_FAMILIES:
+            used.add(edit.profile)
+    for element in plan.elements:
+        family = _style_family_for_role(element.role)
+        if family is not None:
+            used.add(family)
+    return tuple(family for family in STYLE_FAMILIES if family in used)
+
+
+def _default_family_style() -> FamilyStyle:
+    return FamilyStyle(
+        reference=DEFAULT_STYLE_REFERENCE,
+        researched_at=DEFAULT_STYLE_RESEARCHED_AT,
+        sources=[DEFAULT_STYLE_SOURCE],
+        confidence="default",
+        techniques=[],
+        parameters={},
+    )
+
+
+def normalize_style_defaults(plan: ArrangementPlan) -> ArrangementPlan:
+    """Devolve copia do plano com `style` default para familias usadas.
+
+    A funcao nao muta `plan`: o arquivo de origem e o objeto do chamador seguem
+    representando exatamente o que foi escrito. A copia normalizada explicita
+    quando uma familia caiu na persona base por falta de perfil pesquisado.
+    """
+    normalized = deepcopy(plan)
+    used_families = style_families_used_by_plan(normalized)
+    if not used_families:
+        return normalized
+
+    if normalized.style is None:
+        normalized.style = {}
+
+    for family in used_families:
+        if family in normalized.style:
+            continue
+        normalized.style[family] = _default_family_style()
+        assumption = DEFAULT_STYLE_ASSUMPTION_TEMPLATE.format(family=family)
+        if assumption not in normalized.assumptions:
+            normalized.assumptions.append(assumption)
+    return normalized
 
 
 def validate(plan: ArrangementPlan) -> list[str]:

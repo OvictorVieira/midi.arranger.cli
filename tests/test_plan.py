@@ -21,6 +21,7 @@ from tools.plan import (
     dump,
     from_dict,
     load,
+    normalize_style_defaults,
     to_dict,
     validate,
     validate_edits_against_midi,
@@ -180,6 +181,53 @@ def test_validate_accepts_complete_style_for_all_four_families():
     plan = _valid_plan()
     plan.style = _complete_style()
     validate(plan)  # nao levanta
+
+
+def test_normalize_style_defaults_adds_default_for_used_family_without_style():
+    plan = _valid_plan()
+    plan.assumptions = []
+    validate(plan)  # plano sem style continua valido.
+
+    normalized = normalize_style_defaults(plan)
+
+    assert normalized.style is not None
+    assert normalized.style["keys"].confidence == "default"
+    assert normalized.style["keys"].reference == "persona base"
+    assert len(normalized.assumptions) == 1
+    assert "keys" in normalized.assumptions[0]
+    assert "persona base" in normalized.assumptions[0]
+    assert plan.style is None
+    assert plan.assumptions == []
+
+
+def test_normalize_style_defaults_only_fills_used_families_missing_from_style():
+    plan = _valid_plan()
+    plan.assumptions = []
+    plan.edits = [
+        PlanEdit(track="Drums", profile="drums", intensity=0.5),
+        PlanEdit(track="Bass", profile="bass", intensity=0.5),
+    ]
+    drums_style = FamilyStyle(
+        reference="Steve Jordan",
+        researched_at="2026-08-24",
+        sources=["https://example.test/drums"],
+        confidence="high",
+        techniques=[],
+        parameters={},
+    )
+    plan.style = {"drums": drums_style}
+    validate(plan)  # familia sem entrada em style e valida.
+
+    normalized = normalize_style_defaults(plan)
+
+    assert normalized.style is not None
+    assert normalized.style["drums"] == drums_style
+    assert normalized.style["bass"].confidence == "default"
+    assert normalized.style["keys"].confidence == "default"
+    assert "guitar" not in normalized.style
+    assert len(normalized.assumptions) == 2
+    assert any("bass" in assumption for assumption in normalized.assumptions)
+    assert any("keys" in assumption for assumption in normalized.assumptions)
 
 
 def test_validate_resolves_simple_style_technique_name_by_family():
