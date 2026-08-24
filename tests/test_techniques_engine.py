@@ -9,14 +9,34 @@ from pathlib import Path
 import mido
 import pytest
 
+from tools.registry import (
+    Tool,
+)
+from tools.registry import (
+    call as call_tool,
+)
+from tools.registry import (
+    register as register_tool,
+)
+from tools.registry import (
+    restore as restore_tools,
+)
+from tools.registry import (
+    snapshot as snapshot_tools,
+)
 from tools.techniques import (
     SUPPORTED_TECHNIQUES,
+    Technique,
+    TechniqueApplyResult,
     TechniqueContext,
     TechniqueContractError,
+    TechniqueIndex,
+    TechniqueRecipeError,
     TechniqueRegistrationError,
     TechniqueRegistry,
     UnknownTechniqueError,
     apply_technique,
+    apply_technique_with_warnings,
     build_index,
     get_technique,
     registered_techniques,
@@ -428,12 +448,209 @@ def test_technique_context_derives_local_rng_from_seed_and_name():
     )
 
 
+def test_apply_uses_requested_tool_recipe_without_warning():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        payload: dict[str, object],
+        *,
+        context: TechniqueContext,
+    ) -> dict[str, object]:
+        return {
+            **payload,
+            "tool": context.tool,
+            "requested_tool": context.requested_tool,
+            "recipe": dict(context.recipe),
+        }
+
+    result = registry.apply_with_warnings(
+        "drums.ghost_notes",
+        {"payload": True},
+        seed=1,
+        tool="superior_drummer",
+        index=_technique_index(
+            "drums.ghost_notes",
+            {
+                "generic": {"notes": [38]},
+                "superior_drummer": {"notes": [40]},
+            },
+        ),
+    )
+
+    assert isinstance(result, TechniqueApplyResult)
+    assert result.warnings == ()
+    assert result.result == {
+        "payload": True,
+        "tool": "superior_drummer",
+        "requested_tool": "superior_drummer",
+        "recipe": {"notes": [40]},
+    }
+
+
+def test_apply_falls_back_to_generic_recipe_with_structured_warning():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        _payload: object,
+        *,
+        context: TechniqueContext,
+    ) -> dict[str, object]:
+        return {
+            "tool": context.tool,
+            "requested_tool": context.requested_tool,
+            "recipe": dict(context.recipe),
+        }
+
+    result = registry.apply_with_warnings(
+        "drums.ghost_notes",
+        object(),
+        seed=1,
+        tool="maschine",
+        index=_technique_index(
+            "drums.ghost_notes",
+            {"generic": {"notes": [38]}},
+        ),
+    )
+
+    assert result.result == {
+        "tool": "generic",
+        "requested_tool": "maschine",
+        "recipe": {"notes": [38]},
+    }
+    assert result.warnings == ({
+        "code": "W_NO_TOOL_RECIPE",
+        "message": (
+            "tecnica 'drums.ghost_notes' nao tem receita para tool='maschine'; "
+            "usando fallback generico. Disponiveis: ['generic']"
+        ),
+        "path": "tool",
+    },)
+
+
+def test_apply_fails_without_target_or_generic_recipe_before_calling_function():
+    registry = TechniqueRegistry()
+    calls = []
+
+    @registry.register("drums.roll", "technique")
+    def apply(
+        payload: object,
+        *,
+        context: TechniqueContext,
+    ) -> object:
+        _ = context
+        calls.append(payload)
+        return payload
+
+    with pytest.raises(TechniqueRecipeError, match="nem fallback generic"):
+        registry.apply_with_warnings(
+            "drums.roll",
+            object(),
+            seed=1,
+            tool="maschine",
+            index=_technique_index(
+                "drums.roll",
+                {"superior_drummer": {"notes": [38]}},
+            ),
+        )
+
+    assert calls == []
+
+
+def test_global_apply_technique_with_warnings_exposes_engine_warnings():
+    result = apply_technique_with_warnings(
+        "drums.ghost_notes",
+        {"ok": True},
+        seed=1,
+        tool="maschine",
+        index=_technique_index(
+            "drums.ghost_notes",
+            {"generic": {"notes": [38]}},
+        ),
+    )
+
+    assert result.result == {"ok": True}
+    assert result.warnings[0]["code"] == "W_NO_TOOL_RECIPE"
+
+
+def test_engine_warnings_fit_the_tool_envelope_shape():
+    snap = snapshot_tools()
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        _payload: object,
+        *,
+        context: TechniqueContext,
+    ) -> dict[str, str]:
+        return {"tool": context.tool}
+
+    def tool_impl(payload: dict[str, object]):
+        applied = registry.apply_with_warnings(
+            "drums.ghost_notes",
+            object(),
+            seed=1,
+            tool=str(payload["tool"]),
+            index=_technique_index(
+                "drums.ghost_notes",
+                {"generic": {"notes": [38]}},
+            ),
+        )
+        return applied.result, list(applied.warnings)
+
+    try:
+        register_tool(Tool(
+            name="test.technique_apply",
+            description=(
+                "Use em teste para confirmar que os warnings do motor de "
+                "tecnicas entram no envelope JSON padrao das tools."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"tool": {"type": "string"}},
+                "required": ["tool"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {"tool": {"type": "string"}},
+                "required": ["tool"],
+            },
+            func=tool_impl,
+        ))
+        env = call_tool("test.technique_apply", {"tool": "maschine"})
+    finally:
+        restore_tools(snap)
+
+    assert env["ok"] is True
+    assert env["data"] == {"tool": "generic"}
+    assert env["warnings"][0]["code"] == "W_NO_TOOL_RECIPE"
+
+
 def test_every_registered_technique_exists_in_manual_index():
     idx = build_index(MANUALS_DIR)
 
     validate_registry_against_index(idx)
     for canonical in SUPPORTED_TECHNIQUES:
         assert idx.get(canonical) is not None
+
+
+def _technique_index(
+    canonical: str,
+    tools: dict[str, dict[str, object]],
+) -> TechniqueIndex:
+    family, name = canonical.split(".", 1)
+    return TechniqueIndex((
+        Technique(
+            canonical=canonical,
+            name=name,
+            family=family,
+            summary="Tecnica de teste.",
+            verified=True,
+            tools=tools,
+            source_manual="manual_teste.md",
+        ),
+    ))
 
 
 def _note_tuples(mid: mido.MidiFile) -> list[tuple[int, int, int, int, int, int]]:

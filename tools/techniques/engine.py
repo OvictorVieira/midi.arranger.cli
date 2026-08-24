@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 import mido
 
-from .index import TechniqueIndex, build_index
+from .index import Technique, TechniqueIndex, build_index
 
 TechniqueLevel = Literal["humanize", "technique"]
 TechniqueApply = Callable[..., Any]
@@ -47,6 +47,10 @@ class TechniqueContractError(ValueError):
     """Violacao do contrato runtime de uma tecnica aplicavel."""
 
 
+class TechniqueRecipeError(ValueError):
+    """Falha ao resolver receita MIDI documentada para uma tecnica."""
+
+
 @dataclass(frozen=True)
 class TechniqueContext:
     """Contexto explicito e imutavel de uma aplicacao de tecnica.
@@ -59,11 +63,15 @@ class TechniqueContext:
     seed: int
     canonical: str
     parameters: Mapping[str, Any] = MappingProxyType({})
+    tool: str = "generic"
+    requested_tool: str | None = None
+    recipe: Mapping[str, Any] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         if not isinstance(self.seed, int):
             raise TechniqueRegistrationError("seed da tecnica precisa ser int")
         object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
+        object.__setattr__(self, "recipe", MappingProxyType(dict(self.recipe)))
 
     def derived_seed(self, purpose: str = "") -> int:
         """Deriva uma seed estavel para um subcomponente da tecnica."""
@@ -86,6 +94,22 @@ class RegisteredTechnique:
     apply: TechniqueApply
     allow_structural_velocity_change: bool = False
     allow_structural_duration_change: bool = False
+
+
+@dataclass(frozen=True)
+class TechniqueApplyResult:
+    """Resultado de aplicacao com warnings no formato do envelope das tools."""
+
+    result: Any
+    warnings: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class _ResolvedRecipe:
+    tool: str
+    requested_tool: str | None
+    recipe: Mapping[str, Any]
+    warnings: tuple[dict[str, Any], ...] = ()
 
 
 class TechniqueRegistry:
@@ -146,15 +170,47 @@ class TechniqueRegistry:
         *args: Any,
         seed: int,
         parameters: Mapping[str, Any] | None = None,
+        tool: str | None = None,
+        index: TechniqueIndex | None = None,
         **kwargs: Any,
     ) -> Any:
         """Despacha por nome canonico para a funcao registrada."""
 
+        return self.apply_with_warnings(
+            canonical,
+            *args,
+            seed=seed,
+            parameters=parameters,
+            tool=tool,
+            index=index,
+            **kwargs,
+        ).result
+
+    def apply_with_warnings(
+        self,
+        canonical: str,
+        *args: Any,
+        seed: int,
+        parameters: Mapping[str, Any] | None = None,
+        tool: str | None = None,
+        index: TechniqueIndex | None = None,
+        **kwargs: Any,
+    ) -> TechniqueApplyResult:
+        """Despacha e devolve warnings estruturados emitidos pelo motor."""
+
         technique = self.get(canonical)
+        resolved = (
+            _resolve_recipe(canonical, tool, index)
+            if tool is not None or index is not None
+            else _ResolvedRecipe(tool="generic", requested_tool=None, recipe={})
+        )
         context = TechniqueContext(
             seed=seed,
             canonical=canonical,
             parameters={} if parameters is None else parameters,
+            tool=resolved.tool,
+            requested_tool=resolved.requested_tool,
+            recipe=resolved.recipe,
         )
         before_humanize = (
             _humanize_snapshot(args, kwargs) if technique.level == "humanize" else None
@@ -180,7 +236,7 @@ class TechniqueRegistry:
                 before_technique.snapshot,
                 after,
             )
-        return result
+        return TechniqueApplyResult(result=result, warnings=resolved.warnings)
 
     def registered(self) -> tuple[RegisteredTechnique, ...]:
         """Tecnicas registradas em ordem estavel por nome canonico."""
@@ -225,6 +281,63 @@ def _validate_apply_accepts_context(canonical: str, func: TechniqueApply) -> Non
         raise TechniqueRegistrationError(
             f"parametro 'context' de {canonical!r} precisa aceitar keyword"
         )
+
+
+def _resolve_recipe(
+    canonical: str,
+    tool_target: str | None,
+    index: TechniqueIndex | None,
+) -> _ResolvedRecipe:
+    idx = index if index is not None else build_index()
+    technique = idx.get(canonical)
+    if technique is None:
+        raise TechniqueRecipeError(
+            f"tecnica {canonical!r} nao existe no indice dos manuais"
+        )
+    return _recipe_for_tool(technique, tool_target)
+
+
+def _recipe_for_tool(
+    technique: Technique,
+    tool_target: str | None,
+) -> _ResolvedRecipe:
+    if tool_target and tool_target in technique.tools:
+        return _ResolvedRecipe(
+            tool=tool_target,
+            requested_tool=tool_target,
+            recipe=technique.tools[tool_target],
+        )
+
+    generic = technique.tools.get("generic")
+    if generic is not None:
+        warning = ()
+        if tool_target:
+            warning = ({
+                "code": "W_NO_TOOL_RECIPE",
+                "message": (
+                    f"tecnica {technique.canonical!r} nao tem receita para "
+                    f"tool={tool_target!r}; usando fallback generico. "
+                    f"Disponiveis: {sorted(technique.tools.keys())!r}"
+                ),
+                "path": "tool",
+            },)
+        return _ResolvedRecipe(
+            tool="generic",
+            requested_tool=tool_target,
+            recipe=generic,
+            warnings=warning,
+        )
+
+    if tool_target:
+        raise TechniqueRecipeError(
+            f"tecnica {technique.canonical!r} nao tem receita para "
+            f"tool={tool_target!r} nem fallback generic; disponiveis: "
+            f"{sorted(technique.tools.keys())!r}"
+        )
+    raise TechniqueRecipeError(
+        f"tecnica {technique.canonical!r} nao tem receita generic; declare "
+        f"uma ferramenta-alvo com receita disponivel: {sorted(technique.tools.keys())!r}"
+    )
 
 
 @dataclass(frozen=True)
@@ -587,6 +700,8 @@ def apply_technique(
     *args: Any,
     seed: int,
     parameters: Mapping[str, Any] | None = None,
+    tool: str | None = None,
+    index: TechniqueIndex | None = None,
     **kwargs: Any,
 ) -> Any:
     """Despacha `canonical` para sua funcao registrada."""
@@ -596,6 +711,30 @@ def apply_technique(
         *args,
         seed=seed,
         parameters=parameters,
+        tool=tool,
+        index=index,
+        **kwargs,
+    )
+
+
+def apply_technique_with_warnings(
+    canonical: str,
+    *args: Any,
+    seed: int,
+    parameters: Mapping[str, Any] | None = None,
+    tool: str | None = None,
+    index: TechniqueIndex | None = None,
+    **kwargs: Any,
+) -> TechniqueApplyResult:
+    """Despacha `canonical` e devolve resultado com warnings do motor."""
+
+    return _REGISTRY.apply_with_warnings(
+        canonical,
+        *args,
+        seed=seed,
+        parameters=parameters,
+        tool=tool,
+        index=index,
         **kwargs,
     )
 
@@ -647,13 +786,16 @@ __all__ = [
     "RegisteredTechnique",
     "SUPPORTED_TECHNIQUES",
     "TechniqueApply",
+    "TechniqueApplyResult",
     "TechniqueContractError",
     "TechniqueContext",
     "TechniqueLevel",
+    "TechniqueRecipeError",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
     "UnknownTechniqueError",
     "apply_technique",
+    "apply_technique_with_warnings",
     "get_technique",
     "register_technique",
     "registered_techniques",
