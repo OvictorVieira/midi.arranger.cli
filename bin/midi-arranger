@@ -6,6 +6,12 @@ readonly EX_NOINPUT=66
 readonly EX_UNAVAILABLE=69
 readonly BRIEF_HASH_FILE_NAME="brief.sha256"
 readonly COMPLETION_SENTINEL="<promise>COMPLETE</promise>"
+readonly PROMPT_OVERRIDE_ENV_NAME="MIDI_ARRANGER_PROMPT_FILE"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+INSTALL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+readonly SCRIPT_DIR
+readonly INSTALL_ROOT
+readonly PROMPTS_DIR="$INSTALL_ROOT/prompts"
 
 SUPPORTED_TOOLS="claude codex agy cursor opencode amp gemini"
 EFFORT_EXPLICIT=0
@@ -396,6 +402,67 @@ build_agent_prompt() {
   local detail="$2"
 
   printf 'midi-arranger %s\nproject_root=%s\n%s\n' "$mode" "$PROJECT_ROOT" "$detail"
+  if [[ "$mode" == "run" ]]; then
+    append_run_prompt_driver
+  fi
+}
+
+tool_prompt_driver_name() {
+  case "$1" in
+    claude) printf '%s\n' "CLAUDE.md" ;;
+    codex) printf '%s\n' "CODEX.md" ;;
+    agy) printf '%s\n' "AGY.md" ;;
+    cursor) printf '%s\n' "CURSOR.md" ;;
+    opencode) printf '%s\n' "OPENCODE.md" ;;
+    amp) printf '%s\n' "AMP.md" ;;
+    gemini) printf '%s\n' "GEMINI.md" ;;
+    *) die_usage "Invalid tool '$1'. Must be one of: $SUPPORTED_TOOLS." ;;
+  esac
+}
+
+canonical_file_path() {
+  local path="$1"
+  local dir
+  local base
+
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  dir="$(cd "$dir" && pwd -P)" || return 1
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+resolve_run_prompt_driver() {
+  local override="${MIDI_ARRANGER_PROMPT_FILE:-}"
+  local driver
+
+  if [[ -n "$override" ]]; then
+    if [[ ! -f "$override" ]]; then
+      die_noinput "$PROMPT_OVERRIDE_ENV_NAME points to a prompt driver that does not exist: $override"
+    fi
+    canonical_file_path "$override" \
+      || die_noinput "$PROMPT_OVERRIDE_ENV_NAME points to a prompt driver that cannot be resolved: $override"
+    return 0
+  fi
+
+  driver="$PROMPTS_DIR/$(tool_prompt_driver_name "$TOOL")"
+  if [[ ! -f "$driver" ]]; then
+    die_noinput "Prompt driver for tool '$TOOL' not found: $driver"
+  fi
+
+  printf '%s\n' "$driver"
+}
+
+append_run_prompt_driver() {
+  local driver
+
+  driver="$(resolve_run_prompt_driver)"
+  if [[ ! -r "$driver" ]]; then
+    die_noinput "Prompt driver is not readable: $driver"
+  fi
+
+  printf 'prompt_driver_file=%s\nprompt_driver_begin\n' "$driver"
+  cat "$driver" || die_noinput "Could not read prompt driver: $driver"
+  printf '\nprompt_driver_end\n'
 }
 
 run_prompt_detail() {
