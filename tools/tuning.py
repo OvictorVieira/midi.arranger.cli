@@ -9,15 +9,74 @@ Le o arquivo com `mido`, porque `pretty_midi.Instrument` funde notas
 por (channel, program) e perde a nocao de SMF track. O que importa aqui
 e a track fisica exportada pela DAW, e cada canal dentro dela.
 
-Escopo desta rodada: distribuicao por canal (US-001). Inferencia de
-afinacao vem nas proximas stories.
+Escopo:
+  - US-001: distribuicao por canal (`channel_distribution`).
+  - US-002: as tres travas que impedem inferir afinacao onde nao ha corda
+    (`tuning_inference`).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import mido
+
+# ---------------------------------------------------------------------------
+# US-002 — as tres travas
+#
+# TRAVA 1: o instrumento precisa ser de corda dedilhada. Aceita evidencia
+# pelo nome da track, pelo patch General MIDI (program change) OU por
+# declaracao explicita do usuario. Sem nenhuma das tres, NAO infere — e
+# assim que se evita o modelo inventar afinacao para linha de voz.
+#
+# TRAVA 2: canal com contagem de notas abaixo do limiar tem minimo que e
+# nota casada, nao corda solta. O limiar e constante nomeada e
+# documentada — nunca numero solto no meio do codigo.
+#
+# TRAVA 3: span por canal como sanidade. Corda vai de 0 a cerca de 24
+# casas (dois oitavos); span maior desmente a hipotese de canal-igual-corda.
+# ---------------------------------------------------------------------------
+
+MIN_NOTES_PER_CHANNEL_FOR_INFERENCE = 8
+"""TRAVA 2 — canal precisa ter no minimo este numero de notas para entrar
+na inferencia de afinacao. Meia duzia de notas (=6) e territorio de nota
+casada; oito ja indica uso repetido de uma corda solta candidata."""
+
+MAX_STRING_SPAN_SEMITONES = 24
+"""TRAVA 3 — span maximo aceito por canal candidato, em semitons. Duas
+oitavas cobrem a extensao pratica de uma corda em guitarra/baixo de 22-24
+casas. Canal com span acima disso nao e uma corda so."""
+
+# General MIDI — programa 0-indexado como aparece no `mido.Message.program`.
+# Faixa 24-31: guitarra dedilhada (nylon, steel, jazz, clean, muted,
+# overdriven, distortion, harmonics).
+GM_GUITAR_PROGRAMS = frozenset(range(24, 32))
+
+# Faixa 32-39: baixo (acustico, eletrico dedo, eletrico palheta, fretless,
+# slap 1, slap 2, synth 1, synth 2). Todos sao instrumentos de corda com a
+# mesma convencao "um canal por corda" no export Guitar Pro / Songsterr.
+GM_BASS_PROGRAMS = frozenset(range(32, 40))
+
+GM_STRINGED_PROGRAMS = GM_GUITAR_PROGRAMS | GM_BASS_PROGRAMS
+"""Uniao dos programas GM tratados como corda dedilhada para efeito da
+TRAVA 1. Sopros, teclados, drums e strings orquestrais ficam de fora."""
+
+_STRINGED_NAME_HINTS = ("guitar", "bass", "guitarra", "baixo")
+
+DISCARD_LOW_NOTE_COUNT = "low_note_count"
+"""Motivo de descarte pelo limiar da TRAVA 2."""
+
+DISCARD_SPAN_TOO_WIDE = "span_too_wide"
+"""Motivo de descarte pelo teto da TRAVA 3."""
+
+NOT_STRINGED = "not_stringed"
+"""Motivo de descarte no nivel da track (TRAVA 1): nenhuma das tres
+evidencias de instrumento de corda."""
+
+STRINGED_SOURCE_NAME = "track_name"
+STRINGED_SOURCE_GM_PROGRAM = "gm_program"
+STRINGED_SOURCE_DECLARED = "declared"
 
 
 @dataclass(frozen=True)
@@ -113,8 +172,204 @@ def channel_distribution(midi_path: str) -> list[TrackChannelDistribution]:
     return result
 
 
+@dataclass(frozen=True)
+class DiscardedChannel:
+    """Canal descartado pela inferencia de afinacao — motivo declarado.
+
+    Nao sai do relatorio em silencio: o motivo aparece sempre. O
+    vocabulario de motivos e fechado (`DISCARD_*`).
+    """
+    channel: int
+    reason: str
+    note_count: int
+    span: int
+
+
+@dataclass(frozen=True)
+class TrackTuningInference:
+    """Resultado da TRAVA 1 + TRAVA 2 + TRAVA 3 para uma SMF track.
+
+    - `is_stringed`: True quando ha evidencia de instrumento de corda.
+    - `stringed_source`: origem da evidencia (`track_name`, `gm_program`
+      ou `declared`); None quando a track nao passa na TRAVA 1.
+    - `gm_programs`: programas GM observados na track, em ordem crescente.
+      Existe para o relatorio expor por que a TRAVA 1 disparou (ou nao).
+    - `candidate_channels`: canais que sobraram apos aplicar as tres travas.
+    - `discarded_channels`: canais que caiam nas travas 2 ou 3 e o motivo.
+      Track que nao passou na TRAVA 1 tem `candidate_channels` vazio e
+      NENHUM `DiscardedChannel` — o descarte da TRAVA 1 e da track inteira,
+      exposto por `is_stringed=False` e `discard_reason='not_stringed'`.
+    - `discard_reason`: None quando a track passa na TRAVA 1;
+      `NOT_STRINGED` quando nao passa. Explicita o "nao infere" para o
+      leitor do relatorio.
+    """
+    track_index: int
+    track_name: str
+    is_stringed: bool
+    stringed_source: str | None
+    gm_programs: tuple[int, ...]
+    candidate_channels: tuple[ChannelStats, ...]
+    discarded_channels: tuple[DiscardedChannel, ...]
+    discard_reason: str | None
+
+
+def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
+    """Programas GM (0-127) declarados em `program_change` na track, em ordem
+    de aparicao. Track sem `program_change` volta lista vazia — para essas,
+    a TRAVA 1 tem que se apoiar em nome ou declaracao explicita."""
+    programs: list[int] = []
+    for msg in track:
+        if msg.is_meta:
+            continue
+        if msg.type == "program_change":
+            programs.append(int(msg.program))
+    return programs
+
+
+def _name_hints_stringed(track_name: str) -> bool:
+    """Nome da track sugere instrumento de corda. Case-insensitive,
+    tolerante a portugues (`guitarra`, `baixo`) e ingles."""
+    lower = track_name.lower()
+    return any(hint in lower for hint in _STRINGED_NAME_HINTS)
+
+
+def _classify_stringed(
+    track_name: str,
+    programs: Iterable[int],
+    declared_names: frozenset[str],
+) -> tuple[bool, str | None]:
+    """TRAVA 1. Devolve (is_stringed, source_or_None).
+
+    Precedencia: declaracao explicita > patch GM > nome da track. A ordem
+    espelha a confianca da evidencia — declaracao vem do usuario, patch e
+    metadado de exportacao, nome da track e o mais fraco (nomes podem ser
+    apelidos de mixer)."""
+    if track_name in declared_names:
+        return True, STRINGED_SOURCE_DECLARED
+    for prog in programs:
+        if prog in GM_STRINGED_PROGRAMS:
+            return True, STRINGED_SOURCE_GM_PROGRAM
+    if _name_hints_stringed(track_name):
+        return True, STRINGED_SOURCE_NAME
+    return False, None
+
+
+def _apply_channel_locks(
+    channels: Iterable[ChannelStats],
+) -> tuple[tuple[ChannelStats, ...], tuple[DiscardedChannel, ...]]:
+    """TRAVA 2 + TRAVA 3 sobre uma sequencia de `ChannelStats`. Devolve os
+    canais que passaram e os que caiam, com o motivo. A ordem de teste e
+    contagem antes de span — canal com poucas notas nem entra na aritmetica
+    de span como candidato a corda."""
+    candidates: list[ChannelStats] = []
+    discarded: list[DiscardedChannel] = []
+    for stat in channels:
+        if stat.note_count < MIN_NOTES_PER_CHANNEL_FOR_INFERENCE:
+            discarded.append(DiscardedChannel(
+                channel=stat.channel,
+                reason=DISCARD_LOW_NOTE_COUNT,
+                note_count=stat.note_count,
+                span=stat.span,
+            ))
+            continue
+        if stat.span > MAX_STRING_SPAN_SEMITONES:
+            discarded.append(DiscardedChannel(
+                channel=stat.channel,
+                reason=DISCARD_SPAN_TOO_WIDE,
+                note_count=stat.note_count,
+                span=stat.span,
+            ))
+            continue
+        candidates.append(stat)
+    return tuple(candidates), tuple(discarded)
+
+
+def tuning_inference(
+    midi_path: str,
+    declared_stringed_tracks: Iterable[str] | None = None,
+) -> list[TrackTuningInference]:
+    """Aplica as tres travas de US-002 e devolve, por SMF track, quais
+    canais podem entrar na inferencia de afinacao (rodadas seguintes).
+
+    - `declared_stringed_tracks`: nomes de tracks que o usuario declarou
+      explicitamente como de corda. Tem precedencia sobre patch e nome.
+      Casamento e por nome exato (mesma convencao de `plan.edits.track`).
+
+    Tracks sem notas nao entram no resultado — espelha `channel_distribution`.
+    """
+    declared = frozenset(declared_stringed_tracks or ())
+    mid = mido.MidiFile(midi_path)
+
+    result: list[TrackTuningInference] = []
+    for idx, track in enumerate(mid.tracks):
+        per_channel: dict[int, list[int]] = {}
+        for msg in _iter_note_ons(track):
+            per_channel.setdefault(msg.channel, []).append(msg.note)
+        if not per_channel:
+            continue
+
+        total = sum(len(pitches) for pitches in per_channel.values())
+        all_stats: list[ChannelStats] = []
+        for ch in sorted(per_channel):
+            pitches = per_channel[ch]
+            lo, hi = min(pitches), max(pitches)
+            all_stats.append(ChannelStats(
+                channel=int(ch),
+                note_count=len(pitches),
+                pitch_min=int(lo),
+                pitch_max=int(hi),
+                span=int(hi - lo),
+                percentage=100.0 * len(pitches) / total,
+            ))
+
+        name = _track_name(track, idx)
+        programs = _iter_track_programs(track)
+        is_stringed, source = _classify_stringed(name, programs, declared)
+
+        if not is_stringed:
+            result.append(TrackTuningInference(
+                track_index=idx,
+                track_name=name,
+                is_stringed=False,
+                stringed_source=None,
+                gm_programs=tuple(sorted(set(programs))),
+                candidate_channels=(),
+                discarded_channels=(),
+                discard_reason=NOT_STRINGED,
+            ))
+            continue
+
+        candidates, discarded = _apply_channel_locks(all_stats)
+        result.append(TrackTuningInference(
+            track_index=idx,
+            track_name=name,
+            is_stringed=True,
+            stringed_source=source,
+            gm_programs=tuple(sorted(set(programs))),
+            candidate_channels=candidates,
+            discarded_channels=discarded,
+            discard_reason=None,
+        ))
+
+    return result
+
+
 __all__ = [
+    "DISCARD_LOW_NOTE_COUNT",
+    "DISCARD_SPAN_TOO_WIDE",
+    "GM_BASS_PROGRAMS",
+    "GM_GUITAR_PROGRAMS",
+    "GM_STRINGED_PROGRAMS",
+    "MAX_STRING_SPAN_SEMITONES",
+    "MIN_NOTES_PER_CHANNEL_FOR_INFERENCE",
+    "NOT_STRINGED",
+    "STRINGED_SOURCE_DECLARED",
+    "STRINGED_SOURCE_GM_PROGRAM",
+    "STRINGED_SOURCE_NAME",
     "ChannelStats",
+    "DiscardedChannel",
     "TrackChannelDistribution",
+    "TrackTuningInference",
     "channel_distribution",
+    "tuning_inference",
 ]

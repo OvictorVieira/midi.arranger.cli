@@ -28,6 +28,7 @@ from . import plugins as plugins_mod
 from . import render as render_mod
 from . import sections as sections_mod
 from . import techniques as techniques_mod
+from . import tuning as tuning_mod
 from .brief_schema import BRIEF_VALIDATE_TOOL
 from .constants import REGISTER_BANDS
 from .plan import (
@@ -405,7 +406,9 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             path="midi_path",
         ) from None
 
-    a = analyze_mod.analyze(str(src))
+    declared_raw = payload.get("declared_stringed_tracks") or []
+    declared_stringed = [str(x) for x in declared_raw]
+    a = analyze_mod.analyze(str(src), declared_stringed_tracks=declared_stringed)
     secs = sections_mod.read_sections(str(src))
 
     tempo = _tempo_of(pm)
@@ -484,6 +487,37 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             }
             for td in a.channel_distribution
         ],
+        "tuning_inference": [
+            {
+                "track_index": int(ti.track_index),
+                "track_name": ti.track_name,
+                "is_stringed": bool(ti.is_stringed),
+                "stringed_source": ti.stringed_source,
+                "discard_reason": ti.discard_reason,
+                "gm_programs": [int(p) for p in ti.gm_programs],
+                "candidate_channels": [
+                    {
+                        "channel": int(c.channel),
+                        "note_count": int(c.note_count),
+                        "pitch_min": int(c.pitch_min),
+                        "pitch_max": int(c.pitch_max),
+                        "span": int(c.span),
+                        "percentage": float(c.percentage),
+                    }
+                    for c in ti.candidate_channels
+                ],
+                "discarded_channels": [
+                    {
+                        "channel": int(d.channel),
+                        "reason": d.reason,
+                        "note_count": int(d.note_count),
+                        "span": int(d.span),
+                    }
+                    for d in ti.discarded_channels
+                ],
+            }
+            for ti in a.tuning_inference
+        ],
     }
 
     warnings: list[dict[str, Any]] = []
@@ -538,8 +572,15 @@ ANALYZE_TOOL = Tool(
     description=ANALYZE_DESCRIPTION,
     input_schema={
         "type": "object",
-        "properties": {"midi_path": {"type": "string", "minLength": 1}},
+        "properties": {
+            "midi_path": {"type": "string", "minLength": 1},
+            "declared_stringed_tracks": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
         "required": ["midi_path"],
+        "additionalProperties": False,
     },
     output_schema={
         "type": "object",
@@ -632,11 +673,86 @@ ANALYZE_TOOL = Tool(
                     "additionalProperties": False,
                 },
             },
+            "tuning_inference": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "track_index": {"type": "integer", "minimum": 0},
+                        "track_name": {"type": "string"},
+                        "is_stringed": {"type": "boolean"},
+                        "stringed_source": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {"enum": [
+                                    tuning_mod.STRINGED_SOURCE_DECLARED,
+                                    tuning_mod.STRINGED_SOURCE_GM_PROGRAM,
+                                    tuning_mod.STRINGED_SOURCE_NAME,
+                                ]},
+                            ],
+                        },
+                        "discard_reason": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {"enum": [tuning_mod.NOT_STRINGED]},
+                            ],
+                        },
+                        "gm_programs": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer", "minimum": 0, "maximum": 127,
+                            },
+                        },
+                        "candidate_channels": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+                                    "note_count": {"type": "integer", "minimum": 1},
+                                    "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
+                                    "pitch_max": {"type": "integer", "minimum": 0, "maximum": 127},
+                                    "span": {"type": "integer", "minimum": 0},
+                                    "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+                                },
+                                "required": [
+                                    "channel", "note_count", "pitch_min", "pitch_max",
+                                    "span", "percentage",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "discarded_channels": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+                                    "reason": {"enum": [
+                                        tuning_mod.DISCARD_LOW_NOTE_COUNT,
+                                        tuning_mod.DISCARD_SPAN_TOO_WIDE,
+                                    ]},
+                                    "note_count": {"type": "integer", "minimum": 0},
+                                    "span": {"type": "integer", "minimum": 0},
+                                },
+                                "required": ["channel", "reason", "note_count", "span"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": [
+                        "track_index", "track_name", "is_stringed",
+                        "stringed_source", "discard_reason", "gm_programs",
+                        "candidate_channels", "discarded_channels",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
         },
         "required": [
             "midi_path", "sha256", "tempo", "time_signature", "key_root",
             "key_name", "sections", "bars", "tracks", "rhythmic_anchors",
-            "channel_distribution",
+            "channel_distribution", "tuning_inference",
         ],
     },
     func=_analyze_impl,
