@@ -14,12 +14,14 @@ import inspect
 import random
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from io import BytesIO
 from types import MappingProxyType
 from typing import Any, Literal
 
 import mido
 
 from .index import Technique, TechniqueIndex, build_index
+from .physical import TechniquePhysicalError, validate_physical_plausibility
 
 TechniqueLevel = Literal["humanize", "technique"]
 TechniqueApply = Callable[..., Any]
@@ -218,7 +220,16 @@ class TechniqueRegistry:
         before_technique = (
             _technique_snapshot(args, kwargs) if technique.level == "technique" else None
         )
-        result = technique.apply(*args, context=context, **kwargs)
+        apply_args = args
+        apply_kwargs = kwargs
+        working_mid = None
+        if before_technique is not None:
+            working_mid = _clone_midi(before_technique.midi)
+            apply_args, apply_kwargs = _replace_first_midi(
+                args, kwargs, working_mid
+            )
+
+        result = technique.apply(*apply_args, context=context, **apply_kwargs)
         if before_humanize is not None:
             after_mid = _result_midi(result) or before_humanize.midi
             after = _MidiContentSnapshot.from_midi(after_mid)
@@ -228,8 +239,14 @@ class TechniqueRegistry:
                 after,
             )
         if before_technique is not None:
-            after_mid = _result_midi(result) or before_technique.midi
+            after_mid = _result_midi(result) or working_mid or before_technique.midi
             _drop_reapplied_notes(before_technique.snapshot, after_mid)
+            validate_physical_plausibility(
+                technique.canonical,
+                before_technique.midi,
+                after_mid,
+                context.parameters,
+            )
             after = _StructuralSnapshot.from_midi(after_mid)
             _validate_technique_contract(
                 technique,
@@ -519,6 +536,32 @@ def _first_midi(values: tuple[Any, ...]) -> mido.MidiFile | None:
     return None
 
 
+def _clone_midi(mid: mido.MidiFile) -> mido.MidiFile:
+    buffer = BytesIO()
+    mid.save(file=buffer)
+    buffer.seek(0)
+    return mido.MidiFile(file=buffer)
+
+
+def _replace_first_midi(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    replacement: mido.MidiFile,
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    new_args = list(args)
+    for index, value in enumerate(new_args):
+        if isinstance(value, mido.MidiFile):
+            new_args[index] = replacement
+            return tuple(new_args), kwargs
+
+    new_kwargs = dict(kwargs)
+    for key, value in new_kwargs.items():
+        if isinstance(value, mido.MidiFile):
+            new_kwargs[key] = replacement
+            return args, new_kwargs
+    return args, kwargs
+
+
 def _validate_humanize_contract(
     canonical: str,
     before: _MidiContentSnapshot,
@@ -790,6 +833,7 @@ __all__ = [
     "TechniqueContractError",
     "TechniqueContext",
     "TechniqueLevel",
+    "TechniquePhysicalError",
     "TechniqueRecipeError",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
