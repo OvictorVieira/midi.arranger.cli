@@ -58,6 +58,12 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `note_on` por canal/altura deve preservar a ordem original.
 - Ao adicionar campo em `ArrangementPlan`, atualize juntos `tools/plan.py` (dataclass,
   serialização e validação) e `tools/contract.py` (JSON Schema das tools).
+- Nunca inferir afinação sem evidência de instrumento de corda (`instrument_name`, patch General
+  MIDI em `GM_GUITAR_PROGRAMS`/`GM_BASS_PROGRAMS`, ou declaração explícita via
+  `declared_stringed_tracks`). Sem evidência, `tools.tuning.tuning_inference` marca
+  `discard_reason=not_stringed` e não classifica. Afinação `unknown` **nunca** vem acompanhada de
+  `tuning_name` — a regra é garantida estruturalmente por `_tuning_name`/`_classify_confidence` em
+  `tools/tuning.py` e não deve ser contornada no consumidor.
 
 ## Qualidade
 

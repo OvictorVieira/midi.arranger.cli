@@ -224,7 +224,69 @@ saber mas não invalida. Densidade estranha é aviso. Nota fora do acorde é err
 
 ---
 
-## 7. Prompts driver
+## 7. Detecção de afinação no `analyze`
+
+O MIDI não carrega metadado de afinação. Ele carrega a corda de outra forma: **um canal por corda**,
+convenção de export do Guitar Pro e do Songsterr. A tool `analyze` reconstrói a afinação a partir
+da distribuição de notas por canal, dentro de cada SMF track.
+
+O relatório aparece em dois campos no output de `analyze`:
+
+- `channel_distribution` — por track, um objeto por canal com `channel`, `note_count`, `pitch_min`,
+  `pitch_max`, `span` e `percentage`. Ordenação estável por número de canal. Track sem nota é omitida.
+- `tuning_inference` — por track: `is_stringed`, `stringed_source`, `discard_reason`, `gm_programs`,
+  `candidate_channels`, `discarded_channels` (com o motivo de cada descarte), `tuning_intervals`,
+  `tuning_class`, `tuning_name`, `lowest_string_pitch`, `confidence`, `string_concentrations` e
+  `low_strings_top3_percentage`.
+
+### As três travas que impedem inventar afinação
+
+O detector inventa afinação de linha de voz se não travar a inferência. Três travas obrigatórias
+em `tools/tuning.py`; o motivo de cada canal descartado aparece no relatório, nunca em silêncio.
+
+1. **TRAVA 1 — instrumento de corda.** Decidido por `instrument_name` da track, por patch General
+   MIDI (`GM_GUITAR_PROGRAMS=24..31`, `GM_BASS_PROGRAMS=32..39`), ou por declaração explícita do
+   usuário via input `declared_stringed_tracks` de `analyze`. Precedência: declaração > patch > nome.
+   Sem nenhuma das três evidências, `is_stringed=false`, `discard_reason=not_stringed` e não infere.
+2. **TRAVA 2 — contagem mínima por canal.** Só entra na inferência canal com
+   `note_count >= MIN_NOTES_PER_CHANNEL_FOR_INFERENCE` (=8). Canal com meia dúzia de notas tem
+   mínimo que é nota casada, não corda solta. Descarte aparece como `low_note_count`.
+3. **TRAVA 3 — span como sanidade.** Corda solta vive numa janela estreita; span >
+   `MAX_STRING_SPAN_SEMITONES` (=24) desmente a hipótese canal-igual-corda. Descarte aparece como
+   `span_too_wide`.
+
+A tabela de afinações vem do manual `guitar.drop_tuning` em `knowledge/tecnicas/`, lida pelo índice
+de técnicas e convertida em intervalos entre cordas adjacentes — **não hardcodada**. Classificação
+é por prefix-match: 3 cordas graves com intervalos `[7,5]` já classificam como drop, porque o riff
+pode não usar as agudas. O `7` na base é a assinatura do drop.
+
+### Vocabulário de confiança
+
+Fechado, três valores, populado por `_classify_confidence(tuning_class, candidate_count)`:
+
+| `confidence` | Quando |
+|---|---|
+| `high` | Classe reconhecida (`drop` ou `standard`) e `>= MIN_CANDIDATES_FOR_HIGH_CONFIDENCE` (=4) canais candidatos |
+| `low`  | Classe reconhecida mas poucos canais candidatos |
+| `unknown` | Classe `unknown` — intervalos que não batem com padrão nenhum, canal único, ou track não-stringed |
+
+Regra estrutural: **afinação `unknown` nunca vem com nome**. `_tuning_name` retorna `None` para
+`tuning_class == unknown` e `_classify_confidence` retorna `unknown` no mesmo predicado — a
+conjunção garante que o par `(tuning_name != null, confidence == unknown)` é impossível por
+construção, não por convenção do chamador.
+
+O relatório sempre expõe `candidate_channels` e `discarded_channels` com quantidade e motivo —
+o consumidor pode auditar por que uma track ficou `unknown` sem re-executar o detector.
+
+### O que está fora de escopo desta rodada
+
+Declarar corda no plano e emitir keyswitch de forçar corda ficam para rodada seguinte, porque tocam
+os mesmos arquivos da issue #10. Esta rodada **não** altera `tools/render.py`, `tools/plan.py` nem
+`tools/techniques/`.
+
+---
+
+## 8. Prompts driver
 
 Um por ferramenta, no mesmo espírito do Ralph. O conteúdo é quase idêntico entre elas; a diferença
 existe porque cada CLI tem convenções próprias de ferramenta e de permissão.
@@ -238,7 +300,7 @@ qualquer sem passar pelo harness.
 
 ---
 
-## 8. Regras invioláveis
+## 9. Regras invioláveis
 
 - Nunca sobrescrever o MIDI de origem.
 - Track não declarada para edição sai nota a nota idêntica.
