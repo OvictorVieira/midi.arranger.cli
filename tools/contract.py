@@ -515,6 +515,14 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     }
                     for d in ti.discarded_channels
                 ],
+                "tuning_intervals": [int(x) for x in ti.tuning_intervals],
+                "tuning_class": ti.tuning_class,
+                "tuning_name": ti.tuning_name,
+                "lowest_string_pitch": (
+                    int(ti.lowest_string_pitch)
+                    if ti.lowest_string_pitch is not None
+                    else None
+                ),
             }
             for ti in a.tuning_inference
         ],
@@ -739,11 +747,28 @@ ANALYZE_TOOL = Tool(
                                 "additionalProperties": False,
                             },
                         },
+                        "tuning_intervals": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
+                        "tuning_class": {"enum": [
+                            tuning_mod.TUNING_CLASS_DROP,
+                            tuning_mod.TUNING_CLASS_STANDARD,
+                            tuning_mod.TUNING_CLASS_UNKNOWN,
+                        ]},
+                        "tuning_name": {"type": ["string", "null"]},
+                        "lowest_string_pitch": {
+                            "type": ["integer", "null"],
+                            "minimum": 0,
+                            "maximum": 127,
+                        },
                     },
                     "required": [
                         "track_index", "track_name", "is_stringed",
                         "stringed_source", "discard_reason", "gm_programs",
                         "candidate_channels", "discarded_channels",
+                        "tuning_intervals", "tuning_class", "tuning_name",
+                        "lowest_string_pitch",
                     ],
                     "additionalProperties": False,
                 },

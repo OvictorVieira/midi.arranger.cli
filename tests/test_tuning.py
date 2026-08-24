@@ -379,3 +379,137 @@ def test_empty_track_is_omitted_from_tuning_inference():
         ])
         out = tuning.tuning_inference(p)
         assert [t.track_index for t in out] == [1]
+
+
+# ---------------------------------------------------------------------------
+# US-003 — classificacao da afinacao a partir dos intervalos entre canais
+# ---------------------------------------------------------------------------
+
+
+def _six_channels(minimos: list[int]) -> list[tuple[int, int]]:
+    """Um canal por corda solta: canal `i` cheio da nota `minimos[i]`.
+    Cada canal recebe notas o suficiente para passar na TRAVA 2 e span 0
+    para nao esbarrar na TRAVA 3."""
+    notes: list[tuple[int, int]] = []
+    for ch, pitch in enumerate(minimos):
+        notes.extend([(ch, pitch)] * tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE)
+    return notes
+
+
+def test_drop_pattern_75545_classifies_drop_and_names_from_lowest():
+    """`[7,5,5,4,5]` sobre corda grave 38 => Drop D."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_d.mid")
+        # Drop D: 38 45 50 55 59 64
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([38, 45, 50, 55, 59, 64]),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.tuning_intervals == (7, 5, 5, 4, 5)
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert ti.tuning_name == "Drop D"
+        assert ti.lowest_string_pitch == 38
+
+
+def test_standard_pattern_55545_classifies_standard_and_names_from_lowest():
+    """`[5,5,5,4,5]` sobre corda grave 40 => Standard E."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "standard_e.mid")
+        # E padrao: 40 45 50 55 59 64
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([40, 45, 50, 55, 59, 64]),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.tuning_intervals == (5, 5, 5, 4, 5)
+        assert ti.tuning_class == tuning.TUNING_CLASS_STANDARD
+        assert ti.tuning_name == "Standard E"
+        assert ti.lowest_string_pitch == 40
+
+
+def test_intervals_without_known_pattern_classify_unknown_and_do_not_name():
+    """`[5,3,14,2,5,9]` nao bate com nenhum padrao — nao classifica e
+    NUNCA gera nome de afinacao."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "gibberish.mid")
+        # 40 45 48 62 64 69 78 -> intervalos [5,3,14,2,5,9]
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([40, 45, 48, 62, 64, 69, 78]),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.tuning_intervals == (5, 3, 14, 2, 5, 9)
+        assert ti.tuning_class == tuning.TUNING_CLASS_UNKNOWN
+        assert ti.tuning_name is None
+
+
+def test_drop_prefix_classifies_drop_even_without_the_high_strings():
+    """Prefixo `[7,5]` das 3 cordas graves ja classifica drop — o riff
+    pode nao usar as agudas."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_prefix.mid")
+        # 3 cordas graves de Drop D: 38, 45, 50 -> intervalos [7,5]
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([38, 45, 50]),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.tuning_intervals == (7, 5)
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert ti.tuning_name == "Drop D"
+
+
+def test_tuning_name_derives_from_pitch_class_of_lowest_string():
+    """A nota da corda mais grave determina o nome — MIDI 32 (G#1) com
+    padrao drop => Drop G#."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_gsharp.mid")
+        # padrao drop hipotetico deslocado: 32 39 44 49 53 58
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([32, 39, 44, 49, 53, 58]),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert ti.tuning_name == "Drop G#"
+        assert ti.lowest_string_pitch == 32
+
+
+def test_single_candidate_channel_yields_no_intervals_and_unknown():
+    """Um unico canal candidato nao gera intervalo — classe fica unknown
+    e nao ha nome de afinacao. `lowest_string_pitch` ainda vem preenchido."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "one_candidate.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _rep(0, 40, 12),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.tuning_intervals == ()
+        assert ti.tuning_class == tuning.TUNING_CLASS_UNKNOWN
+        assert ti.tuning_name is None
+        assert ti.lowest_string_pitch == 40
+
+
+def test_not_stringed_track_has_unknown_class_and_no_name():
+    """Track que nao passa TRAVA 1 nao classifica afinacao nem gera nome."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "vox_ti.mid")
+        _write_midi_full(p, [{
+            "name": "Vocals", "program": 73,
+            "notes": _six_channels([60, 65, 70, 74]),
+        }])
+        out = tuning.tuning_inference(p)
+        ti = out[0]
+        assert ti.is_stringed is False
+        assert ti.tuning_class == tuning.TUNING_CLASS_UNKNOWN
+        assert ti.tuning_name is None
+        assert ti.lowest_string_pitch is None
+        assert ti.tuning_intervals == ()

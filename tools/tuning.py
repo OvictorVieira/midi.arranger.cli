@@ -13,6 +13,10 @@ Escopo:
   - US-001: distribuicao por canal (`channel_distribution`).
   - US-002: as tres travas que impedem inferir afinacao onde nao ha corda
     (`tuning_inference`).
+  - US-003: a partir dos minimos dos canais confiaveis, calcular os intervalos
+    entre cordas adjacentes e classificar a afinacao contra o manual
+    `guitar.drop_tuning` (padrao vs drop). A tabela vem do indice de tecnicas
+    — NUNCA e hardcoded aqui.
 """
 
 from __future__ import annotations
@@ -77,6 +81,33 @@ evidencias de instrumento de corda."""
 STRINGED_SOURCE_NAME = "track_name"
 STRINGED_SOURCE_GM_PROGRAM = "gm_program"
 STRINGED_SOURCE_DECLARED = "declared"
+
+# ---------------------------------------------------------------------------
+# US-003 — classificacao da afinacao
+#
+# O 7 na base e a assinatura do drop: `[7, 5, 5, 4, 5]` bate com Drop D,
+# Drop C, Drop B... etc (a corda mais grave desce um tom inteiro em relacao
+# a padrao). Ja `[5, 5, 5, 4, 5]` e a assinatura da afinacao padrao (E, D,
+# meio-tons a baixo). A tabela concreta com todos os nomes e as MIDI das
+# cordas soltas vem do manual `guitar.drop_tuning`, lida pelo indice de
+# tecnicas — nao hardcode aqui, para nao termos dois lugares para atualizar.
+# ---------------------------------------------------------------------------
+
+TUNING_CLASS_DROP = "drop"
+TUNING_CLASS_STANDARD = "standard"
+TUNING_CLASS_UNKNOWN = "unknown"
+
+_PITCH_CLASS_NAMES = (
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+)
+
+_TUNING_PATTERNS_CACHE: tuple[
+    frozenset[tuple[int, ...]], frozenset[tuple[int, ...]],
+] | None = None
+
+
+class TuningKnowledgeError(RuntimeError):
+    """Manual de afinacoes ausente ou incompleto — sem tabela, nao classifica."""
 
 
 @dataclass(frozen=True)
@@ -185,6 +216,94 @@ class DiscardedChannel:
     span: int
 
 
+def _load_tuning_patterns() -> tuple[
+    frozenset[tuple[int, ...]], frozenset[tuple[int, ...]],
+]:
+    """Constroi, uma vez, os conjuntos de padroes de drop e padrao a partir
+    de `guitar.drop_tuning.tools.generic.afinacoes`. Nome contendo "drop"
+    vira padrao de drop; qualquer outro vira padrao. Isso preserva a fonte
+    unica de verdade (o manual) e nao duplica a tabela em Python."""
+    global _TUNING_PATTERNS_CACHE
+    if _TUNING_PATTERNS_CACHE is not None:
+        return _TUNING_PATTERNS_CACHE
+
+    from .techniques import build_index
+
+    idx = build_index()
+    tech = idx.get("guitar.drop_tuning")
+    if tech is None:
+        raise TuningKnowledgeError(
+            "tecnica `guitar.drop_tuning` nao encontrada no indice de tecnicas",
+        )
+    generic = tech.tools.get("generic") or {}
+    afinacoes = generic.get("afinacoes") or {}
+    if not isinstance(afinacoes, dict) or not afinacoes:
+        raise TuningKnowledgeError(
+            "guitar.drop_tuning.tools.generic.afinacoes ausente ou vazio",
+        )
+
+    drop_patterns: set[tuple[int, ...]] = set()
+    standard_patterns: set[tuple[int, ...]] = set()
+    for name, midis in afinacoes.items():
+        if not isinstance(midis, list) or len(midis) < 2:
+            continue
+        intervals = tuple(int(midis[i + 1] - midis[i]) for i in range(len(midis) - 1))
+        if "drop" in name:
+            drop_patterns.add(intervals)
+        else:
+            standard_patterns.add(intervals)
+
+    _TUNING_PATTERNS_CACHE = (frozenset(drop_patterns), frozenset(standard_patterns))
+    return _TUNING_PATTERNS_CACHE
+
+
+def _is_prefix_of_any(
+    observed: tuple[int, ...],
+    patterns: frozenset[tuple[int, ...]],
+) -> bool:
+    """`observed` casa quando e prefixo (ou igual) de algum padrao conhecido.
+    Isso e o que permite classificar drop a partir das 3 cordas graves
+    quando o riff nao usa as agudas."""
+    if not observed:
+        return False
+    obs_len = len(observed)
+    return any(
+        obs_len <= len(p) and p[:obs_len] == observed
+        for p in patterns
+    )
+
+
+def _classify_tuning(intervals: tuple[int, ...]) -> str:
+    """Devolve `drop`, `standard` ou `unknown`. Drop tem prioridade porque
+    a assinatura `7` na base e disjunta da assinatura `5` do padrao — nao
+    ha ambiguidade real, so consistencia de ordem."""
+    if not intervals:
+        return TUNING_CLASS_UNKNOWN
+    drop_patterns, standard_patterns = _load_tuning_patterns()
+    if _is_prefix_of_any(intervals, drop_patterns):
+        return TUNING_CLASS_DROP
+    if _is_prefix_of_any(intervals, standard_patterns):
+        return TUNING_CLASS_STANDARD
+    return TUNING_CLASS_UNKNOWN
+
+
+def _pitch_class_name(midi: int) -> str:
+    return _PITCH_CLASS_NAMES[midi % 12]
+
+
+def _tuning_name(cls: str, lowest_pitch: int | None) -> str | None:
+    """Nome da afinacao a partir da corda mais grave. Ex.: drop + MIDI 32
+    (G#1) => `Drop G#`. Fora dos padroes conhecidos, retorna None — nome
+    de afinacao NUNCA acompanha `unknown`."""
+    if lowest_pitch is None:
+        return None
+    if cls == TUNING_CLASS_DROP:
+        return f"Drop {_pitch_class_name(lowest_pitch)}"
+    if cls == TUNING_CLASS_STANDARD:
+        return f"Standard {_pitch_class_name(lowest_pitch)}"
+    return None
+
+
 @dataclass(frozen=True)
 class TrackTuningInference:
     """Resultado da TRAVA 1 + TRAVA 2 + TRAVA 3 para uma SMF track.
@@ -202,6 +321,16 @@ class TrackTuningInference:
     - `discard_reason`: None quando a track passa na TRAVA 1;
       `NOT_STRINGED` quando nao passa. Explicita o "nao infere" para o
       leitor do relatorio.
+    - `tuning_intervals`: intervalos em semitons entre minimos de canais
+      confiaveis, ordenados do grave para o agudo. Vazio quando nao ha
+      candidato suficiente para dois minimos (< 2 canais).
+    - `tuning_class`: `drop`, `standard` ou `unknown` (US-003). Sempre
+      preenchido — a classificacao e feita sobre `tuning_intervals`.
+    - `tuning_name`: nome derivado da corda mais grave (`Drop G#`,
+      `Standard E`). None quando `tuning_class == unknown`.
+    - `lowest_string_pitch`: MIDI da corda solta mais grave detectada
+      (min pitch do canal mais grave em `candidate_channels`). None
+      quando nao ha canal confiavel.
     """
     track_index: int
     track_name: str
@@ -211,6 +340,10 @@ class TrackTuningInference:
     candidate_channels: tuple[ChannelStats, ...]
     discarded_channels: tuple[DiscardedChannel, ...]
     discard_reason: str | None
+    tuning_intervals: tuple[int, ...] = ()
+    tuning_class: str = TUNING_CLASS_UNKNOWN
+    tuning_name: str | None = None
+    lowest_string_pitch: int | None = None
 
 
 def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
@@ -340,6 +473,18 @@ def tuning_inference(
             continue
 
         candidates, discarded = _apply_channel_locks(all_stats)
+
+        # US-003: ordenar candidatos pelo minimo (do grave para o agudo),
+        # calcular intervalos e classificar.
+        by_pitch = sorted(candidates, key=lambda c: c.pitch_min)
+        intervals = tuple(
+            by_pitch[i + 1].pitch_min - by_pitch[i].pitch_min
+            for i in range(len(by_pitch) - 1)
+        )
+        tuning_class = _classify_tuning(intervals)
+        lowest_pitch = by_pitch[0].pitch_min if by_pitch else None
+        tuning_name = _tuning_name(tuning_class, lowest_pitch)
+
         result.append(TrackTuningInference(
             track_index=idx,
             track_name=name,
@@ -349,6 +494,10 @@ def tuning_inference(
             candidate_channels=candidates,
             discarded_channels=discarded,
             discard_reason=None,
+            tuning_intervals=intervals,
+            tuning_class=tuning_class,
+            tuning_name=tuning_name,
+            lowest_string_pitch=lowest_pitch,
         ))
 
     return result
@@ -366,10 +515,14 @@ __all__ = [
     "STRINGED_SOURCE_DECLARED",
     "STRINGED_SOURCE_GM_PROGRAM",
     "STRINGED_SOURCE_NAME",
+    "TUNING_CLASS_DROP",
+    "TUNING_CLASS_STANDARD",
+    "TUNING_CLASS_UNKNOWN",
     "ChannelStats",
     "DiscardedChannel",
     "TrackChannelDistribution",
     "TrackTuningInference",
+    "TuningKnowledgeError",
     "channel_distribution",
     "tuning_inference",
 ]
