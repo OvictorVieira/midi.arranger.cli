@@ -392,6 +392,36 @@ def test_plan_validate_accepts_style_parameter_range_pair_schema():
     assert env["data"]["valid"] is True
 
 
+def test_plan_validate_rejects_style_parameter_outside_manual_range():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
+    plan["style"]["drums"]["parameters"] = {"velocity": 46}
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is False
+    err = env["data"]["errors"][0]
+    assert err["path"] == "style.drums.parameters.velocity"
+    assert "46" in err["message"]
+    assert "[20, 45]" in err["message"]
+
+
+def test_plan_validate_warns_for_style_parameter_source_gap():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["guitar"]["techniques"] = [{"name": "palm_mute"}]
+    plan["style"]["guitar"]["parameters"] = {"gate_absoluto_ms": 999}
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is True
+    warning = env["warnings"][0]
+    assert warning["code"] == "W_PLAN"
+    assert "style.guitar.parameters.gate_absoluto_ms" in warning["message"]
+    assert "source gap" in warning["message"]
+
+
 def test_plan_validate_rejects_midi_integer_sequence_under_innocent_style_parameter_schema():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()

@@ -420,6 +420,95 @@ def test_validate_accepts_style_parameter_range_pair():
     validate(plan)  # par [min, max] e parametro de tecnica, nao conteudo.
 
 
+def test_validate_accepts_style_parameter_inside_manual_range():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="ghost_notes")],
+            parameters={"velocity": 35},
+        )
+    }
+    validate(plan)  # velocity de drums.ghost_notes aceita 20-45.
+
+
+def test_validate_rejects_style_parameter_below_manual_range():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="ghost_notes")],
+            parameters={"velocity": 19},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.parameters.velocity"
+    assert "19" in exc.value.message
+    assert "[20, 45]" in exc.value.message
+
+
+def test_validate_rejects_style_parameter_above_manual_range():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="ghost_notes")],
+            parameters={"velocity": 46},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.parameters.velocity"
+    assert "46" in exc.value.message
+    assert "[20, 45]" in exc.value.message
+
+
+def test_validate_accepts_style_parameter_without_manual_range():
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="microtiming")],
+            parameters={"hihat_timing_sigma_ms": 999},
+        )
+    }
+    warnings = validate(plan)
+    assert not any("style.drums.parameters.hihat_timing_sigma_ms" in w for w in warnings)
+
+
+def test_validate_warns_for_style_parameter_source_gap():
+    plan = _valid_plan()
+    plan.style = {
+        "guitar": FamilyStyle(
+            reference="Meshuggah",
+            researched_at="2026-08-24",
+            sources=["https://example.test/guitar"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="palm_mute")],
+            parameters={"gate_absoluto_ms": 999},
+        )
+    }
+    warnings = validate(plan)
+    assert any(
+        "style.guitar.parameters.gate_absoluto_ms" in warning
+        and "source gap" in warning
+        for warning in warnings
+    )
+
+
 def test_validate_rejects_midi_integer_sequence_under_innocent_style_parameter():
     plan = _valid_plan()
     plan.style = {

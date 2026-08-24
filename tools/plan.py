@@ -281,13 +281,13 @@ def _build_techniques_index_for_style():
         ) from None
 
 
-def _validate_style_technique_name(index, family: str, name: str, path: str) -> None:
+def _resolve_style_technique(index, family: str, name: str, path: str):
     import difflib
 
     found = index.candidates(name)
     in_family = tuple(t for t in found if t.family == family)
     if in_family:
-        return
+        return in_family[0]
 
     if found:
         raise PlanValidationError(
@@ -305,6 +305,52 @@ def _validate_style_technique_name(index, family: str, name: str, path: str) -> 
         path,
         f"technique {name!r} does not exist in techniques index{hint}",
     )
+
+
+def _style_parameter_values(value: float | list[float]) -> tuple[float, ...]:
+    if _is_parameter_pair(value):
+        return float(value[0]), float(value[1])
+    return (float(value),)
+
+
+def _format_manual_range(lo: float, hi: float) -> str:
+    return f"[{lo:g}, {hi:g}]"
+
+
+def _validate_style_parameters_against_techniques(
+    parameters: dict[str, float | list[float]],
+    techniques: list[Any],
+    base: str,
+    warnings: list[str],
+) -> None:
+    for key, value in parameters.items():
+        path = f"{base}.parameters.{key}"
+        declarations = [
+            (technique, parameter)
+            for technique in techniques
+            for parameter in technique.parameters
+            if parameter.name == key
+        ]
+        for technique, parameter in declarations:
+            if parameter.range is not None:
+                lo, hi = float(parameter.range[0]), float(parameter.range[1])
+                values = _style_parameter_values(value)
+                if any(v < lo or v > hi for v in values):
+                    raise PlanValidationError(
+                        path,
+                        (
+                            f"value {value!r} outside expected range "
+                            f"{_format_manual_range(lo, hi)} declared by "
+                            f"{technique.canonical}.{parameter.name}"
+                        ),
+                    )
+                continue
+
+            if parameter.value is None and parameter.source is None:
+                warnings.append(
+                    f"{path}: parameter {key!r} is a source gap in "
+                    f"{technique.canonical}; no manual range/source exists"
+                )
 
 
 def _is_parameter_pair(value: Any) -> bool:
@@ -376,9 +422,10 @@ def _reject_musical_content_in_style_value(
             _reject_musical_content_in_style_value(item, f"{path}[{i}]")
 
 
-def _validate_style(plan_style: Any) -> None:
+def _validate_style(plan_style: Any) -> list[str]:
+    warnings: list[str] = []
     if plan_style is None:
-        return
+        return warnings
     if not isinstance(plan_style, dict):
         raise PlanValidationError(
             "style",
@@ -421,6 +468,7 @@ def _validate_style(plan_style: Any) -> None:
                 f"{base}.techniques",
                 f"must be list, got {type(entry.techniques).__name__}",
             )
+        resolved_techniques: list[Any] = []
         for i, technique in enumerate(entry.techniques):
             technique_base = f"{base}.techniques[{i}]"
             if not isinstance(technique, StyleTechnique):
@@ -446,12 +494,12 @@ def _validate_style(plan_style: Any) -> None:
                     f"must be string or null, got {type(technique.rationale).__name__}",
                 )
             if technique_index is not None:
-                _validate_style_technique_name(
+                resolved_techniques.append(_resolve_style_technique(
                     technique_index,
                     family,
                     technique.name,
                     f"{technique_base}.name",
-                )
+                ))
         if not isinstance(entry.parameters, dict):
             raise PlanValidationError(
                 f"{base}.parameters",
@@ -467,6 +515,13 @@ def _validate_style(plan_style: Any) -> None:
                     f"{base}.parameters.{key}",
                     f"must be number or [min, max] pair, got {type(value).__name__}",
                 )
+        _validate_style_parameters_against_techniques(
+            entry.parameters,
+            resolved_techniques,
+            base,
+            warnings,
+        )
+    return warnings
 
 
 def _style_family_for_role(role: str) -> str | None:
@@ -553,7 +608,7 @@ def validate(plan: ArrangementPlan) -> list[str]:
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
     _require_nonempty_str(plan.source_midi.sha256, "source_midi.sha256")
-    _validate_style(plan.style)
+    warnings.extend(_validate_style(plan.style))
 
     section_labels: set[str] = set()
     for i, s in enumerate(plan.sections):
