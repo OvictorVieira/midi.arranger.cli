@@ -66,6 +66,14 @@ def test_index_finds_all_techniques_from_versioned_manuals():
         "guitar.tremolo_picking",
         "guitar.vibrato",
         "keys.bass_anticipation",
+        "keys.damper_pedal",
+        "keys.expression",
+        "keys.hammond_dynamics",
+        "keys.human_articulation",
+        "keys.modulation",
+        "keys.pitch_bend",
+        "keys.rhodes_touch",
+        "keys.vibrato",
         "keys.hand_asynchrony",
         "keys.melody_lead",
         "keys.rolled_chord",
@@ -115,7 +123,7 @@ def test_by_family_filters_correctly():
     idx = build_index(MANUALS_DIR)
     assert len(idx.by_family("drums")) == 8
     assert len(idx.by_family("bass")) == 10
-    assert len(idx.by_family("keys")) == 6
+    assert len(idx.by_family("keys")) == 14
     assert len(idx.by_family("guitar")) == 18
     assert idx.by_family("vocals") == ()
 
