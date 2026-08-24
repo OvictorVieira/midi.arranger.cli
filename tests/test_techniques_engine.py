@@ -29,6 +29,8 @@ def test_registered_technique_declares_canonical_level_and_apply_function():
     assert tech.canonical == "drums.ghost_notes"
     assert tech.level == "technique"
     assert callable(tech.apply)
+    assert tech.allow_structural_velocity_change is False
+    assert tech.allow_structural_duration_change is False
 
 
 def test_dispatch_by_canonical_name_calls_registered_function():
@@ -147,12 +149,183 @@ def test_humanize_contract_rejects_note_on_order_changes():
         registry.apply("drums.microtiming", _midi_with_two_notes())
 
 
+def test_registered_techniques_preserve_structural_notes_by_default():
+    for tech in registered_techniques():
+        if tech.level != "technique":
+            continue
+
+        source = _midi_with_two_notes()
+        result = apply_technique(tech.canonical, source)
+
+        assert _note_tuples(result) == _note_tuples(_midi_with_two_notes())
+
+
+def test_technique_allows_ornamental_notes_cc_and_pitch_bend():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+        track = mid.tracks[1]
+        track.append(mido.Message(
+            "control_change", channel=9, control=4, value=48, time=0
+        ))
+        track.append(mido.Message("pitchwheel", channel=9, pitch=-120, time=0))
+        track.append(mido.Message(
+            "note_on", channel=9, note=38, velocity=32, time=0
+        ))
+        track.append(mido.Message(
+            "note_off", channel=9, note=38, velocity=0, time=120
+        ))
+        return mid
+
+    result = registry.apply("drums.ghost_notes", _midi_with_two_notes())
+
+    note_ons = [
+        msg for msg in result.tracks[1]
+        if not msg.is_meta and msg.type == "note_on" and msg.velocity > 0
+    ]
+    control_changes = [
+        msg for msg in result.tracks[1]
+        if not msg.is_meta and msg.type == "control_change"
+    ]
+    pitch_bends = [
+        msg for msg in result.tracks[1]
+        if not msg.is_meta and msg.type == "pitchwheel"
+    ]
+    assert [(msg.channel, msg.note, msg.velocity) for msg in note_ons] == [
+        (9, 60, 96),
+        (9, 64, 88),
+        (9, 38, 32),
+    ]
+    assert [(msg.channel, msg.control, msg.value) for msg in control_changes] == [
+        (9, 4, 48),
+    ]
+    assert [(msg.channel, msg.pitch) for msg in pitch_bends] == [(9, -120)]
+
+
+def test_technique_contract_rejects_structural_pitch_or_position_changes():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def change_pitch(_mid: mido.MidiFile) -> mido.MidiFile:
+        return _midi_with_two_notes(first_note=61, second_note=64)
+
+    with pytest.raises(TechniqueContractError, match="pitch ou posicao"):
+        registry.apply("drums.ghost_notes", _midi_with_two_notes())
+
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def change_position(mid: mido.MidiFile) -> mido.MidiFile:
+        first_on = mid.tracks[1][1]
+        mid.tracks[1][1] = first_on.copy(time=24)
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="pitch ou posicao"):
+        registry.apply("drums.ghost_notes", _midi_with_two_notes())
+
+
+def test_technique_contract_rejects_structural_velocity_without_permission():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+        first_on = mid.tracks[1][1]
+        mid.tracks[1][1] = first_on.copy(velocity=72)
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="velocity"):
+        registry.apply("drums.ghost_notes", _midi_with_two_notes())
+
+
+def test_technique_contract_rejects_structural_duration_without_permission():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+        first_off = mid.tracks[1][2]
+        mid.tracks[1][2] = first_off.copy(time=300)
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="duracao"):
+        registry.apply("drums.ghost_notes", _midi_with_single_note())
+
+
+def test_technique_can_declare_structural_velocity_and_duration_changes():
+    registry = TechniqueRegistry()
+
+    @registry.register(
+        "bass.ghost_notes",
+        "technique",
+        allow_structural_velocity_change=True,
+        allow_structural_duration_change=True,
+    )
+    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+        first_on = mid.tracks[1][1]
+        first_off = mid.tracks[1][2]
+        mid.tracks[1][1] = first_on.copy(velocity=72)
+        mid.tracks[1][2] = first_off.copy(time=300)
+        return mid
+
+    result = registry.apply("bass.ghost_notes", _midi_with_single_note())
+
+    assert result.tracks[1][1].velocity == 72
+    assert result.tracks[1][2].time == 300
+
+
 def test_every_registered_technique_exists_in_manual_index():
     idx = build_index(MANUALS_DIR)
 
     validate_registry_against_index(idx)
     for canonical in SUPPORTED_TECHNIQUES:
         assert idx.get(canonical) is not None
+
+
+def _note_tuples(mid: mido.MidiFile) -> list[tuple[int, int, int, int, int, int]]:
+    notes: list[tuple[int, int, int, int, int, int]] = []
+    for track_index, track in enumerate(mid.tracks):
+        tick = 0
+        open_notes: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                open_notes.setdefault((msg.channel, msg.note), []).append(
+                    (tick, msg.velocity)
+                )
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = open_notes.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity = stack.pop(0)
+                notes.append((
+                    track_index,
+                    msg.channel,
+                    msg.note,
+                    start_tick,
+                    tick,
+                    velocity,
+                ))
+    return notes
+
+
+def _midi_with_single_note() -> mido.MidiFile:
+    mid = mido.MidiFile(ticks_per_beat=480)
+    meta = mido.MidiTrack()
+    meta.append(mido.MetaMessage("track_name", name="Meta", time=0))
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    track.append(mido.Message(
+        "note_on", channel=0, note=40, velocity=96, time=0
+    ))
+    track.append(mido.Message(
+        "note_off", channel=0, note=40, velocity=0, time=480
+    ))
+    mid.tracks.extend([meta, track])
+    return mid
 
 
 def _midi_with_two_notes(

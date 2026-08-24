@@ -50,6 +50,8 @@ class RegisteredTechnique:
     canonical: str
     level: TechniqueLevel
     apply: TechniqueApply
+    allow_structural_velocity_change: bool = False
+    allow_structural_duration_change: bool = False
 
 
 class TechniqueRegistry:
@@ -62,6 +64,9 @@ class TechniqueRegistry:
         self,
         canonical: str,
         level: TechniqueLevel,
+        *,
+        allow_structural_velocity_change: bool = False,
+        allow_structural_duration_change: bool = False,
     ) -> Callable[[TechniqueApply], TechniqueApply]:
         """Registra `func` como aplicadora de `canonical`.
 
@@ -85,6 +90,8 @@ class TechniqueRegistry:
                 canonical=canonical,
                 level=level,
                 apply=func,
+                allow_structural_velocity_change=allow_structural_velocity_change,
+                allow_structural_duration_change=allow_structural_duration_change,
             )
             return func
 
@@ -102,12 +109,29 @@ class TechniqueRegistry:
         """Despacha por nome canonico para a funcao registrada."""
 
         technique = self.get(canonical)
-        before = _humanize_snapshot(args, kwargs) if technique.level == "humanize" else None
+        before_humanize = (
+            _humanize_snapshot(args, kwargs) if technique.level == "humanize" else None
+        )
+        before_technique = (
+            _technique_snapshot(args, kwargs) if technique.level == "technique" else None
+        )
         result = technique.apply(*args, **kwargs)
-        if before is not None:
-            after_mid = _result_midi(result) or before.midi
+        if before_humanize is not None:
+            after_mid = _result_midi(result) or before_humanize.midi
             after = _MidiContentSnapshot.from_midi(after_mid)
-            _validate_humanize_contract(technique.canonical, before.snapshot, after)
+            _validate_humanize_contract(
+                technique.canonical,
+                before_humanize.snapshot,
+                after,
+            )
+        if before_technique is not None:
+            after_mid = _result_midi(result) or before_technique.midi
+            after = _StructuralSnapshot.from_midi(after_mid)
+            _validate_technique_contract(
+                technique,
+                before_technique.snapshot,
+                after,
+            )
         return result
 
     def registered(self) -> tuple[RegisteredTechnique, ...]:
@@ -145,6 +169,12 @@ class _HumanizeBefore:
 
 
 @dataclass(frozen=True)
+class _TechniqueBefore:
+    midi: mido.MidiFile
+    snapshot: _StructuralSnapshot
+
+
+@dataclass(frozen=True)
 class _MidiContentSnapshot:
     note_on_count: int
     pitch_multiset: tuple[int, ...]
@@ -170,6 +200,78 @@ class _MidiContentSnapshot:
         )
 
 
+@dataclass(frozen=True, order=True)
+class _StructuralKey:
+    track_index: int
+    channel: int
+    pitch: int
+    start_tick: int
+    occurrence: int
+
+
+@dataclass(frozen=True)
+class _StructuralNote:
+    key: _StructuralKey
+    velocity: int
+    end_tick: int
+
+
+@dataclass(frozen=True)
+class _StructuralSnapshot:
+    notes: dict[_StructuralKey, _StructuralNote]
+
+    @classmethod
+    def from_midi(cls, mid: mido.MidiFile) -> _StructuralSnapshot:
+        pending: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        collected: list[tuple[int, int, int, int, int, int]] = []
+        for track_index, track in enumerate(mid.tracks):
+            tick = 0
+            pending.clear()
+            for msg in track:
+                tick += msg.time
+                if msg.is_meta:
+                    continue
+                if msg.type == "note_on" and msg.velocity > 0:
+                    pending.setdefault((msg.channel, msg.note), []).append(
+                        (tick, msg.velocity)
+                    )
+                elif msg.type == "note_off" or (
+                    msg.type == "note_on" and msg.velocity == 0
+                ):
+                    stack = pending.get((msg.channel, msg.note))
+                    if not stack:
+                        continue
+                    start_tick, velocity = stack.pop(0)
+                    collected.append((
+                        track_index,
+                        msg.channel,
+                        msg.note,
+                        start_tick,
+                        tick,
+                        velocity,
+                    ))
+
+        seen: dict[tuple[int, int, int, int], int] = {}
+        notes: dict[_StructuralKey, _StructuralNote] = {}
+        for track_index, channel, pitch, start_tick, end_tick, velocity in collected:
+            occurrence_key = (track_index, channel, pitch, start_tick)
+            occurrence = seen.get(occurrence_key, 0)
+            seen[occurrence_key] = occurrence + 1
+            key = _StructuralKey(
+                track_index=track_index,
+                channel=channel,
+                pitch=pitch,
+                start_tick=start_tick,
+                occurrence=occurrence,
+            )
+            notes[key] = _StructuralNote(
+                key=key,
+                velocity=velocity,
+                end_tick=end_tick,
+            )
+        return cls(notes=notes)
+
+
 def _humanize_snapshot(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
@@ -180,6 +282,19 @@ def _humanize_snapshot(
     return _HumanizeBefore(
         midi=mid,
         snapshot=_MidiContentSnapshot.from_midi(mid),
+    )
+
+
+def _technique_snapshot(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> _TechniqueBefore | None:
+    mid = _first_midi((*args, *kwargs.values()))
+    if mid is None:
+        return None
+    return _TechniqueBefore(
+        midi=mid,
+        snapshot=_StructuralSnapshot.from_midi(mid),
     )
 
 
@@ -220,16 +335,56 @@ def _validate_humanize_contract(
         )
 
 
+def _validate_technique_contract(
+    technique: RegisteredTechnique,
+    before: _StructuralSnapshot,
+    after: _StructuralSnapshot,
+) -> None:
+    """Garante que `technique` ornamenta sem deslocar material estrutural."""
+
+    for key, before_note in before.notes.items():
+        after_note = after.notes.get(key)
+        if after_note is None:
+            raise TechniqueContractError(
+                f"contrato technique violado por {technique.canonical}: nota "
+                "estrutural perdeu pitch ou posicao original"
+            )
+        if (
+            not technique.allow_structural_velocity_change
+            and after_note.velocity != before_note.velocity
+        ):
+            raise TechniqueContractError(
+                f"contrato technique violado por {technique.canonical}: "
+                "velocity de nota estrutural mudou sem permissao declarada"
+            )
+        if (
+            not technique.allow_structural_duration_change
+            and after_note.end_tick != before_note.end_tick
+        ):
+            raise TechniqueContractError(
+                f"contrato technique violado por {technique.canonical}: "
+                "duracao de nota estrutural mudou sem permissao declarada"
+            )
+
+
 _REGISTRY = TechniqueRegistry()
 
 
 def register_technique(
     canonical: str,
     level: TechniqueLevel,
+    *,
+    allow_structural_velocity_change: bool = False,
+    allow_structural_duration_change: bool = False,
 ) -> Callable[[TechniqueApply], TechniqueApply]:
     """Decorator para registrar uma tecnica no registro global."""
 
-    return _REGISTRY.register(canonical, level)
+    return _REGISTRY.register(
+        canonical,
+        level,
+        allow_structural_velocity_change=allow_structural_velocity_change,
+        allow_structural_duration_change=allow_structural_duration_change,
+    )
 
 
 def get_technique(canonical: str) -> RegisteredTechnique:
