@@ -50,7 +50,7 @@ flowchart TD
     Archive --> Progress[grava hash aceito<br/>e garante progress.txt]
     Progress --> Loop
 
-    Loop[i = 1] --> Invoke[monta prompt com iteration=i<br/>e linha de comando do adaptador]
+    Loop[i = 1] --> Invoke[resolve driver<br/>monta prompt com iteration=i<br/>e linha de comando do adaptador]
     Invoke --> Run[executa a CLI de IA<br/>ecoa e captura a saída]
     Run --> RO{brief mudou<br/>durante a iteração?}
     RO -->|sim| BriefFail([falha: requisito novo<br/>exige brief novo])
@@ -111,7 +111,23 @@ quando **todos** passam, inclusive o de conformidade, que confere se o construí
 
 ---
 
-## 4. O adaptador por ferramenta
+## 4. Resolucao do prompt driver
+
+O `run` resolve o driver antes de chamar a CLI de IA. Por padrao, a ferramenta ativa escolhe o
+arquivo em `prompts/<TOOL>.md`, com o nome da ferramenta em maiusculas: `claude` usa
+`prompts/CLAUDE.md`, `codex` usa `prompts/CODEX.md`, e assim por diante. O conteudo desse arquivo
+entra no prompt entregue ao agente depois dos campos de estado da iteracao.
+
+O usuario pode substituir o driver sem bifurcar o repositorio definindo
+`MIDI_ARRANGER_PROMPT_FILE=/caminho/para/driver.md`. Esse arquivo tem precedencia sobre
+`prompts/<TOOL>.md`. Se o caminho apontado pela variavel nao existir, o harness falha com erro claro
+e nao cai silenciosamente no driver padrao. Se o driver padrao da ferramenta escolhida estiver
+ausente, o `run` tambem falha antes de invocar a CLI.
+
+O `brief` ainda usa apenas o prompt curto com `input_midi`; os drivers em `prompts/` sao do loop
+headless de `run`.
+
+## 5. O adaptador por ferramenta
 
 Cada CLI recebe prompt e flags de um jeito. O adaptador absorve a diferença; o resto do harness não
 sabe qual ferramenta está ativa.
@@ -155,7 +171,7 @@ Três regras que valem para todos:
 
 ---
 
-## 5. Estado em disco
+## 6. Estado em disco
 
 Contexto limpo a cada iteração significa que **arquivo é a única memória**.
 
@@ -208,7 +224,7 @@ início de execução.
 
 ---
 
-## 6. Manter em dia
+## 7. Manter em dia
 
 Este documento é verificado por teste. O hash abaixo é o do `bin/midi-arranger` no momento em que a
 doc foi revisada pela última vez.
@@ -222,4 +238,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: 9dcad3c770a2473a167d9c93cd2430595118a2f976eaed50e7a23b50485034dc -->
+<!-- harness-sha256: 8aabf2f9241a5c02b375db5024e726b54ed6b8ce1bbfd94792d39cb69cfd81d2 -->
