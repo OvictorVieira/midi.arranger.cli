@@ -185,6 +185,32 @@ def _iter_note_ons(track: mido.MidiTrack):
             yield msg
 
 
+def _channel_stats_from_track(track: mido.MidiTrack) -> list[ChannelStats]:
+    """Agrupa `note_on` da track por canal e devolve `ChannelStats` ordenado
+    por numero de canal. Denominador de `percentage` e o total de notas da
+    track, o mesmo numero usado pelo relatorio bruto de `channel_distribution`
+    — ponto unico de agrupamento, sem duas implementacoes divergindo."""
+    per_channel: dict[int, list[int]] = {}
+    for msg in _iter_note_ons(track):
+        per_channel.setdefault(msg.channel, []).append(msg.note)
+    if not per_channel:
+        return []
+    total = sum(len(pitches) for pitches in per_channel.values())
+    stats: list[ChannelStats] = []
+    for ch in sorted(per_channel):
+        pitches = per_channel[ch]
+        lo, hi = min(pitches), max(pitches)
+        stats.append(ChannelStats(
+            channel=int(ch),
+            note_count=len(pitches),
+            pitch_min=int(lo),
+            pitch_max=int(hi),
+            span=int(hi - lo),
+            percentage=100.0 * len(pitches) / total,
+        ))
+    return stats
+
+
 def channel_distribution(midi_path: str) -> list[TrackChannelDistribution]:
     """Distribuicao de notas por canal, por SMF track, em `midi_path`.
 
@@ -200,26 +226,9 @@ def channel_distribution(midi_path: str) -> list[TrackChannelDistribution]:
 
     result: list[TrackChannelDistribution] = []
     for idx, track in enumerate(mid.tracks):
-        per_channel: dict[int, list[int]] = {}
-        for msg in _iter_note_ons(track):
-            per_channel.setdefault(msg.channel, []).append(msg.note)
-        if not per_channel:
+        stats = _channel_stats_from_track(track)
+        if not stats:
             continue
-
-        total = sum(len(pitches) for pitches in per_channel.values())
-        stats: list[ChannelStats] = []
-        for ch in sorted(per_channel):
-            pitches = per_channel[ch]
-            lo = min(pitches)
-            hi = max(pitches)
-            stats.append(ChannelStats(
-                channel=int(ch),
-                note_count=len(pitches),
-                pitch_min=int(lo),
-                pitch_max=int(hi),
-                span=int(hi - lo),
-                percentage=100.0 * len(pitches) / total,
-            ))
         result.append(TrackChannelDistribution(
             track_index=idx,
             track_name=_track_name(track, idx),
@@ -503,25 +512,9 @@ def tuning_inference(
 
     result: list[TrackTuningInference] = []
     for idx, track in enumerate(mid.tracks):
-        per_channel: dict[int, list[int]] = {}
-        for msg in _iter_note_ons(track):
-            per_channel.setdefault(msg.channel, []).append(msg.note)
-        if not per_channel:
+        all_stats = _channel_stats_from_track(track)
+        if not all_stats:
             continue
-
-        total = sum(len(pitches) for pitches in per_channel.values())
-        all_stats: list[ChannelStats] = []
-        for ch in sorted(per_channel):
-            pitches = per_channel[ch]
-            lo, hi = min(pitches), max(pitches)
-            all_stats.append(ChannelStats(
-                channel=int(ch),
-                note_count=len(pitches),
-                pitch_min=int(lo),
-                pitch_max=int(hi),
-                span=int(hi - lo),
-                percentage=100.0 * len(pitches) / total,
-            ))
 
         name = _track_name(track, idx)
         programs = _iter_track_programs(track)

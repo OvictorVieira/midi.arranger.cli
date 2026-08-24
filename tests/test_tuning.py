@@ -684,3 +684,84 @@ def test_not_stringed_track_has_unknown_class_and_no_name():
         assert ti.tuning_name is None
         assert ti.lowest_string_pitch is None
         assert ti.tuning_intervals == ()
+
+
+def test_empty_track_name_meta_falls_back_to_index():
+    """Meta `track_name` com nome vazio (whitespace) cai em `Track {index}`;
+    o `break` evita continuar caçando meta em outra track."""
+    mid = mido.MidiFile(ticks_per_beat=480)
+    t = mido.MidiTrack()
+    t.append(mido.MetaMessage("track_name", name="   ", time=0))
+    t.append(mido.Message("note_on", channel=0, note=40, velocity=100, time=0))
+    t.append(mido.Message("note_off", channel=0, note=40, velocity=0, time=120))
+    mid.tracks.append(t)
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "empty_name.mid")
+        mid.save(p)
+        dist = tuning.channel_distribution(p)
+        assert dist[0].track_name == "Track 0"
+
+
+def test_load_tuning_patterns_missing_technique_raises(monkeypatch):
+    """Sem `guitar.drop_tuning` no indice, `_load_tuning_patterns` estoura
+    `TuningKnowledgeError` em vez de degradar silenciosamente."""
+    monkeypatch.setattr(tuning, "_TUNING_PATTERNS_CACHE", None)
+    import tools.techniques as techniques_mod
+
+    def _empty_index():
+        return {}
+
+    monkeypatch.setattr(techniques_mod, "build_index", _empty_index)
+    try:
+        tuning._load_tuning_patterns()
+    except tuning.TuningKnowledgeError as exc:
+        assert "guitar.drop_tuning" in str(exc)
+    else:
+        raise AssertionError("expected TuningKnowledgeError")
+
+
+def test_load_tuning_patterns_missing_afinacoes_raises(monkeypatch):
+    """Tecnica presente mas sem `tools.generic.afinacoes` tambem estoura."""
+    monkeypatch.setattr(tuning, "_TUNING_PATTERNS_CACHE", None)
+    import tools.techniques as techniques_mod
+
+    class _StubTech:
+        tools = {"generic": {}}
+
+    def _stub_index():
+        return {"guitar.drop_tuning": _StubTech()}
+
+    monkeypatch.setattr(techniques_mod, "build_index", _stub_index)
+    try:
+        tuning._load_tuning_patterns()
+    except tuning.TuningKnowledgeError as exc:
+        assert "afinacoes" in str(exc)
+    else:
+        raise AssertionError("expected TuningKnowledgeError")
+
+
+def test_load_tuning_patterns_ignores_entries_with_less_than_two_pitches(monkeypatch):
+    """Afinacao com menos de duas cordas (nao gera intervalo) e ignorada
+    silenciosamente — vale so como higiene de dado do manual."""
+    monkeypatch.setattr(tuning, "_TUNING_PATTERNS_CACHE", None)
+    import tools.techniques as techniques_mod
+
+    class _StubTech:
+        tools = {"generic": {"afinacoes": {
+            "unaria": [40],
+            "padrao E": [40, 45, 50, 55, 59, 64],
+            "nao-lista": "xxx",
+        }}}
+
+    def _stub_index():
+        return {"guitar.drop_tuning": _StubTech()}
+
+    monkeypatch.setattr(techniques_mod, "build_index", _stub_index)
+    drop, standard = tuning._load_tuning_patterns()
+    assert drop == frozenset()
+    assert (5, 5, 5, 4, 5) in standard
+
+
+def test_is_prefix_of_any_returns_false_on_empty_observed():
+    """`observed=()` nunca casa: sem intervalos, nao ha nada pra classificar."""
+    assert tuning._is_prefix_of_any((), frozenset({(5, 5, 5, 4, 5)})) is False

@@ -395,6 +395,42 @@ def _track_from_instrument(inst: pretty_midi.Instrument, name: str) -> dict[str,
     }
 
 
+def _channel_stats_dict(c: tuning_mod.ChannelStats) -> dict[str, Any]:
+    """Serializa `ChannelStats` para o payload da tool. Ponto unico de
+    conversao — usado por `channels` e `candidate_channels`."""
+    return {
+        "channel": int(c.channel),
+        "note_count": int(c.note_count),
+        "pitch_min": int(c.pitch_min),
+        "pitch_max": int(c.pitch_max),
+        "span": int(c.span),
+        "percentage": float(c.percentage),
+    }
+
+
+_CHANNEL_STATS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+            "note_count": {"type": "integer", "minimum": 1},
+            "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
+            "pitch_max": {"type": "integer", "minimum": 0, "maximum": 127},
+            "span": {"type": "integer", "minimum": 0},
+            "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        },
+        "required": [
+            "channel", "note_count", "pitch_min", "pitch_max",
+            "span", "percentage",
+        ],
+        "additionalProperties": False,
+    },
+}
+"""Schema unico para `channels`/`candidate_channels` — mesma forma de
+`ChannelStats`, um lugar so pra atualizar."""
+
+
 def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     src = _resolve_midi(payload["midi_path"])
     try:
@@ -473,17 +509,7 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             {
                 "track_index": int(td.track_index),
                 "track_name": td.track_name,
-                "channels": [
-                    {
-                        "channel": int(c.channel),
-                        "note_count": int(c.note_count),
-                        "pitch_min": int(c.pitch_min),
-                        "pitch_max": int(c.pitch_max),
-                        "span": int(c.span),
-                        "percentage": float(c.percentage),
-                    }
-                    for c in td.channels
-                ],
+                "channels": [_channel_stats_dict(c) for c in td.channels],
             }
             for td in a.channel_distribution
         ],
@@ -496,15 +522,7 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                 "discard_reason": ti.discard_reason,
                 "gm_programs": [int(p) for p in ti.gm_programs],
                 "candidate_channels": [
-                    {
-                        "channel": int(c.channel),
-                        "note_count": int(c.note_count),
-                        "pitch_min": int(c.pitch_min),
-                        "pitch_max": int(c.pitch_max),
-                        "span": int(c.span),
-                        "percentage": float(c.percentage),
-                    }
-                    for c in ti.candidate_channels
+                    _channel_stats_dict(c) for c in ti.candidate_channels
                 ],
                 "discarded_channels": [
                     {
@@ -673,25 +691,7 @@ ANALYZE_TOOL = Tool(
                     "properties": {
                         "track_index": {"type": "integer", "minimum": 0},
                         "track_name": {"type": "string"},
-                        "channels": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
-                                    "note_count": {"type": "integer", "minimum": 1},
-                                    "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
-                                    "pitch_max": {"type": "integer", "minimum": 0, "maximum": 127},
-                                    "span": {"type": "integer", "minimum": 0},
-                                    "percentage": {"type": "number", "minimum": 0, "maximum": 100},
-                                },
-                                "required": [
-                                    "channel", "note_count", "pitch_min", "pitch_max",
-                                    "span", "percentage",
-                                ],
-                                "additionalProperties": False,
-                            },
-                        },
+                        "channels": _CHANNEL_STATS_SCHEMA,
                     },
                     "required": ["track_index", "track_name", "channels"],
                     "additionalProperties": False,
@@ -727,25 +727,7 @@ ANALYZE_TOOL = Tool(
                                 "type": "integer", "minimum": 0, "maximum": 127,
                             },
                         },
-                        "candidate_channels": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
-                                    "note_count": {"type": "integer", "minimum": 1},
-                                    "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
-                                    "pitch_max": {"type": "integer", "minimum": 0, "maximum": 127},
-                                    "span": {"type": "integer", "minimum": 0},
-                                    "percentage": {"type": "number", "minimum": 0, "maximum": 100},
-                                },
-                                "required": [
-                                    "channel", "note_count", "pitch_min", "pitch_max",
-                                    "span", "percentage",
-                                ],
-                                "additionalProperties": False,
-                            },
-                        },
+                        "candidate_channels": _CHANNEL_STATS_SCHEMA,
                         "discarded_channels": {
                             "type": "array",
                             "items": {
