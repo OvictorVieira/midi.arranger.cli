@@ -42,6 +42,19 @@ sem melodias, riffs, viradas, levadas reconheciveis, voicings assinados ou seque
 Perfil pesquisado vive no `arrangement_plan` daquela musica, com fontes, momento da pesquisa,
 confianca e suposicoes. Ele nunca vira arquivo em `knowledge/`.
 
+Contrato de `style` no plano:
+- Use apenas as familias `bass`, `drums`, `guitar` e `keys`.
+- Cada familia declarada precisa ter `reference`, `researched_at`, `sources`, `confidence`,
+  `techniques` e `parameters`.
+- `confidence` e vocabulario fechado: `high`, `medium`, `low` ou `default`.
+- `techniques[].name` precisa existir em `techniques.list`; prefira nome canonico e so use nome
+  simples quando a familia do caminho desambigua.
+- `parameters` aceita apenas numero escalar ou par `[min, max]`; nunca escreva notas, tempos,
+  melodias, riffs, grooves, frases, licks, motifs, patterns ou sequencias musicais dentro de
+  `style`.
+- Se um parametro corresponder a uma tecnica citada e o manual declarar range, valor fora da faixa
+  e erro do plano. Nunca ajuste, arredonde ou clampe em silencio.
+
 Todo elemento do plano precisa ter `rationale` nao vazio, justificado pela persona, pelo brief ou
 pelo estilo pesquisado. Nao use `rationale` decorativo; escreva a razao verificavel daquele elemento.
 

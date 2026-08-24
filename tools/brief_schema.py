@@ -36,6 +36,7 @@ from typing import Any
 from . import techniques as techniques_mod
 from .plan import ROUTES
 from .registry import SchemaError, Tool, ToolError, validate_input
+from .style_schema import style_technique_schema
 
 # --- vocabularios fechados -------------------------------------------------
 
@@ -75,20 +76,7 @@ def _family_style_schema() -> dict[str, Any]:
             "confidence": {"enum": list(CONFIDENCE_LEVELS)},
             "techniques": {
                 "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "minLength": 1},
-                        "density": {
-                            "oneOf": [
-                                {"type": "null"},
-                                {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            ],
-                        },
-                        "rationale": {"type": ["string", "null"]},
-                    },
-                    "required": ["name"],
-                },
+                "items": style_technique_schema(),
             },
             "parameters": {
                 "type": "object",

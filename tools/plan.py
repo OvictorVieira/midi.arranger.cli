@@ -26,6 +26,12 @@ from pathlib import Path
 from typing import Any
 
 from .constants import SYNC_ROLES
+from .style_schema import (
+    MIDI_PITCH_MAX,
+    MIDI_PITCH_MIN,
+    find_style_musical_content,
+    is_style_parameter_pair,
+)
 
 # --- vocabularios fechados (secao 5 do spec) --------------------------------
 
@@ -66,20 +72,6 @@ STYLE_FAMILY_REQUIRED_FIELDS = (
     "parameters",
 )
 STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale")
-STYLE_MUSICAL_CONTENT_KEYS = (
-    "notes",
-    "pattern",
-    "riff",
-    "melody",
-    "groove",
-    "sequence",
-    "midi",
-    "phrase",
-    "lick",
-    "motif",
-)
-STYLE_PITCH_KEYS = ("pitch", "note", "midi_note", "note_number")
-STYLE_TIME_KEYS = ("time", "start", "start_tick", "tick", "ticks", "position", "offset")
 DEFAULT_STYLE_REFERENCE = "persona base"
 DEFAULT_STYLE_RESEARCHED_AT = "0001-01-01"
 DEFAULT_STYLE_SOURCE = "knowledge/persona/persona_produtor_metal_moderno.md"
@@ -122,8 +114,6 @@ ENERGY_MAX = 10
 
 SCHEMA_VERSION = 1
 
-MIDI_PITCH_MIN = 0
-MIDI_PITCH_MAX = 127
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -322,7 +312,7 @@ def _resolve_style_technique(index, family: str, name: str, path: str):
 
 
 def _style_parameter_values(value: float | list[float]) -> tuple[float, ...]:
-    if _is_parameter_pair(value):
+    if is_style_parameter_pair(value):
         return float(value[0]), float(value[1])
     return (float(value),)
 
@@ -367,14 +357,6 @@ def _validate_style_parameters_against_techniques(
                 )
 
 
-def _is_parameter_pair(value: Any) -> bool:
-    return (
-        isinstance(value, list)
-        and len(value) == 2
-        and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
-    )
-
-
 def _raise_style_musical_content(path: str, reason: str) -> None:
     raise PlanValidationError(
         path,
@@ -385,55 +367,42 @@ def _raise_style_musical_content(path: str, reason: str) -> None:
     )
 
 
-def _object_has_pitch_and_time_keys(value: dict[str, Any]) -> bool:
-    keys = set(value)
-    return bool(keys.intersection(STYLE_PITCH_KEYS)) and bool(keys.intersection(STYLE_TIME_KEYS))
-
-
 def _reject_musical_content_in_style_value(
     value: Any,
     path: str,
     *,
     allow_parameter_pair: bool = False,
 ) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            child_path = f"{path}.{key}" if path else key
-            if key in STYLE_MUSICAL_CONTENT_KEYS:
-                _raise_style_musical_content(
-                    child_path,
-                    f"campo de conteudo musical proibido {key!r}",
-                )
-            _reject_musical_content_in_style_value(
-                child,
-                child_path,
-                allow_parameter_pair=path.endswith(".parameters"),
-            )
-        return
+    violation = find_style_musical_content(
+        value,
+        path,
+        allow_parameter_pair=allow_parameter_pair,
+    )
+    if violation is not None:
+        _raise_style_musical_content(*violation)
 
-    if isinstance(value, list):
-        if allow_parameter_pair and _is_parameter_pair(value):
-            return
-        if (
-            len(value) >= 3
-            and all(
-                isinstance(item, int)
-                and not isinstance(item, bool)
-                and MIDI_PITCH_MIN <= item <= MIDI_PITCH_MAX
-                for item in value
-            )
-        ):
-            _raise_style_musical_content(
-                path,
-                "sequencia de tres ou mais inteiros em faixa MIDI proibida",
-            )
-        if any(isinstance(item, dict) and _object_has_pitch_and_time_keys(item) for item in value):
-            _raise_style_musical_content(
-                path,
-                "array de eventos com altura e tempo proibido",
-            )
-        for i, item in enumerate(value):
-            _reject_musical_content_in_style_value(item, f"{path}[{i}]")
+
+def _family_style_content_scan_dict(entry: FamilyStyle) -> dict[str, Any]:
+    techniques = entry.techniques
+    if isinstance(techniques, list):
+        techniques = [
+            {
+                "name": technique.name,
+                "density": technique.density,
+                "rationale": technique.rationale,
+            }
+            if isinstance(technique, StyleTechnique)
+            else technique
+            for technique in techniques
+        ]
+    return {
+        "reference": entry.reference,
+        "researched_at": entry.researched_at,
+        "sources": entry.sources,
+        "confidence": entry.confidence,
+        "techniques": techniques,
+        "parameters": entry.parameters,
+    }
 
 
 def _validate_style(plan_style: Any) -> list[str]:
@@ -462,7 +431,7 @@ def _validate_style(plan_style: Any) -> list[str]:
             )
         if not isinstance(entry, FamilyStyle):
             raise PlanValidationError(base, f"must be FamilyStyle, got {type(entry).__name__}")
-        _reject_musical_content_in_style_value(_family_style_to_dict(entry), base)
+        _reject_musical_content_in_style_value(_family_style_content_scan_dict(entry), base)
         _require_nonempty_str(entry.reference, f"{base}.reference")
         _require_nonempty_str(entry.researched_at, f"{base}.researched_at")
         try:
@@ -522,7 +491,7 @@ def _validate_style(plan_style: Any) -> list[str]:
         for key, value in entry.parameters.items():
             if not isinstance(key, str) or not key:
                 raise PlanValidationError(f"{base}.parameters", "parameter names must be non-empty strings")
-            if _is_parameter_pair(value):
+            if is_style_parameter_pair(value):
                 continue
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise PlanValidationError(

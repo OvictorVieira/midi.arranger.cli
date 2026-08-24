@@ -28,6 +28,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   duplique nem hardcode o índice no schema ou em `tools/plan.py`.
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
+- Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em
+  domínio e fachada em vez de duplicar listas de chaves musicais, detecção anticópia ou schema de
+  `techniques[]`.
 - Quando `style.<familia>.parameters.<nome>` casar parâmetro declarado por técnica citada em
   `style.<familia>.techniques`, valor fora do `range` do manual é erro; parâmetro-lacuna sem
   `value`, sem `range` e sem `source` passa só com aviso, nunca com clamp silencioso.

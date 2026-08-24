@@ -620,6 +620,154 @@ def test_validate_rejects_musical_content_parameter_name_even_when_scalar():
     assert "nunca conteudo musical" in exc.value.message
 
 
+def test_validate_rejects_style_that_is_not_mapping():
+    plan = _valid_plan()
+    plan.style = ["drums"]
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "style"
+    assert "must be dict" in exc.value.message
+
+
+def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.MonkeyPatch):
+    from tools.techniques import TechniqueError
+
+    def fail_build_index():
+        raise TechniqueError("manual quebrado")
+
+    monkeypatch.setattr("tools.techniques.build_index", fail_build_index)
+    plan = _valid_plan()
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="ghost_notes")],
+            parameters={},
+        )
+    }
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "style.techniques"
+    assert "manual quebrado" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    ("mutate", "path"),
+    [
+        (lambda entry: setattr(entry, "researched_at", "ontem"), "style.drums.researched_at"),
+        (lambda entry: setattr(entry, "sources", "https://example.test/drums"), "style.drums.sources"),
+        (lambda entry: setattr(entry, "techniques", "ghost_notes"), "style.drums.techniques"),
+        (lambda entry: setattr(entry, "techniques", [{"name": "ghost_notes"}]), "style.drums.techniques[0]"),
+        (
+            lambda entry: setattr(entry, "techniques", [StyleTechnique(name="ghost_notes", density="alta")]),
+            "style.drums.techniques[0].density",
+        ),
+        (
+            lambda entry: setattr(entry, "techniques", [StyleTechnique(name="ghost_notes", density=1.5)]),
+            "style.drums.techniques[0].density",
+        ),
+        (
+            lambda entry: setattr(entry, "techniques", [StyleTechnique(name="ghost_notes", rationale=123)]),
+            "style.drums.techniques[0].rationale",
+        ),
+        (lambda entry: setattr(entry, "parameters", []), "style.drums.parameters"),
+        (lambda entry: entry.parameters.update({"": 0.5}), "style.drums.parameters"),
+        (lambda entry: entry.parameters.update({"timing": "late"}), "style.drums.parameters.timing"),
+    ],
+)
+def test_validate_rejects_malformed_style_family_values(mutate, path: str):
+    entry = FamilyStyle(
+        reference="Steve Jordan",
+        researched_at="2026-08-24",
+        sources=["https://example.test/drums"],
+        confidence="medium",
+        techniques=[],
+        parameters={},
+    )
+    mutate(entry)
+    plan = _valid_plan()
+    plan.style = {"drums": entry}
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == path
+
+
+def test_validate_rejects_style_family_value_that_is_not_family_style():
+    plan = _valid_plan()
+    plan.style = {"drums": {"reference": "Steve Jordan"}}
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "style.drums"
+    assert "FamilyStyle" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    ("mutate", "path"),
+    [
+        (lambda data: data.update({"style": []}), "style"),
+        (lambda data: data.update({"brief_ref": "arrangement-brief.json"}), "brief_ref"),
+        (lambda data: data["style"].update({"drums": []}), "style.drums"),
+        (
+            lambda data: data["style"]["drums"].update({"sources": "https://example.test/drums"}),
+            "style.drums.sources",
+        ),
+        (lambda data: data["style"]["drums"].update({"techniques": {}}), "style.drums.techniques"),
+        (lambda data: data["style"]["drums"].update({"parameters": []}), "style.drums.parameters"),
+        (
+            lambda data: data["style"]["drums"].update({"techniques": [42]}),
+            "style.drums.techniques[0]",
+        ),
+    ],
+)
+def test_from_dict_rejects_malformed_style_structures(mutate, path: str):
+    data = to_dict(_valid_plan())
+    data["style"] = {
+        "drums": {
+            "reference": "Steve Jordan",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/drums"],
+            "confidence": "medium",
+            "techniques": [],
+            "parameters": {},
+        }
+    }
+    mutate(data)
+
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+
+    assert exc.value.path == path
+
+
+@pytest.mark.parametrize(
+    ("mutate", "path"),
+    [
+        (lambda plan: setattr(plan.sections[0], "energy", "alto"), "sections[0].energy"),
+        (lambda plan: setattr(plan.elements[0], "role", 123), "elements[0].role"),
+        (lambda plan: setattr(plan.elements[0], "register", (48, 72)), "elements[0].register"),
+        (lambda plan: setattr(plan.elements[0], "register", [48, "72"]), "elements[0].register[1]"),
+    ],
+)
+def test_validate_rejects_malformed_core_plan_fields(mutate, path: str):
+    plan = _valid_plan()
+    mutate(plan)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == path
+
+
 def test_dump_writes_indented_json_that_parses(tmp_path: Path):
     """Serializacao gera JSON legivel (indent=2) — usuario edita a mao."""
     path = tmp_path / "plan.json"

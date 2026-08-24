@@ -53,6 +53,7 @@ from .plan import (
     SourceMidi,
 )
 from .registry import Tool, ToolError, register
+from .style_schema import style_technique_schema
 from .tracks import TrackNameError, name_for_element
 from .validators import (
     RenderedNote,
@@ -134,21 +135,7 @@ _ENERGY_SCHEMA: dict[str, Any] = {
 
 
 def _plan_style_technique_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "minLength": 1},
-            "density": {
-                "oneOf": [
-                    {"type": "null"},
-                    {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                ],
-            },
-            "rationale": {"type": ["string", "null"]},
-        },
-        "required": ["name"],
-        "additionalProperties": False,
-    }
+    return style_technique_schema(additional_properties=False)
 
 
 def _plan_style_parameter_schema() -> dict[str, Any]:
