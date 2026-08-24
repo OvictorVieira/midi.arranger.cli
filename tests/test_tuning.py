@@ -498,6 +498,77 @@ def test_single_candidate_channel_yields_no_intervals_and_unknown():
         assert ti.lowest_string_pitch == 40
 
 
+# ---------------------------------------------------------------------------
+# US-004 — confianca declarada, nunca maquiada
+# ---------------------------------------------------------------------------
+
+
+def test_confidence_high_when_pattern_and_many_candidates():
+    """6 canais de Drop D exercitados => classe drop + confianca `high`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_d_full.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([38, 45, 50, 55, 59, 64]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_HIGH
+        assert len(ti.candidate_channels) >= tuning.MIN_CANDIDATES_FOR_HIGH_CONFIDENCE
+
+
+def test_confidence_low_when_pattern_but_few_candidates():
+    """Prefixo `[7,5]` (2 canais candidatos) classifica drop, mas com poucos
+    canais a confianca cai para `low`. Nome de afinacao ainda vem."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_prefix_conf.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([38, 45, 50]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert len(ti.candidate_channels) < tuning.MIN_CANDIDATES_FOR_HIGH_CONFIDENCE
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_LOW
+        assert ti.tuning_name == "Drop D"
+
+
+def test_confidence_unknown_when_intervals_dont_match_and_no_name():
+    """Intervalos sem padrao => classe unknown + confianca `unknown`;
+    afinacao desconhecida NUNCA vem com nome."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "gibberish_conf.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([40, 45, 48, 62, 64, 69, 78]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.tuning_class == tuning.TUNING_CLASS_UNKNOWN
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_UNKNOWN
+        assert ti.tuning_name is None
+
+
+def test_confidence_unknown_when_not_stringed():
+    """Track que nao passa TRAVA 1 => confianca `unknown` e sem nome."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "vox_conf.mid")
+        _write_midi_full(p, [{
+            "name": "Vocals", "program": 73,
+            "notes": _six_channels([60, 65, 70, 74]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_UNKNOWN
+        assert ti.tuning_name is None
+
+
+def test_confidence_vocabulary_is_closed():
+    """Vocabulario fechado: `high`, `low`, `unknown`."""
+    assert tuning.TUNING_CONFIDENCE_HIGH == "high"
+    assert tuning.TUNING_CONFIDENCE_LOW == "low"
+    assert tuning.TUNING_CONFIDENCE_UNKNOWN == "unknown"
+
+
 def test_not_stringed_track_has_unknown_class_and_no_name():
     """Track que nao passa TRAVA 1 nao classifica afinacao nem gera nome."""
     with tempfile.TemporaryDirectory() as tmp:

@@ -523,6 +523,7 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     if ti.lowest_string_pitch is not None
                     else None
                 ),
+                "confidence": ti.confidence,
             }
             for ti in a.tuning_inference
         ],
@@ -762,13 +763,18 @@ ANALYZE_TOOL = Tool(
                             "minimum": 0,
                             "maximum": 127,
                         },
+                        "confidence": {"enum": [
+                            tuning_mod.TUNING_CONFIDENCE_HIGH,
+                            tuning_mod.TUNING_CONFIDENCE_LOW,
+                            tuning_mod.TUNING_CONFIDENCE_UNKNOWN,
+                        ]},
                     },
                     "required": [
                         "track_index", "track_name", "is_stringed",
                         "stringed_source", "discard_reason", "gm_programs",
                         "candidate_channels", "discarded_channels",
                         "tuning_intervals", "tuning_class", "tuning_name",
-                        "lowest_string_pitch",
+                        "lowest_string_pitch", "confidence",
                     ],
                     "additionalProperties": False,
                 },

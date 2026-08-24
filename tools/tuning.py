@@ -97,6 +97,29 @@ TUNING_CLASS_DROP = "drop"
 TUNING_CLASS_STANDARD = "standard"
 TUNING_CLASS_UNKNOWN = "unknown"
 
+# ---------------------------------------------------------------------------
+# US-004 — confianca declarada, nunca maquiada
+#
+# Vocabulario fechado: `high`, `low`, `unknown`. Regra:
+#   - `unknown` sempre que `tuning_class == unknown` (intervalos que nao batem
+#     com padrao nenhum, ou nenhum canal candidato) — e AI que o detector
+#     admite nao saber, em vez de chutar.
+#   - `low` quando ha padrao mas com poucos canais confiaveis (abaixo do
+#     limiar): a assinatura pode estar certa mas o riff nao exercitou cordas
+#     suficientes para o detector afirmar com peso.
+#   - `high` quando ha padrao e o numero de candidatos atinge o limiar.
+# Afinacao `unknown` NUNCA vem com `tuning_name` (garantido em `_tuning_name`).
+# ---------------------------------------------------------------------------
+
+TUNING_CONFIDENCE_HIGH = "high"
+TUNING_CONFIDENCE_LOW = "low"
+TUNING_CONFIDENCE_UNKNOWN = "unknown"
+
+MIN_CANDIDATES_FOR_HIGH_CONFIDENCE = 4
+"""Confianca `high` exige pelo menos este numero de canais candidatos.
+Guitarra de 6 cordas com 4 delas exercitadas ja da amostra suficiente para
+firmar a assinatura de intervalos; abaixo disso, a inferencia sai `low`."""
+
 _PITCH_CLASS_NAMES = (
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 )
@@ -291,6 +314,16 @@ def _pitch_class_name(midi: int) -> str:
     return _PITCH_CLASS_NAMES[midi % 12]
 
 
+def _classify_confidence(tuning_class: str, candidate_count: int) -> str:
+    """US-004. `unknown` sempre que a classe for `unknown`; `low` quando a
+    amostra de candidatos e magra; `high` quando atinge o limiar."""
+    if tuning_class == TUNING_CLASS_UNKNOWN:
+        return TUNING_CONFIDENCE_UNKNOWN
+    if candidate_count < MIN_CANDIDATES_FOR_HIGH_CONFIDENCE:
+        return TUNING_CONFIDENCE_LOW
+    return TUNING_CONFIDENCE_HIGH
+
+
 def _tuning_name(cls: str, lowest_pitch: int | None) -> str | None:
     """Nome da afinacao a partir da corda mais grave. Ex.: drop + MIDI 32
     (G#1) => `Drop G#`. Fora dos padroes conhecidos, retorna None — nome
@@ -331,6 +364,10 @@ class TrackTuningInference:
     - `lowest_string_pitch`: MIDI da corda solta mais grave detectada
       (min pitch do canal mais grave em `candidate_channels`). None
       quando nao ha canal confiavel.
+    - `confidence`: vocabulario fechado (`high`, `low`, `unknown`).
+      `unknown` toda vez que `tuning_class` for `unknown` — e assim que o
+      detector admite nao saber. `low` quando ha padrao mas poucos canais
+      candidatos; `high` quando ha padrao e amostra suficiente.
     """
     track_index: int
     track_name: str
@@ -344,6 +381,7 @@ class TrackTuningInference:
     tuning_class: str = TUNING_CLASS_UNKNOWN
     tuning_name: str | None = None
     lowest_string_pitch: int | None = None
+    confidence: str = TUNING_CONFIDENCE_UNKNOWN
 
 
 def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
@@ -484,6 +522,7 @@ def tuning_inference(
         tuning_class = _classify_tuning(intervals)
         lowest_pitch = by_pitch[0].pitch_min if by_pitch else None
         tuning_name = _tuning_name(tuning_class, lowest_pitch)
+        confidence = _classify_confidence(tuning_class, len(candidates))
 
         result.append(TrackTuningInference(
             track_index=idx,
@@ -498,6 +537,7 @@ def tuning_inference(
             tuning_class=tuning_class,
             tuning_name=tuning_name,
             lowest_string_pitch=lowest_pitch,
+            confidence=confidence,
         ))
 
     return result
@@ -510,6 +550,7 @@ __all__ = [
     "GM_GUITAR_PROGRAMS",
     "GM_STRINGED_PROGRAMS",
     "MAX_STRING_SPAN_SEMITONES",
+    "MIN_CANDIDATES_FOR_HIGH_CONFIDENCE",
     "MIN_NOTES_PER_CHANNEL_FOR_INFERENCE",
     "NOT_STRINGED",
     "STRINGED_SOURCE_DECLARED",
@@ -518,6 +559,9 @@ __all__ = [
     "TUNING_CLASS_DROP",
     "TUNING_CLASS_STANDARD",
     "TUNING_CLASS_UNKNOWN",
+    "TUNING_CONFIDENCE_HIGH",
+    "TUNING_CONFIDENCE_LOW",
+    "TUNING_CONFIDENCE_UNKNOWN",
     "ChannelStats",
     "DiscardedChannel",
     "TrackChannelDistribution",
