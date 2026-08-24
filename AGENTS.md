@@ -55,6 +55,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   reaplicar, nota extra com a mesma assinatura exata já existente (track/canal/pitch/início/fim),
   CC ou pitch bend com mesma assinatura (track/canal/tick/valor) é descartado antes da validação
   do contrato.
+- Ao implementar técnica idempotente, recalcule os mesmos alvos de ornamento na reaplicação e deixe
+  `TechniqueRegistry.apply` descartar duplicatas; não escolha substitutos só porque o ornamento já
+  existe no MIDI de entrada.
 - A plausibilidade física de ornamentos do nível `technique` é validada em
   `tools/techniques/physical.py`, chamada pelo despacho central; parâmetros físicos explícitos como
   `tuning`/`afinacao`, `open_strings`, `max_fret`, `hand` e `max_hand_span` entram por

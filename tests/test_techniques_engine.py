@@ -27,6 +27,8 @@ from tools.registry import (
 )
 from tools.techniques import (
     SUPPORTED_TECHNIQUES,
+    ExpectedNote,
+    NoteSignature,
     Technique,
     TechniqueApplyResult,
     TechniqueContext,
@@ -40,6 +42,7 @@ from tools.techniques import (
     apply_technique,
     apply_technique_with_warnings,
     build_index,
+    derive_note_classification,
     register_technique,
     registered_techniques,
     validate_registry_against_index,
@@ -175,16 +178,16 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert SUPPORTED_TECHNIQUES == ("drums.accent_hierarchy",)
+    assert SUPPORTED_TECHNIQUES == ("drums.accent_hierarchy", "drums.ghost_notes")
 
 
 def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     payload = {"notes": [38]}
 
     with pytest.raises(UnknownTechniqueError) as exc:
-        apply_technique("drums.ghost_notes", payload, seed=1)
+        apply_technique("drums.flam", payload, seed=1)
 
-    assert exc.value.available == ("drums.accent_hierarchy",)
+    assert exc.value.available == ("drums.accent_hierarchy", "drums.ghost_notes")
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
@@ -736,6 +739,228 @@ def test_drums_accent_hierarchy_preserves_coherent_velocity_below_ceiling():
     assert _note_tuples(result) == before
 
 
+def test_drums_ghost_notes_adds_candidates_between_backbeats_only():
+    source = _midi_with_ghost_note_window()
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=1,
+        parameters={"density": 1.0},
+    )
+    starts = {note[3] for note in _new_note_tuples(source, result)}
+
+    assert starts
+    assert all(480 < start < 1440 for start in starts)
+
+
+def test_drums_ghost_notes_discards_sixteenth_immediately_before_backbeat():
+    source = _midi_with_ghost_note_window()
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=2,
+        parameters={"density": 1.0},
+    )
+    starts = {note[3] for note in _new_note_tuples(source, result)}
+
+    assert 1320 not in starts
+
+
+def test_drums_ghost_notes_discards_consecutive_pair_after_backbeat():
+    source = _midi_with_ghost_note_window()
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=3,
+        parameters={"density": 1.0},
+    )
+    starts = {note[3] for note in _new_note_tuples(source, result)}
+
+    assert not {600, 720}.issubset(starts)
+
+
+def test_drums_ghost_notes_never_writes_three_consecutive_sixteenths():
+    source = _midi_with_ghost_note_window()
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=4,
+        parameters={"density": 1.0},
+    )
+    starts = {note[3] for note in _new_note_tuples(source, result)}
+
+    assert not any(
+        {start, start + 120, start + 240}.issubset(starts)
+        for start in starts
+    )
+
+
+def test_drums_ghost_notes_uses_requested_tool_recipe_for_note_and_velocity():
+    source = _midi_with_ghost_note_window()
+
+    applied = apply_technique_with_warnings(
+        "drums.ghost_notes",
+        source,
+        seed=5,
+        parameters={"density": 1.0},
+        tool="superior_drummer",
+        index=_technique_index(
+            "drums.ghost_notes",
+            {
+                "generic": {"notes": [38], "velocity": [20, 45]},
+                "superior_drummer": {"notes": [40], "velocity": [30, 31]},
+            },
+        ),
+    )
+    ghosts = _new_note_tuples(source, applied.result)
+
+    assert applied.warnings == ()
+    assert ghosts
+    assert {note[2] for note in ghosts} == {40}
+    assert {note[5] for note in ghosts} <= {30, 31}
+
+
+def test_drums_ghost_notes_falls_back_to_generic_recipe_with_warning():
+    source = _midi_with_ghost_note_window()
+
+    applied = apply_technique_with_warnings(
+        "drums.ghost_notes",
+        source,
+        seed=6,
+        parameters={"density": 1.0},
+        tool="maschine",
+        index=_technique_index(
+            "drums.ghost_notes",
+            {"generic": {"notes": [38], "velocity": [20, 45]}},
+        ),
+    )
+
+    assert applied.warnings[0]["code"] == "W_NO_TOOL_RECIPE"
+    assert {note[2] for note in _new_note_tuples(source, applied.result)} == {38}
+
+
+def test_drums_ghost_notes_marks_added_notes_as_ornamental_by_derivation():
+    source = _midi_with_ghost_note_window()
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=7,
+        parameters={"density": 1.0},
+    )
+    ornaments = tuple(
+        ExpectedNote(
+            signature=NoteSignature(
+                track_index=track_index,
+                channel=channel,
+                pitch=pitch,
+                start_tick=start,
+                end_tick=end,
+            ),
+            origin="technique",
+            velocity=velocity,
+            track_name="Drums",
+        )
+        for track_index, channel, pitch, start, end, velocity
+        in _new_note_tuples(source, result)
+    )
+
+    classified = derive_note_classification(
+        result,
+        source_mid=source,
+        technique_notes=ornaments,
+    )
+
+    assert ornaments
+    assert [
+        (note.origin, note.role)
+        for note in classified
+        if note.origin == "technique"
+    ] == [("technique", "ornamental")] * len(ornaments)
+
+
+def test_drums_ghost_notes_preserves_structural_pitch_and_position():
+    source = _midi_with_ghost_note_window()
+    before = _note_tuples(source)
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=8,
+        parameters={"density": 1.0},
+    )
+
+    assert all(note in _note_tuples(result) for note in before)
+    assert len(_new_note_tuples(source, result)) > 0
+
+
+def test_drums_ghost_notes_placement_depends_on_seed_deterministically():
+    source = _midi_with_ghost_note_window()
+
+    same_a = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=9,
+        parameters={"density": 0.5},
+    )
+    same_b = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=9,
+        parameters={"density": 0.5},
+    )
+    different = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=10,
+        parameters={"density": 0.5},
+    )
+
+    assert _midi_bytes(same_a) == _midi_bytes(same_b)
+    assert {note[3] for note in _new_note_tuples(source, same_a)} != {
+        note[3] for note in _new_note_tuples(source, different)
+    }
+
+
+def test_drums_ghost_notes_is_idempotent():
+    source = _midi_with_ghost_note_window()
+    once = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=11,
+        parameters={"density": 1.0},
+    )
+    once_bytes = _midi_bytes(once)
+
+    twice = apply_technique(
+        "drums.ghost_notes",
+        once,
+        seed=11,
+        parameters={"density": 1.0},
+    )
+
+    assert _midi_bytes(twice) == once_bytes
+
+
+def test_drums_ghost_notes_skips_physically_impossible_third_hand():
+    source = _midi_with_ghost_note_window(extra_notes=[
+        (720, 840, 42, 90),
+        (720, 840, 48, 90),
+    ])
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        source,
+        seed=12,
+        parameters={"density": 1.0},
+    )
+
+    assert 720 not in {note[3] for note in _new_note_tuples(source, result)}
+
+
 def test_apply_uses_requested_tool_recipe_without_warning():
     registry = TechniqueRegistry()
 
@@ -849,12 +1074,12 @@ def test_apply_fails_without_target_or_generic_recipe_before_calling_function():
 def test_apply_technique_with_warnings_rejects_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError):
         apply_technique_with_warnings(
-            "drums.ghost_notes",
+            "drums.flam",
             {"ok": True},
             seed=1,
             tool="maschine",
             index=_technique_index(
-                "drums.ghost_notes",
+                "drums.flam",
                 {"generic": {"notes": [38]}},
             ),
         )
@@ -1535,6 +1760,33 @@ def _accent_hierarchy_targets() -> dict[str, int]:
         "soft": min(target("soft"), hard_ceiling),
         "ghost": min(target("ghost"), hard_ceiling),
     }
+
+
+def _midi_with_ghost_note_window(
+    *,
+    extra_notes: list[tuple[int, int, int, int]] | None = None,
+) -> mido.MidiFile:
+    notes = [
+        (480, 600, 38, 108),
+        (1440, 1560, 38, 108),
+    ]
+    if extra_notes:
+        notes.extend(extra_notes)
+    return _midi_with_notes("Drums", 9, notes)
+
+
+def _new_note_tuples(
+    before: mido.MidiFile,
+    after: mido.MidiFile,
+) -> list[tuple[int, int, int, int, int, int]]:
+    remaining = _note_tuples(before)
+    new_notes: list[tuple[int, int, int, int, int, int]] = []
+    for note in _note_tuples(after):
+        if note in remaining:
+            remaining.remove(note)
+            continue
+        new_notes.append(note)
+    return new_notes
 
 
 def _note_tuples(mid: mido.MidiFile) -> list[tuple[int, int, int, int, int, int]]:

@@ -466,9 +466,9 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
     {"name": "timing_offset_ms_urgent",   "range": [-5, -2], "source": "Sample Focus"}
   ],
   "tools": {
-    "generic": {"notes": [38]},
-    "superior_drummer": {"notes": [38], "note": "use a nota central de caixa; velocity <45 vira ghost automaticamente"},
-    "addictive_drums": {"notes": [38, 40], "note": "alterne entre 38 e 40 (Snare Open dbl) para nao roubar voz entre ghosts consecutivas"}
+    "generic": {"notes": [38], "velocity": [20, 45]},
+    "superior_drummer": {"notes": [38], "velocity": [20, 45], "note": "use a nota central de caixa; velocity <45 vira ghost automaticamente"},
+    "addictive_drums": {"notes": [38, 40], "velocity": [20, 45], "note": "alterne entre 38 e 40 (Snare Open dbl) para nao roubar voz entre ghosts consecutivas"}
   }
 }
 ```

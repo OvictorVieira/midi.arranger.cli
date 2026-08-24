@@ -1059,6 +1059,236 @@ def _apply_drums_accent_hierarchy(
     return mid
 
 
+@register_technique("drums.ghost_notes", "technique")
+def _apply_drums_ghost_notes(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
+
+    notes = recipe.get("notes")
+    if (
+        not isinstance(notes, list)
+        or not notes
+        or not all(isinstance(note, int) for note in notes)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar notes na receita"
+        )
+
+    velocity_range = recipe.get("velocity")
+    if velocity_range is None:
+        params = {param.name: param for param in technique.parameters}
+        velocity_param = params.get("velocity")
+        velocity_range = None if velocity_param is None else velocity_param.range
+    if (
+        not isinstance(velocity_range, (list, tuple))
+        or len(velocity_range) != 2
+        or not all(isinstance(value, (int, float)) for value in velocity_range)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar velocity [min, max]"
+        )
+    velocity_lo = int(velocity_range[0])
+    velocity_hi = int(velocity_range[1])
+    snare_notes = {
+        note
+        for tool_recipe in technique.tools.values()
+        for note in tool_recipe.get("notes", [])
+        if isinstance(note, int)
+    }
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    sixteenth = max(1, ticks_per_beat // 4)
+    gate = max(1, sixteenth // 2)
+    rng = context.rng("positions")
+    velocity_rng = context.rng("velocity")
+    density = context.parameters.get("density")
+
+    def read_notes(track_index, track):
+        tick = 0
+        pending = {}
+        out = []
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append((
+                    tick,
+                    msg.velocity,
+                ))
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity = stack.pop(0)
+                out.append({
+                    "track_index": track_index,
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": start_tick,
+                    "end": tick,
+                    "velocity": velocity,
+                })
+        return out
+
+    def simultaneous_count_at(existing, channel, tick):
+        return sum(
+            1
+            for note in existing
+            if note["channel"] == channel
+            and note["start"] == tick
+        )
+
+    def note_exists(existing, channel, pitch, tick):
+        return any(
+            note["channel"] == channel
+            and note["pitch"] == pitch
+            and note["start"] == tick
+            for note in existing
+        )
+
+    def target_count(size):
+        if size <= 0:
+            return 0
+        if isinstance(density, (int, float)):
+            return max(1, min(size, int(round(size * float(density)))))
+        return min(2, size)
+
+    def violates_position_rules(candidate, selected, interval_counts):
+        tick = candidate["tick"]
+        interval_start = candidate["interval_start"]
+        selected_ticks = {item["tick"] for item in selected}
+        if interval_counts.get(interval_start, 0) >= 2:
+            return True
+        if (
+            tick == interval_start + sixteenth
+            and interval_start + 2 * sixteenth in selected_ticks
+        ):
+            return True
+        if (
+            tick == interval_start + 2 * sixteenth
+            and interval_start + sixteenth in selected_ticks
+        ):
+            return True
+        triples = (
+            (tick - 2 * sixteenth, tick - sixteenth),
+            (tick - sixteenth, tick + sixteenth),
+            (tick + sixteenth, tick + 2 * sixteenth),
+        )
+        return any(a in selected_ticks and b in selected_ticks for a, b in triples)
+
+    def select_candidates(candidates):
+        shuffled = list(candidates)
+        rng.shuffle(shuffled)
+        selected = []
+        interval_counts = {}
+        wanted = target_count(len(shuffled))
+        for candidate in shuffled:
+            if violates_position_rules(candidate, selected, interval_counts):
+                continue
+            selected.append(candidate)
+            interval_start = candidate["interval_start"]
+            interval_counts[interval_start] = interval_counts.get(interval_start, 0) + 1
+            if len(selected) >= wanted:
+                break
+        return sorted(selected, key=lambda item: item["tick"])
+
+    def insert_note(track, channel, pitch, velocity, start_tick, end_tick):
+        absolute = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, order, msg))
+            order += 1
+        absolute.append((
+            start_tick,
+            order,
+            _mido.Message(
+                "note_on",
+                channel=channel,
+                note=pitch,
+                velocity=velocity,
+            ),
+        ))
+        absolute.append((
+            end_tick,
+            order + 1,
+            _mido.Message("note_off", channel=channel, note=pitch, velocity=0),
+        ))
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    for track_index, track in enumerate(mid.tracks):
+        existing = read_notes(track_index, track)
+        backbeats = sorted({
+            note["start"]
+            for note in existing
+            if note["channel"] == 9
+            and note["pitch"] in snare_notes
+            and note["velocity"] > velocity_hi
+        })
+        if len(backbeats) < 2:
+            continue
+
+        candidates = []
+        for current, following in zip(backbeats, backbeats[1:], strict=False):
+            tick = current + sixteenth
+            while tick < following:
+                if tick != following - sixteenth:
+                    channel = 9
+                    pitch = int(notes[len(candidates) % len(notes)])
+                    if note_exists(
+                        existing,
+                        channel,
+                        pitch,
+                        tick,
+                    ) or simultaneous_count_at(existing, channel, tick) < 2:
+                        candidates.append({
+                            "tick": tick,
+                            "interval_start": current,
+                            "channel": channel,
+                            "pitch": pitch,
+                        })
+                tick += sixteenth
+
+        for candidate in select_candidates(candidates):
+            velocity = velocity_rng.randint(velocity_lo, velocity_hi)
+            insert_note(
+                track,
+                channel=candidate["channel"],
+                pitch=candidate["pitch"],
+                velocity=velocity,
+                start_tick=candidate["tick"],
+                end_tick=candidate["tick"] + gate,
+            )
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
