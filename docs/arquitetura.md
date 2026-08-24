@@ -116,6 +116,20 @@ O bloco é estruturalmente anticópia: chaves ou formas que carreguem notas, tem
 frases, melodias, motivos ou sequências musicais são erro. Quando um parâmetro casa com uma técnica
 citada e o manual declara `range`, valor fora da faixa é erro, nunca clamp silencioso.
 
+No render, `style.<familia>.techniques[]` é aplicado pelo motor determinístico de
+`tools/techniques/engine.py` nas tracks que o próprio render acabou de gerar para aquela família.
+As tracks copiadas do MIDI de origem não entram nesse alvo; elas só mudam quando declaradas em
+`plan.edits`. O motor tem dois níveis com contratos centrais: `humanize` pode alterar timing,
+velocity e duração sem mudar contagem, pitches ou ordem de notas; `technique` pode acrescentar
+ornamentos, CC e pitch bend, mas preserva pitch e posição das notas estruturais. Nota estrutural é o
+material de entrada ou de gerador; nota ornamental é a nota adicionada pela técnica.
+
+A idempotência também fica no despacho central: ao reaplicar uma técnica, ornamentos com a mesma
+assinatura de track/canal/pitch/início/fim já presentes são descartados antes da validação do
+contrato. Depois que as técnicas rodam, o render reconstrói as notas renderizadas a partir do MIDI
+final dessas tracks, para que harmonia, placement, artificialidade e persona validem também os
+ornamentos.
+
 Exemplo mínimo válido:
 
 ```json

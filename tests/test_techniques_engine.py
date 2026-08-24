@@ -128,6 +128,21 @@ def test_registration_requires_explicit_context_parameter():
         registry.register("drums.microtiming", "humanize")(lambda payload: payload)
 
 
+def test_registration_rejects_context_var_keyword_only():
+    registry = TechniqueRegistry()
+
+    def apply(**context):
+        return context
+
+    with pytest.raises(TechniqueRegistrationError, match="aceitar keyword"):
+        registry.register("drums.microtiming", "humanize")(apply)
+
+
+def test_technique_context_rejects_non_integer_seed():
+    with pytest.raises(TechniqueRegistrationError, match="seed"):
+        TechniqueContext(seed="1", canonical="drums.ghost_notes")  # type: ignore[arg-type]
+
+
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
@@ -142,6 +157,69 @@ def test_global_dispatch_uses_registered_implementation():
     payload = {"notes": [38]}
 
     assert apply_technique("drums.ghost_notes", payload, seed=1) is payload
+
+
+def test_technique_level_accepts_non_midi_subject_without_snapshot():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        subject,
+        *,
+        context: TechniqueContext,
+    ):
+        _ = context
+        return {"wrapped": subject}
+
+    payload = object()
+
+    assert registry.apply("drums.ghost_notes", payload, seed=1) == {"wrapped": payload}
+
+
+def test_humanize_returning_non_midi_still_validates_original_midi():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ):
+        _ = (mid, context)
+        return "ok"
+
+    assert registry.apply(
+        "drums.microtiming",
+        _midi_with_two_notes(),
+        seed=1,
+    ) == "ok"
+
+
+def test_technique_dispatch_replaces_midi_keyword_argument():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        *,
+        midi: mido.MidiFile,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            midi.tracks[1],
+            channel=9,
+            note=38,
+            velocity=32,
+            start_tick=240,
+            end_tick=300,
+        )
+        return midi
+
+    source = _midi_with_two_notes()
+    result = registry.apply("drums.ghost_notes", midi=source, seed=1)
+
+    assert result is not source
+    assert len(_note_tuples(result)) == len(_note_tuples(source)) + 1
 
 
 def test_registered_techniques_do_not_capture_global_or_nonlocal_state():
@@ -705,6 +783,37 @@ def test_physical_drums_accepts_two_hands_and_two_feet_at_same_tick():
     ]
 
 
+def test_physical_drums_rejects_third_simultaneous_foot():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=9,
+            note=44,
+            velocity=70,
+            start_tick=0,
+            end_tick=120,
+        )
+        return mid
+
+    with pytest.raises(TechniquePhysicalError, match="3 pes"):
+        registry.apply(
+            "drums.ghost_notes",
+            _midi_with_notes("Drums", 9, [
+                (0, 240, 35, 100),
+                (0, 240, 36, 100),
+            ]),
+            seed=1,
+        )
+
+
 def test_physical_bass_rejects_overlap_on_same_string():
     registry = TechniqueRegistry()
 
@@ -787,6 +896,94 @@ def test_physical_bass_accepts_distinct_open_strings():
         (1, 0, 28, 0, 480, 96),
         (1, 0, 33, 120, 180, 32),
     ]
+
+
+def test_physical_bass_rejects_unknown_tuning_name():
+    registry = TechniqueRegistry()
+
+    @registry.register("bass.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=0,
+            note=40,
+            velocity=32,
+            start_tick=0,
+            end_tick=120,
+        )
+        return mid
+
+    with pytest.raises(TechniquePhysicalError, match="nao e conhecida"):
+        registry.apply(
+            "bass.ghost_notes",
+            _midi_with_notes("Bass", 0, []),
+            seed=1,
+            parameters={"tuning": "misteriosa"},
+        )
+
+
+def test_physical_bass_accepts_explicit_open_strings():
+    registry = TechniqueRegistry()
+
+    @registry.register("bass.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=0,
+            note=35,
+            velocity=32,
+            start_tick=0,
+            end_tick=120,
+        )
+        return mid
+
+    result = registry.apply(
+        "bass.ghost_notes",
+        _midi_with_notes("Bass", 0, []),
+        seed=1,
+        parameters={"open_strings": [30, 35, 40, 45], "max_fret": 12},
+    )
+
+    assert _note_tuples(result) == [(1, 0, 35, 0, 120, 32)]
+
+
+def test_physical_bass_rejects_invalid_max_fret_parameter():
+    registry = TechniqueRegistry()
+
+    @registry.register("bass.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=0,
+            note=33,
+            velocity=32,
+            start_tick=0,
+            end_tick=120,
+        )
+        return mid
+
+    with pytest.raises(TechniquePhysicalError, match="max_fret"):
+        registry.apply(
+            "bass.ghost_notes",
+            _midi_with_notes("Bass", 0, []),
+            seed=1,
+            parameters={"max_fret": 0},
+        )
 
 
 def test_physical_guitar_rejects_overlap_on_same_string():
@@ -933,6 +1130,101 @@ def test_physical_keys_accepts_single_hand_span_at_limit():
     )
 
     assert [note[2] for note in _note_tuples(result)] == [60, 73]
+
+
+def test_physical_keys_accepts_ornament_without_active_chord():
+    registry = TechniqueRegistry()
+
+    @registry.register("keys.hand_asynchrony", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=0,
+            note=72,
+            velocity=72,
+            start_tick=0,
+            end_tick=240,
+        )
+        return mid
+
+    result = registry.apply(
+        "keys.hand_asynchrony",
+        _midi_with_notes("Piano", 0, []),
+        seed=1,
+        parameters={"hand": "right"},
+    )
+
+    assert [note[2] for note in _note_tuples(result)] == [72]
+
+
+def test_physical_keys_rejects_voicing_that_does_not_fit_two_hands():
+    registry = TechniqueRegistry()
+
+    @registry.register("keys.hand_asynchrony", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=0,
+            note=90,
+            velocity=72,
+            start_tick=0,
+            end_tick=240,
+        )
+        return mid
+
+    with pytest.raises(TechniquePhysicalError, match="duas maos"):
+        registry.apply(
+            "keys.hand_asynchrony",
+            _midi_with_notes("Piano", 0, [
+                (0, 240, 40, 96),
+                (0, 240, 60, 88),
+            ]),
+            seed=1,
+            parameters={"max_hand_span": 12},
+        )
+
+
+def test_physical_keys_accepts_voicing_split_between_two_hands():
+    registry = TechniqueRegistry()
+
+    @registry.register("keys.hand_asynchrony", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=0,
+            note=76,
+            velocity=72,
+            start_tick=0,
+            end_tick=240,
+        )
+        return mid
+
+    result = registry.apply(
+        "keys.hand_asynchrony",
+        _midi_with_notes("Piano", 0, [
+            (0, 240, 40, 96),
+            (0, 240, 52, 88),
+        ]),
+        seed=1,
+        parameters={"max_hand_span": 12},
+    )
+
+    assert [note[2] for note in _note_tuples(result)] == [40, 52, 76]
 
 
 def test_every_registered_technique_exists_in_manual_index():

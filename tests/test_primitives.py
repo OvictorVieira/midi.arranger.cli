@@ -151,6 +151,23 @@ def test_bars_from_falls_back_when_no_downbeats():
     assert bars[0].start == 0.0
 
 
+def test_bars_from_extends_incomplete_downbeat_map():
+    class FakePrettyMidi:
+        def get_downbeats(self):
+            return [0.0, 2.0]
+
+        def get_end_time(self):
+            return 8.0
+
+        def estimate_tempo(self):
+            return 120.0
+
+    bars = primitives.bars_from(FakePrettyMidi())
+
+    assert [b.start for b in bars] == [0.0, 2.0, 4.0, 6.0]
+    assert bars[-1].end == 8.0
+
+
 # --- fill_bar_features ---------------------------------------------------
 
 def test_fill_bar_features_counts_kicks_snares_hats_cymbals_and_toms():
@@ -205,6 +222,22 @@ def test_fill_bar_features_resets_guitar_min_pitch_when_empty():
     assert bars[0].bass_notes == 1
 
 
+def test_fill_bar_features_assigns_late_note_to_last_bar():
+    pm = pretty_midi.PrettyMIDI(initial_tempo=120.0)
+    guitar = pretty_midi.Instrument(program=29, is_drum=False, name="Rhythm Guitar")
+    guitar.notes.append(pretty_midi.Note(velocity=90, pitch=52, start=9.0, end=9.5))
+    pm.instruments.append(guitar)
+
+    bars = [
+        primitives.Bar(idx=0, start=0.0, end=2.0),
+        primitives.Bar(idx=1, start=2.0, end=4.0),
+    ]
+    primitives.fill_bar_features(bars, pm)
+
+    assert bars[0].guitar_notes == 0
+    assert bars[1].guitar_notes == 1
+
+
 # --- label_sections ------------------------------------------------------
 
 def test_label_sections_handles_empty_input_without_raising():
@@ -248,6 +281,91 @@ def test_label_sections_enforces_minimum_section_length_of_four_bars():
         i = j
     for label, run_len in runs:
         assert run_len >= 4, f"run '{label}' com {run_len} barras violou min=4"
+
+
+def test_label_sections_marks_four_bar_breakdown_run():
+    bars = [
+        _bar(i, kicks=3, cymbals=2, guitar_notes=2, guitar_min_pitch=40)
+        for i in range(4)
+    ]
+
+    primitives.label_sections(bars)
+
+    assert {b.label for b in bars} == {"breakdown"}
+
+
+def test_label_sections_marks_four_bar_pre_run():
+    bars = [
+        _bar(0, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(1, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(2, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(3, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(4, kicks=2, guitar_notes=5, guitar_min_pitch=52),
+        _bar(5, kicks=2, guitar_notes=7, guitar_min_pitch=52),
+        _bar(6, kicks=2, guitar_notes=10, guitar_min_pitch=52),
+        _bar(7, kicks=2, guitar_notes=14, guitar_min_pitch=52),
+    ]
+
+    primitives.label_sections(bars)
+
+    assert [b.label for b in bars[:4]] == ["verse"] * 4
+    assert [b.label for b in bars[4:]] == ["pre"] * 4
+
+
+def test_label_sections_smooths_single_bar_island():
+    bars = [
+        _bar(0, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(1, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(2, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(3, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(4, kicks=2, guitar_notes=3, guitar_min_pitch=52),
+        _bar(5, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(6, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(7, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(8, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+    ]
+
+    primitives.label_sections(bars)
+
+    assert bars[4].label == "chorus"
+
+
+def test_label_sections_absorbs_short_run_into_next_when_no_previous():
+    bars = [
+        _bar(0, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(1, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(2, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(3, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(4, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(5, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+    ]
+
+    primitives.label_sections(bars)
+
+    assert [b.label for b in bars] == ["chorus"] * 6
+
+
+def test_label_sections_absorbs_short_run_into_previous_when_no_next():
+    bars = [
+        _bar(0, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(1, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(2, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(3, kicks=3, cymbals=1, guitar_notes=10, guitar_min_pitch=52),
+        _bar(4, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+        _bar(5, kicks=2, guitar_notes=2, guitar_min_pitch=52),
+    ]
+
+    primitives.label_sections(bars)
+
+    assert [b.label for b in bars] == ["chorus"] * 6
+
+
+def test_label_sections_leaves_single_short_run_without_neighbours():
+    bars = [_bar(0, kicks=2, guitar_notes=2, guitar_min_pitch=52)]
+
+    primitives.label_sections(bars)
+
+    assert bars[0].label == "verse"
 
 
 # --- chordal_bars --------------------------------------------------------

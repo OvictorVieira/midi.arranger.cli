@@ -15,17 +15,22 @@ from tools.plan import (
     FamilyStyle,
     PlanSection,
     SourceMidi,
+    StyleTechnique,
     dump,
 )
 from tools.render import (
     ElementRationale,
     RenderError,
     RenderReport,
+    _apply_style_techniques_to_tracks,
+    _canonical_style_technique,
     _element_seed,
+    _tool_target_for_element,
     format_render_report,
     render,
     sha256_of_file,
 )
+from tools.techniques import TechniqueApplyResult, UnknownTechniqueError, build_index
 
 # --- fixtures ---------------------------------------------------------------
 
@@ -340,6 +345,172 @@ def test_render_does_not_warn_for_high_or_medium_style_confidence(
     report = render(plan, tmp_path / "out.mid")
 
     assert not any("confidence" in w for w in report.warnings)
+
+
+def test_render_applies_style_techniques_to_generated_tracks(
+    tmp_path,
+    monkeypatch,
+):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "keys": FamilyStyle(
+            reference="Pianist research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/keys"],
+            confidence="high",
+            techniques=[
+                StyleTechnique(
+                    name="hand_asynchrony",
+                    density=0.4,
+                    rationale="Assincronia leve entre maos sem copiar frase.",
+                ),
+            ],
+            parameters={"sem_sinal_tipico_ms": [25, 40]},
+        ),
+    }
+    calls: list[dict] = []
+
+    def fake_apply_technique_with_warnings(
+        canonical,
+        midi,
+        *,
+        seed,
+        parameters,
+        tool,
+        index,
+    ):
+        calls.append({
+            "canonical": canonical,
+            "seed": seed,
+            "parameters": dict(parameters),
+            "tool": tool,
+            "has_index": index is not None,
+        })
+        midi.tracks[0].insert(
+            1,
+            mido.Message("note_on", channel=0, note=61, velocity=40, time=0),
+        )
+        midi.tracks[0].insert(
+            2,
+            mido.Message("note_off", channel=0, note=61, velocity=0, time=1),
+        )
+        return TechniqueApplyResult(
+            result=midi,
+            warnings=({
+                "code": "W_TEST_TECHNIQUE",
+                "message": "fake technique warning",
+                "path": "style.keys.techniques[0]",
+            },),
+        )
+
+    monkeypatch.setattr(
+        "tools.render.apply_technique_with_warnings",
+        fake_apply_technique_with_warnings,
+    )
+
+    out = tmp_path / "out.mid"
+    report = render(plan, out)
+
+    assert len(calls) == 1
+    assert calls[0]["canonical"] == "keys.hand_asynchrony"
+    assert calls[0]["tool"] == "omnisphere"
+    assert calls[0]["has_index"] is True
+    assert calls[0]["parameters"] == {
+        "sem_sinal_tipico_ms": [25, 40],
+        "density": 0.4,
+    }
+    assert calls[0]["seed"] != plan.seed
+    assert any("W_TEST_TECHNIQUE" in w for w in report.warnings)
+    assert any(issue.pitch == 61 for issue in report.harmony_issues)
+
+    src_pm = pretty_midi.PrettyMIDI(str(src))
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    for src_inst, out_inst in zip(
+        src_pm.instruments,
+        out_pm.instruments[:len(src_pm.instruments)],
+        strict=True,
+    ):
+        assert [
+            (n.pitch, n.velocity, round(n.start, 6), round(n.end, 6))
+            for n in out_inst.notes
+        ] == [
+            (n.pitch, n.velocity, round(n.start, 6), round(n.end, 6))
+            for n in src_inst.notes
+        ]
+
+
+def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    index = build_index()
+
+    tool_element = Element(
+        id="x",
+        role="pad",
+        sections=["MAIN"],
+        register=[48, 72],
+        layers=1,
+        sync_role="sustain_through",
+        articulation="sustained",
+        harmony="follow_chords",
+        instrument={"plugin": "Superior Drummer 3!", "preset": "Default"},
+        rationale="Teste de normalizacao de ferramenta.",
+    )
+    no_tool_element = Element(
+        id="x",
+        role="pad",
+        sections=["MAIN"],
+        register=[48, 72],
+        layers=1,
+        sync_role="sustain_through",
+        articulation="sustained",
+        harmony="follow_chords",
+        instrument=None,
+        rationale="Teste sem ferramenta declarada.",
+    )
+
+    assert _tool_target_for_element(tool_element) == "superior_drummer_3"
+    assert _tool_target_for_element(no_tool_element) is None
+    assert _canonical_style_technique(index, "keys", "hand_asynchrony") == (
+        "keys.hand_asynchrony"
+    )
+    with pytest.raises(RenderError, match="not available"):
+        _canonical_style_technique(index, "keys", "bass.ghost_notes")
+
+    tracks, warnings, applied = _apply_style_techniques_to_tracks(
+        [],
+        plan=plan,
+        family=None,
+        tool_target=None,
+        ticks_per_beat=480,
+        midi_type=1,
+        index=index,
+    )
+    assert (tracks, warnings, applied) == ([], [], False)
+
+
+def test_render_wraps_style_technique_engine_errors(tmp_path, monkeypatch):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "keys": FamilyStyle(
+            reference="Pianist research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/keys"],
+            confidence="high",
+            techniques=[StyleTechnique(name="hand_asynchrony")],
+            parameters={},
+        ),
+    }
+
+    def boom(*_args, **_kwargs):
+        raise UnknownTechniqueError("keys.hand_asynchrony", ("drums.ghost_notes",))
+
+    monkeypatch.setattr("tools.render.apply_technique_with_warnings", boom)
+
+    with pytest.raises(RenderError, match="style.keys.techniques"):
+        render(plan, tmp_path / "out.mid")
 
 
 # --- layers, track names, roles --------------------------------------------

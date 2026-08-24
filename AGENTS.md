@@ -63,6 +63,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `plan.validate()` continua read-only e a fachada `plan.validate` expõe a cópia em `normalized_plan`.
 - `tools.render.render()` normaliza defaults de `style` em memória antes de avisos/validadores;
   `confidence: low` e `confidence: default` viram warning de render, nunca erro.
+- `tools.render.render()` aplica `style.<familia>.techniques[]` só nas tracks recém-renderizadas da
+  família correspondente; tracks copiadas do MIDI de origem continuam mudando apenas por `plan.edits`.
 - `plan.brief_ref.sha256` deve ser calculado com `tools.brief_ref.brief_sha256()`; é o SHA-256 dos
   bytes exatos do `arrangement-brief.json`, mesmo formato de `.midiarranger/brief.sha256`.
 - Todo `plan.elements[]` deve carregar `rationale` string não vazia após `strip()`; fixtures e

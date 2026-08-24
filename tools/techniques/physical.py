@@ -14,6 +14,8 @@ from typing import Any
 
 import mido
 
+from .notes import _collect_notes
+
 
 class TechniquePhysicalError(ValueError):
     """Ornamento rejeitado por plausibilidade fisica do instrumento."""
@@ -100,41 +102,19 @@ def validate_physical_plausibility(
 
 
 def _notes_from_midi(mid: mido.MidiFile) -> tuple[_PhysicalNote, ...]:
-    pending: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    collected: list[_NoteIdentity] = []
-    for track_index, track in enumerate(mid.tracks):
-        tick = 0
-        pending.clear()
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append(
-                    (tick, msg.note)
-                )
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, pitch = stack.pop(0)
-                collected.append(_NoteIdentity(
-                    track_index=track_index,
-                    channel=msg.channel,
-                    pitch=pitch,
-                    start_tick=start_tick,
-                    end_tick=tick,
-                ))
-
-    seen: dict[_NoteIdentity, int] = {}
-    notes: list[_PhysicalNote] = []
-    for identity in collected:
-        occurrence = seen.get(identity, 0)
-        seen[identity] = occurrence + 1
-        notes.append(_PhysicalNote(identity=identity, occurrence=occurrence))
-    return tuple(notes)
+    return tuple(
+        _PhysicalNote(
+            identity=_NoteIdentity(
+                track_index=raw.track_index,
+                channel=raw.channel,
+                pitch=raw.pitch,
+                start_tick=raw.start_tick,
+                end_tick=raw.end_tick,
+            ),
+            occurrence=raw.occurrence,
+        )
+        for raw in _collect_notes(mid)
+    )
 
 
 def _new_notes(

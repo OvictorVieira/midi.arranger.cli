@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 
 import mido
@@ -62,6 +63,7 @@ from .palette.rhythmic import (
     generate_shadow,
 )
 from .plan import (
+    ROLE_STYLE_FAMILIES,
     STYLE_FAMILIES,
     ArrangementPlan,
     Element,
@@ -72,6 +74,18 @@ from .plan import (
 )
 from .plan import (
     validate as validate_plan,
+)
+from .techniques import (
+    TechniqueApplyResult,
+    TechniqueContractError,
+    TechniqueIndex,
+    TechniquePhysicalError,
+    TechniqueRecipeError,
+    UnknownTechniqueError,
+    apply_technique_with_warnings,
+)
+from .techniques import (
+    build_index as build_techniques_index,
 )
 from .tracks import name_for_element
 from .validators.artifice import ArtificeIssue, validate_artifice
@@ -266,6 +280,168 @@ def _style_confidence_warnings(plan: ArrangementPlan) -> list[str]:
     return warnings
 
 
+def _style_family_for_role(role: str) -> str | None:
+    """Mapeia role renderizavel para a familia de `style` correspondente."""
+
+    if role in STYLE_FAMILIES:
+        return role
+    return ROLE_STYLE_FAMILIES.get(role)
+
+
+def _style_technique_seed(
+    plan_seed: int,
+    family: str,
+    canonical: str,
+    tool_target: str | None,
+) -> int:
+    payload = f"{plan_seed}|style|{family}|{canonical}|{tool_target or ''}".encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+
+def _tool_target_for_element(element: Element) -> str | None:
+    """Converte `instrument.plugin` em chave de receita do manual.
+
+    Ex.: "Superior Drummer" -> "superior_drummer". Ausencia de plugin deixa
+    o motor usar `generic` sem emitir fallback artificial.
+    """
+
+    plugin = (element.instrument or {}).get("plugin")
+    if not isinstance(plugin, str) or not plugin.strip():
+        return None
+    chars: list[str] = []
+    previous_sep = False
+    for ch in plugin.strip().lower():
+        if ch.isalnum():
+            chars.append(ch)
+            previous_sep = False
+        elif not previous_sep:
+            chars.append("_")
+            previous_sep = True
+    normalized = "".join(chars).strip("_")
+    return normalized or None
+
+
+def _canonical_style_technique(
+    index: TechniqueIndex,
+    family: str,
+    name: str,
+) -> str:
+    """Resolve nome simples/canonico do plano para canonico da familia.
+
+    `plan.validate()` ja rejeitou nomes invalidos; aqui mantemos a resolucao
+    centralizada no indice para o render nao depender da forma escolhida pelo
+    agente no JSON.
+    """
+
+    for technique in index.candidates(name):
+        if technique.family == family:
+            return technique.canonical
+    raise RenderError(
+        f"style.{family}: technique {name!r} is not available for family {family!r}"
+    )
+
+
+def _style_technique_parameters(
+    style_parameters: dict[str, float | list[float]],
+    density: float | None,
+) -> dict[str, float | list[float]]:
+    parameters = dict(style_parameters)
+    if density is not None:
+        parameters["density"] = float(density)
+    return parameters
+
+
+def _format_engine_warning(warning: dict) -> str:
+    code = str(warning.get("code", "W_TECHNIQUE"))
+    message = str(warning.get("message", "")).strip()
+    path = str(warning.get("path", "")).strip()
+    suffix = f" ({path})" if path else ""
+    return f"{code}: {message}{suffix}" if message else f"{code}{suffix}"
+
+
+def _tracks_as_midi(
+    tracks: list[mido.MidiTrack],
+    *,
+    ticks_per_beat: int,
+    midi_type: int,
+) -> mido.MidiFile:
+    mid = mido.MidiFile(ticks_per_beat=ticks_per_beat, type=midi_type)
+    mid.tracks.extend(tracks)
+    return mid
+
+
+def _tempo_track_from_pretty_midi(pm: pretty_midi.PrettyMIDI) -> mido.MidiTrack:
+    track = mido.MidiTrack()
+    previous_tick = 0
+    tempo_times, tempi = pm.get_tempo_changes()
+    for time_s, bpm in zip(tempo_times, tempi, strict=True):
+        tick = int(round(pm.time_to_tick(float(time_s))))
+        track.append(mido.MetaMessage(
+            "set_tempo",
+            tempo=mido.bpm2tempo(float(bpm)),
+            time=tick - previous_tick,
+        ))
+        previous_tick = tick
+    return track
+
+
+def _apply_style_techniques_to_tracks(
+    tracks: list[mido.MidiTrack],
+    *,
+    plan: ArrangementPlan,
+    family: str | None,
+    tool_target: str | None,
+    ticks_per_beat: int,
+    midi_type: int,
+    index: TechniqueIndex | None,
+) -> tuple[list[mido.MidiTrack], list[str], bool]:
+    """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
+
+    As tracks do MIDI de origem nao entram aqui. Isso preserva a regra de que
+    source so muda quando declarado em `plan.edits`, enquanto o material novo
+    passa pelo mesmo despacho e pelos mesmos contratos do motor.
+    """
+
+    if family is None or not tracks or not plan.style:
+        return tracks, [], False
+    style = plan.style.get(family)
+    if style is None or not style.techniques:
+        return tracks, [], False
+    if index is None:
+        raise RenderError("internal error: missing techniques index for style render")
+
+    current = _tracks_as_midi(
+        tracks,
+        ticks_per_beat=ticks_per_beat,
+        midi_type=midi_type,
+    )
+    warnings: list[str] = []
+    for technique in style.techniques:
+        canonical = _canonical_style_technique(index, family, technique.name)
+        try:
+            applied: TechniqueApplyResult = apply_technique_with_warnings(
+                canonical,
+                current,
+                seed=_style_technique_seed(plan.seed, family, canonical, tool_target),
+                parameters=_style_technique_parameters(
+                    style.parameters,
+                    technique.density,
+                ),
+                tool=tool_target,
+                index=index,
+            )
+        except (
+            TechniqueContractError,
+            TechniquePhysicalError,
+            TechniqueRecipeError,
+            UnknownTechniqueError,
+        ) as exc:
+            raise RenderError(f"style.{family}.techniques: {exc}") from None
+        current = applied.result if isinstance(applied.result, mido.MidiFile) else current
+        warnings.extend(_format_engine_warning(w) for w in applied.warnings)
+    return list(current.tracks), warnings, True
+
+
 # --- conversao note -> mido -------------------------------------------------
 
 def _notes_to_track(
@@ -329,6 +505,48 @@ def _notes_to_track(
             ))
         prev_tick = tick
     return tr
+
+
+def _rendered_tracks_from_midi_tracks(
+    element: Element,
+    tracks: list[mido.MidiTrack],
+    pm: pretty_midi.PrettyMIDI,
+    *,
+    ticks_per_beat: int,
+    midi_type: int,
+) -> list[RenderedTrack]:
+    """Reconstroi notas renderizadas a partir do MIDI final do elemento.
+
+    O motor de tecnicas pode acrescentar ornamentos depois do gerador de role;
+    os validadores precisam enxergar essas notas reais, nao apenas a lista
+    original retornada pela paleta.
+    """
+
+    temp_mid = mido.MidiFile(ticks_per_beat=ticks_per_beat, type=midi_type)
+    temp_mid.tracks.append(_tempo_track_from_pretty_midi(pm))
+    temp_mid.tracks.extend(tracks)
+    payload = BytesIO()
+    temp_mid.save(file=payload)
+    payload.seek(0)
+    parsed = pretty_midi.PrettyMIDI(payload)
+
+    rendered: list[RenderedTrack] = []
+    for fallback_index, instrument in enumerate(parsed.instruments):
+        track_name = instrument.name or f"{element.id} L{fallback_index + 1}"
+        rendered.append(RenderedTrack(
+            element_id=element.id,
+            track_name=track_name,
+            notes=tuple(
+                RenderedNote(
+                    pitch=int(note.pitch),
+                    velocity=int(note.velocity),
+                    start_s=float(note.start),
+                    end_s=float(note.end),
+                )
+                for note in instrument.notes
+            ),
+        ))
+    return rendered
 
 
 def _clone_source_tracks(src: mido.MidiFile) -> list[mido.MidiTrack]:
@@ -871,6 +1089,11 @@ def render(
 
     element_reports: list[ElementRationale] = []
     rendered_tracks: list[RenderedTrack] = []
+    style_index = (
+        build_techniques_index()
+        if plan.style and any(style.techniques for style in plan.style.values())
+        else None
+    )
     for e in plan.elements:
         warnings.extend(_unsupported_pattern_warnings(e))
         layer_warning = _strings_tutti_layer_warning(e)
@@ -893,8 +1116,32 @@ def render(
             midi_tracks, rendered = role_renderer.render(
                 e, plan, analysis, pm, role_renderer.channel,
             )
+            (
+                midi_tracks,
+                technique_warnings,
+                technique_applied,
+            ) = _apply_style_techniques_to_tracks(
+                midi_tracks,
+                plan=plan,
+                family=_style_family_for_role(e.role),
+                tool_target=_tool_target_for_element(e),
+                ticks_per_beat=out_mid.ticks_per_beat,
+                midi_type=out_mid.type,
+                index=style_index,
+            )
+            warnings.extend(technique_warnings)
             out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
+            rendered_tracks.extend(
+                _rendered_tracks_from_midi_tracks(
+                    e,
+                    midi_tracks,
+                    pm,
+                    ticks_per_beat=out_mid.ticks_per_beat,
+                    midi_type=out_mid.type,
+                )
+                if technique_applied
+                else rendered
+            )
             report_entry.rendered = True
         else:
             msg = (

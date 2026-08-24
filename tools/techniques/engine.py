@@ -21,6 +21,7 @@ from typing import Any, Literal
 import mido
 
 from .index import Technique, TechniqueIndex, build_index
+from .notes import _collect_notes
 from .physical import TechniquePhysicalError, validate_physical_plausibility
 
 TechniqueLevel = Literal["humanize", "technique"]
@@ -170,10 +171,6 @@ class TechniqueRegistry:
         self,
         canonical: str,
         *args: Any,
-        seed: int,
-        parameters: Mapping[str, Any] | None = None,
-        tool: str | None = None,
-        index: TechniqueIndex | None = None,
         **kwargs: Any,
     ) -> Any:
         """Despacha por nome canonico para a funcao registrada."""
@@ -181,10 +178,6 @@ class TechniqueRegistry:
         return self.apply_with_warnings(
             canonical,
             *args,
-            seed=seed,
-            parameters=parameters,
-            tool=tool,
-            index=index,
             **kwargs,
         ).result
 
@@ -434,52 +427,28 @@ class _StructuralSnapshot:
 
     @classmethod
     def from_midi(cls, mid: mido.MidiFile) -> _StructuralSnapshot:
-        pending: dict[tuple[int, int], list[tuple[int, int]]] = {}
-        collected: list[tuple[int, int, int, int, int, int]] = []
-        for track_index, track in enumerate(mid.tracks):
-            tick = 0
-            pending.clear()
-            for msg in track:
-                tick += msg.time
-                if msg.is_meta:
-                    continue
-                if msg.type == "note_on" and msg.velocity > 0:
-                    pending.setdefault((msg.channel, msg.note), []).append(
-                        (tick, msg.velocity)
-                    )
-                elif msg.type == "note_off" or (
-                    msg.type == "note_on" and msg.velocity == 0
-                ):
-                    stack = pending.get((msg.channel, msg.note))
-                    if not stack:
-                        continue
-                    start_tick, velocity = stack.pop(0)
-                    collected.append((
-                        track_index,
-                        msg.channel,
-                        msg.note,
-                        start_tick,
-                        tick,
-                        velocity,
-                    ))
-
         seen: dict[tuple[int, int, int, int], int] = {}
         notes: dict[_StructuralKey, _StructuralNote] = {}
-        for track_index, channel, pitch, start_tick, end_tick, velocity in collected:
-            occurrence_key = (track_index, channel, pitch, start_tick)
+        for raw in _collect_notes(mid):
+            occurrence_key = (
+                raw.track_index,
+                raw.channel,
+                raw.pitch,
+                raw.start_tick,
+            )
             occurrence = seen.get(occurrence_key, 0)
             seen[occurrence_key] = occurrence + 1
             key = _StructuralKey(
-                track_index=track_index,
-                channel=channel,
-                pitch=pitch,
-                start_tick=start_tick,
+                track_index=raw.track_index,
+                channel=raw.channel,
+                pitch=raw.pitch,
+                start_tick=raw.start_tick,
                 occurrence=occurrence,
             )
             notes[key] = _StructuralNote(
                 key=key,
-                velocity=velocity,
-                end_tick=end_tick,
+                velocity=raw.velocity,
+                end_tick=raw.end_tick,
             )
         return cls(notes=notes)
 
@@ -741,10 +710,6 @@ def get_technique(canonical: str) -> RegisteredTechnique:
 def apply_technique(
     canonical: str,
     *args: Any,
-    seed: int,
-    parameters: Mapping[str, Any] | None = None,
-    tool: str | None = None,
-    index: TechniqueIndex | None = None,
     **kwargs: Any,
 ) -> Any:
     """Despacha `canonical` para sua funcao registrada."""
@@ -752,10 +717,6 @@ def apply_technique(
     return _REGISTRY.apply(
         canonical,
         *args,
-        seed=seed,
-        parameters=parameters,
-        tool=tool,
-        index=index,
         **kwargs,
     )
 
@@ -763,10 +724,6 @@ def apply_technique(
 def apply_technique_with_warnings(
     canonical: str,
     *args: Any,
-    seed: int,
-    parameters: Mapping[str, Any] | None = None,
-    tool: str | None = None,
-    index: TechniqueIndex | None = None,
     **kwargs: Any,
 ) -> TechniqueApplyResult:
     """Despacha `canonical` e devolve resultado com warnings do motor."""
@@ -774,10 +731,6 @@ def apply_technique_with_warnings(
     return _REGISTRY.apply_with_warnings(
         canonical,
         *args,
-        seed=seed,
-        parameters=parameters,
-        tool=tool,
-        index=index,
         **kwargs,
     )
 
