@@ -38,6 +38,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - O contrato do nível `technique` também é checado em `TechniqueRegistry.apply`: pode acrescentar
   ornamentos, CC e pitch bend, mas pitch e posição das notas estruturais são intocáveis; velocity e
   duração estrutural só mudam com flags explícitas no registro da técnica.
+- A idempotência de ornamentos do nível `technique` também fica em `TechniqueRegistry.apply`: ao
+  reaplicar, nota extra com a mesma assinatura exata já existente (track/canal/pitch/início/fim) é
+  descartada antes da validação do contrato.
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
 - Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em

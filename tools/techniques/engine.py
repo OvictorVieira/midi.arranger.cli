@@ -126,6 +126,7 @@ class TechniqueRegistry:
             )
         if before_technique is not None:
             after_mid = _result_midi(result) or before_technique.midi
+            _drop_reapplied_notes(before_technique.snapshot, after_mid)
             after = _StructuralSnapshot.from_midi(after_mid)
             _validate_technique_contract(
                 technique,
@@ -216,6 +217,23 @@ class _StructuralNote:
     end_tick: int
 
 
+@dataclass(frozen=True, order=True)
+class _NoteIdentity:
+    track_index: int
+    channel: int
+    pitch: int
+    start_tick: int
+    end_tick: int
+
+
+@dataclass(frozen=True)
+class _IndexedNote:
+    identity: _NoteIdentity
+    occurrence: int
+    note_on_index: int
+    note_off_index: int
+
+
 @dataclass(frozen=True)
 class _StructuralSnapshot:
     notes: dict[_StructuralKey, _StructuralNote]
@@ -270,6 +288,19 @@ class _StructuralSnapshot:
                 end_tick=end_tick,
             )
         return cls(notes=notes)
+
+    def identity_counts(self) -> dict[_NoteIdentity, int]:
+        counts: dict[_NoteIdentity, int] = {}
+        for note in self.notes.values():
+            identity = _NoteIdentity(
+                track_index=note.key.track_index,
+                channel=note.key.channel,
+                pitch=note.key.pitch,
+                start_tick=note.key.start_tick,
+                end_tick=note.end_tick,
+            )
+            counts[identity] = counts.get(identity, 0) + 1
+        return counts
 
 
 def _humanize_snapshot(
@@ -365,6 +396,100 @@ def _validate_technique_contract(
                 f"contrato technique violado por {technique.canonical}: "
                 "duracao de nota estrutural mudou sem permissao declarada"
             )
+
+
+def _drop_reapplied_notes(
+    before: _StructuralSnapshot,
+    mid: mido.MidiFile,
+) -> None:
+    """Remove notas extras que uma reaplicacao tentou empilhar.
+
+    A classificacao ornamental e derivada, nao persistida no MIDI. Para manter
+    idempotencia tambem depois de salvar/recarregar, o despacho descarta notas
+    acrescentadas pela aplicacao atual quando a mesma assinatura em ticks ja
+    existia antes dela.
+    """
+
+    before_counts = before.identity_counts()
+    if not before_counts:
+        return
+
+    for track_index, track in enumerate(mid.tracks):
+        remove_indices: set[int] = set()
+        for note in _indexed_notes(track_index, track):
+            before_count = before_counts.get(note.identity, 0)
+            if before_count and note.occurrence >= before_count:
+                remove_indices.add(note.note_on_index)
+                remove_indices.add(note.note_off_index)
+        if remove_indices:
+            _remove_track_messages(track, remove_indices)
+
+
+def _indexed_notes(
+    track_index: int,
+    track: mido.MidiTrack,
+) -> tuple[_IndexedNote, ...]:
+    pending: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    collected: list[tuple[_NoteIdentity, int, int]] = []
+    tick = 0
+    for msg_index, msg in enumerate(track):
+        tick += msg.time
+        if msg.is_meta:
+            continue
+        if msg.type == "note_on" and msg.velocity > 0:
+            pending.setdefault((msg.channel, msg.note), []).append((tick, msg_index))
+        elif msg.type == "note_off" or (
+            msg.type == "note_on" and msg.velocity == 0
+        ):
+            stack = pending.get((msg.channel, msg.note))
+            if not stack:
+                continue
+            start_tick, note_on_index = stack.pop(0)
+            collected.append((
+                _NoteIdentity(
+                    track_index=track_index,
+                    channel=msg.channel,
+                    pitch=msg.note,
+                    start_tick=start_tick,
+                    end_tick=tick,
+                ),
+                note_on_index,
+                msg_index,
+            ))
+
+    seen: dict[_NoteIdentity, int] = {}
+    indexed: list[_IndexedNote] = []
+    for identity, note_on_index, note_off_index in collected:
+        occurrence = seen.get(identity, 0)
+        seen[identity] = occurrence + 1
+        indexed.append(_IndexedNote(
+            identity=identity,
+            occurrence=occurrence,
+            note_on_index=note_on_index,
+            note_off_index=note_off_index,
+        ))
+    return tuple(indexed)
+
+
+def _remove_track_messages(
+    track: mido.MidiTrack,
+    remove_indices: set[int],
+) -> None:
+    absolute: list[tuple[int, mido.Message | mido.MetaMessage]] = []
+    tick = 0
+    for msg in track:
+        tick += msg.time
+        absolute.append((tick, msg))
+
+    rebuilt = mido.MidiTrack()
+    previous_tick = 0
+    for index, (absolute_tick, msg) in enumerate(absolute):
+        if index in remove_indices:
+            continue
+        rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+        previous_tick = absolute_tick
+
+    track[:] = rebuilt
 
 
 _REGISTRY = TechniqueRegistry()

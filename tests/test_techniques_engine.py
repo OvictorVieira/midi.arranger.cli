@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import mido
@@ -273,6 +274,37 @@ def test_technique_can_declare_structural_velocity_and_duration_changes():
     assert result.tracks[1][2].time == 300
 
 
+def test_technique_application_is_idempotent_in_memory_byte_for_byte():
+    registry = _ornament_registry()
+    once = _apply_two_ornament_techniques(registry, _midi_with_drums_and_bass())
+    once_bytes = _midi_bytes(once)
+
+    twice = _apply_two_ornament_techniques(registry, once)
+
+    assert _midi_bytes(twice) == once_bytes
+    assert _note_tuples(twice) == [
+        (1, 9, 38, 120, 180, 32),
+        (1, 9, 60, 0, 480, 96),
+        (2, 0, 35, 240, 300, 28),
+        (2, 0, 40, 0, 480, 96),
+    ]
+
+
+def test_technique_application_is_idempotent_after_saved_round_trip(
+    tmp_path: Path,
+):
+    registry = _ornament_registry()
+    once = _apply_two_ornament_techniques(registry, _midi_with_drums_and_bass())
+    once_path = tmp_path / "once.mid"
+    once.save(once_path)
+
+    reloaded = mido.MidiFile(once_path)
+    twice = _apply_two_ornament_techniques(registry, reloaded)
+
+    assert _midi_bytes(twice) == once_path.read_bytes()
+    assert _note_tuples(twice) == _note_tuples(once)
+
+
 def test_every_registered_technique_exists_in_manual_index():
     idx = build_index(MANUALS_DIR)
 
@@ -312,6 +344,81 @@ def _note_tuples(mid: mido.MidiFile) -> list[tuple[int, int, int, int, int, int]
     return notes
 
 
+def _ornament_registry() -> TechniqueRegistry:
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply_drums(mid: mido.MidiFile) -> mido.MidiFile:
+        _insert_note(
+            mid.tracks[1],
+            channel=9,
+            note=38,
+            velocity=32,
+            start_tick=120,
+            end_tick=180,
+        )
+        return mid
+
+    @registry.register("bass.ghost_notes", "technique")
+    def apply_bass(mid: mido.MidiFile) -> mido.MidiFile:
+        _insert_note(
+            mid.tracks[2],
+            channel=0,
+            note=35,
+            velocity=28,
+            start_tick=240,
+            end_tick=300,
+        )
+        return mid
+
+    return registry
+
+
+def _apply_two_ornament_techniques(
+    registry: TechniqueRegistry,
+    mid: mido.MidiFile,
+) -> mido.MidiFile:
+    mid = registry.apply("drums.ghost_notes", mid)
+    return registry.apply("bass.ghost_notes", mid)
+
+
+def _insert_note(
+    track: mido.MidiTrack,
+    *,
+    channel: int,
+    note: int,
+    velocity: int,
+    start_tick: int,
+    end_tick: int,
+) -> None:
+    absolute: list[tuple[int, mido.Message | mido.MetaMessage]] = []
+    tick = 0
+    for msg in track:
+        tick += msg.time
+        absolute.append((tick, msg))
+    absolute.append((
+        start_tick,
+        mido.Message("note_on", channel=channel, note=note, velocity=velocity),
+    ))
+    absolute.append((
+        end_tick,
+        mido.Message("note_off", channel=channel, note=note, velocity=0),
+    ))
+
+    rebuilt = mido.MidiTrack()
+    previous_tick = 0
+    for absolute_tick, msg in sorted(absolute, key=lambda item: item[0]):
+        rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+        previous_tick = absolute_tick
+    track[:] = rebuilt
+
+
+def _midi_bytes(mid: mido.MidiFile) -> bytes:
+    buffer = BytesIO()
+    mid.save(file=buffer)
+    return buffer.getvalue()
+
+
 def _midi_with_single_note() -> mido.MidiFile:
     mid = mido.MidiFile(ticks_per_beat=480)
     meta = mido.MidiTrack()
@@ -325,6 +432,33 @@ def _midi_with_single_note() -> mido.MidiFile:
         "note_off", channel=0, note=40, velocity=0, time=480
     ))
     mid.tracks.extend([meta, track])
+    return mid
+
+
+def _midi_with_drums_and_bass() -> mido.MidiFile:
+    mid = mido.MidiFile(ticks_per_beat=480)
+    meta = mido.MidiTrack()
+    meta.append(mido.MetaMessage("track_name", name="Meta", time=0))
+
+    drums = mido.MidiTrack()
+    drums.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    drums.append(mido.Message(
+        "note_on", channel=9, note=60, velocity=96, time=0
+    ))
+    drums.append(mido.Message(
+        "note_off", channel=9, note=60, velocity=0, time=480
+    ))
+
+    bass = mido.MidiTrack()
+    bass.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    bass.append(mido.Message(
+        "note_on", channel=0, note=40, velocity=96, time=0
+    ))
+    bass.append(mido.Message(
+        "note_off", channel=0, note=40, velocity=0, time=480
+    ))
+
+    mid.tracks.extend([meta, drums, bass])
     return mid
 
 
