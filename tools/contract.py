@@ -524,6 +524,21 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     else None
                 ),
                 "confidence": ti.confidence,
+                "string_concentrations": [
+                    {
+                        "string_index": int(s.string_index),
+                        "channel": int(s.channel),
+                        "pitch_min": int(s.pitch_min),
+                        "note_count": int(s.note_count),
+                        "percentage": float(s.percentage),
+                    }
+                    for s in ti.string_concentrations
+                ],
+                "low_strings_top3_percentage": (
+                    float(ti.low_strings_top3_percentage)
+                    if ti.low_strings_top3_percentage is not None
+                    else None
+                ),
             }
             for ti in a.tuning_inference
         ],
@@ -768,6 +783,29 @@ ANALYZE_TOOL = Tool(
                             tuning_mod.TUNING_CONFIDENCE_LOW,
                             tuning_mod.TUNING_CONFIDENCE_UNKNOWN,
                         ]},
+                        "string_concentrations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "string_index": {"type": "integer", "minimum": 0},
+                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+                                    "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
+                                    "note_count": {"type": "integer", "minimum": 1},
+                                    "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+                                },
+                                "required": [
+                                    "string_index", "channel", "pitch_min",
+                                    "note_count", "percentage",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "low_strings_top3_percentage": {
+                            "type": ["number", "null"],
+                            "minimum": 0,
+                            "maximum": 100,
+                        },
                     },
                     "required": [
                         "track_index", "track_name", "is_stringed",
@@ -775,6 +813,7 @@ ANALYZE_TOOL = Tool(
                         "candidate_channels", "discarded_channels",
                         "tuning_intervals", "tuning_class", "tuning_name",
                         "lowest_string_pitch", "confidence",
+                        "string_concentrations", "low_strings_top3_percentage",
                     ],
                     "additionalProperties": False,
                 },

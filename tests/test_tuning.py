@@ -569,6 +569,106 @@ def test_confidence_vocabulary_is_closed():
     assert tuning.TUNING_CONFIDENCE_UNKNOWN == "unknown"
 
 
+# ---------------------------------------------------------------------------
+# US-005 — concentracao de notas por corda (onde o riff mora)
+# ---------------------------------------------------------------------------
+
+
+def test_rhythm_guitar_top3_low_strings_concentrates_about_94_percent():
+    """Fixture A da issue #35 — guitarra ritmica com 5 canais em MIDI
+    32/39/44/52/55 e cerca de 28/37/29/3/3 % das notas. Os dois canais das
+    cordas agudas caem por TRAVA 2 (< 8 notas), sobrando 3 candidatos que
+    concentram ~94% do total. E ai que o riff mora."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "rhythm_guitar.mid")
+        notes = (
+            _rep(0, 32, 28)
+            + _rep(1, 39, 37)
+            + _rep(2, 44, 29)
+            + _rep(3, 52, 3)
+            + _rep(4, 55, 3)
+        )
+        _write_midi_full(p, [{"name": "Guitar", "program": 30, "notes": notes}])
+        ti = tuning.tuning_inference(p)[0]
+
+        # Cordas agudas caem por TRAVA 2 (contagem < 8).
+        assert {c.channel for c in ti.candidate_channels} == {0, 1, 2}
+        assert {d.reason for d in ti.discarded_channels} == {
+            tuning.DISCARD_LOW_NOTE_COUNT,
+        }
+
+        # Concentracao por corda, na ordem grave -> agudo (indexada por
+        # string_index).
+        cons = ti.string_concentrations
+        assert [s.string_index for s in cons] == [0, 1, 2]
+        assert [s.pitch_min for s in cons] == [32, 39, 44]
+        assert [s.channel for s in cons] == [0, 1, 2]
+
+        # 28% + 37% + 29% = 94% do total da track (denominador = 100 notas).
+        assert abs(cons[0].percentage - 28.0) < 1e-6
+        assert abs(cons[1].percentage - 37.0) < 1e-6
+        assert abs(cons[2].percentage - 29.0) < 1e-6
+        assert abs(ti.low_strings_top3_percentage - 94.0) < 1e-6
+
+        # Corda mais grave usada de fato: MIDI 32 (G#1).
+        assert ti.lowest_string_pitch == 32
+
+
+def test_bass_concentrates_about_91_5_percent_on_lowest_string():
+    """Fixture B da issue #35 — baixo com cerca de 91,5% das notas em uma
+    unica corda aberta (MIDI 21, A0). A concentracao aparece no primeiro
+    `string_concentrations` e a corda mais grave usada e MIDI 21."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "bass_riff.mid")
+        # 183 + 10 + 7 = 200 total; canal 2 (7 notas) cai por TRAVA 2.
+        notes = _rep(0, 21, 183) + _rep(1, 28, 10) + _rep(2, 33, 7)
+        _write_midi_full(p, [{"name": "Bass", "program": 33, "notes": notes}])
+        ti = tuning.tuning_inference(p)[0]
+
+        assert {c.channel for c in ti.candidate_channels} == {0, 1}
+        assert ti.lowest_string_pitch == 21
+
+        cons = ti.string_concentrations
+        assert len(cons) == 2
+        assert cons[0].string_index == 0
+        assert cons[0].pitch_min == 21
+        # 183/200 = 91,5%.
+        assert abs(cons[0].percentage - 91.5) < 1e-6
+        # top3 com so 2 candidatos = soma dos dois (sem inflar com None).
+        expected_top3 = cons[0].percentage + cons[1].percentage
+        assert abs(ti.low_strings_top3_percentage - expected_top3) < 1e-6
+
+
+def test_not_stringed_track_has_no_string_concentrations():
+    """Track que nao passa TRAVA 1 nao tem concentracao por corda —
+    `string_concentrations` vazio e `low_strings_top3_percentage` None.
+    O detector nao afirma ONDE o riff mora quando nao ha corda."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "vox_conc.mid")
+        _write_midi_full(p, [{
+            "name": "Vocals", "program": 73,
+            "notes": _six_channels([60, 65, 70, 74]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.string_concentrations == ()
+        assert ti.low_strings_top3_percentage is None
+
+
+def test_string_concentration_ordered_from_lowest_to_highest():
+    """A ordem de `string_concentrations` e grave -> agudo, independente da
+    ordem dos canais MIDI. Canal 5 e o mais grave: entra em string_index=0."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "reorder.mid")
+        notes = _rep(0, 55, 10) + _rep(3, 40, 12) + _rep(5, 32, 15)
+        _write_midi_full(p, [{"name": "Guitar", "program": 30, "notes": notes}])
+        ti = tuning.tuning_inference(p)[0]
+        cons = ti.string_concentrations
+        assert [s.string_index for s in cons] == [0, 1, 2]
+        assert [s.pitch_min for s in cons] == [32, 40, 55]
+        assert [s.channel for s in cons] == [5, 3, 0]
+
+
 def test_not_stringed_track_has_unknown_class_and_no_name():
     """Track que nao passa TRAVA 1 nao classifica afinacao nem gera nome."""
     with tempfile.TemporaryDirectory() as tmp:

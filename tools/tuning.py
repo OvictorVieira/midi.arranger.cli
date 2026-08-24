@@ -17,6 +17,9 @@ Escopo:
     entre cordas adjacentes e classificar a afinacao contra o manual
     `guitar.drop_tuning` (padrao vs drop). A tabela vem do indice de tecnicas
     — NUNCA e hardcoded aqui.
+  - US-005: concentracao de notas por corda (`string_concentrations`) e
+    percentual acumulado nas tres cordas mais graves
+    (`low_strings_top3_percentage`) — e o dado que diz ONDE o riff mora.
 """
 
 from __future__ import annotations
@@ -338,6 +341,23 @@ def _tuning_name(cls: str, lowest_pitch: int | None) -> str | None:
 
 
 @dataclass(frozen=True)
+class StringNoteConcentration:
+    """US-005 — concentracao de notas de uma corda inferida.
+
+    Uma entrada por canal candidato de uma track de corda. Ordenada do
+    grave para o agudo, indexada por `string_index` (0 = corda mais grave
+    usada de fato). O `percentage` e o mesmo denominador de
+    `ChannelStats.percentage`: fracao das notas da track inteira, para o
+    numero comparar direto com o que se vive lendo o relatorio bruto.
+    """
+    string_index: int
+    channel: int
+    pitch_min: int
+    note_count: int
+    percentage: float
+
+
+@dataclass(frozen=True)
 class TrackTuningInference:
     """Resultado da TRAVA 1 + TRAVA 2 + TRAVA 3 para uma SMF track.
 
@@ -368,6 +388,14 @@ class TrackTuningInference:
       `unknown` toda vez que `tuning_class` for `unknown` — e assim que o
       detector admite nao saber. `low` quando ha padrao mas poucos canais
       candidatos; `high` quando ha padrao e amostra suficiente.
+    - `string_concentrations`: US-005. Uma entrada por canal candidato,
+      ordenada do grave para o agudo. Vazio quando a track nao passa TRAVA
+      1 ou nao tem canal candidato — nesses casos o relatorio nao afirma
+      ONDE o riff mora, porque nao sabe.
+    - `low_strings_top3_percentage`: soma dos percentuais das ate 3 cordas
+      mais graves em `string_concentrations`. `None` quando nao ha nenhuma
+      corda candidata; caso contrario e a soma das primeiras `min(3, N)`
+      entradas. E o resumo que responde "quanto do riff cai nas graves".
     """
     track_index: int
     track_name: str
@@ -382,6 +410,8 @@ class TrackTuningInference:
     tuning_name: str | None = None
     lowest_string_pitch: int | None = None
     confidence: str = TUNING_CONFIDENCE_UNKNOWN
+    string_concentrations: tuple[StringNoteConcentration, ...] = ()
+    low_strings_top3_percentage: float | None = None
 
 
 def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
@@ -524,6 +554,25 @@ def tuning_inference(
         tuning_name = _tuning_name(tuning_class, lowest_pitch)
         confidence = _classify_confidence(tuning_class, len(candidates))
 
+        # US-005 — concentracao por corda, na ordem grave -> agudo. Reusa
+        # `by_pitch` porque essa e exatamente a ordem "corda 0 = mais grave"
+        # que interessa ao arranjador; o percentual ja vem calculado sobre
+        # o total da track (denominador do relatorio bruto).
+        concentrations = tuple(
+            StringNoteConcentration(
+                string_index=i,
+                channel=c.channel,
+                pitch_min=c.pitch_min,
+                note_count=c.note_count,
+                percentage=c.percentage,
+            )
+            for i, c in enumerate(by_pitch)
+        )
+        top3 = (
+            sum(s.percentage for s in concentrations[:3])
+            if concentrations else None
+        )
+
         result.append(TrackTuningInference(
             track_index=idx,
             track_name=name,
@@ -538,6 +587,8 @@ def tuning_inference(
             tuning_name=tuning_name,
             lowest_string_pitch=lowest_pitch,
             confidence=confidence,
+            string_concentrations=concentrations,
+            low_strings_top3_percentage=top3,
         ))
 
     return result
@@ -564,6 +615,7 @@ __all__ = [
     "TUNING_CONFIDENCE_UNKNOWN",
     "ChannelStats",
     "DiscardedChannel",
+    "StringNoteConcentration",
     "TrackChannelDistribution",
     "TrackTuningInference",
     "TuningKnowledgeError",
