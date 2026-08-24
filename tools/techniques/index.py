@@ -262,11 +262,27 @@ class TechniqueIndex:
             return self.techniques
         return tuple(t for t in self.techniques if t.family == family)
 
+    def candidates(self, canonical_or_name: str) -> tuple[Technique, ...]:
+        """Todas as tecnicas que casam com `canonical` exato ou com o nome cru.
+
+        Nome cru pode casar em mais de uma familia: `ghost_notes` existe em
+        bateria e em baixo. Quem chama precisa desambiguar.
+        """
+        exact = tuple(t for t in self.techniques if t.canonical == canonical_or_name)
+        if exact:
+            return exact
+        return tuple(t for t in self.techniques if t.name == canonical_or_name)
+
     def get(self, canonical_or_name: str) -> Technique | None:
-        for t in self.techniques:
-            if t.canonical == canonical_or_name or t.name == canonical_or_name:
-                return t
-        return None
+        """Devolve a tecnica quando a resolucao e inequivoca, senao `None`.
+
+        Nome cru que casa em mais de uma familia devolve `None` DE PROPOSITO:
+        escolher uma em silencio entregaria a receita de baixo para quem pediu
+        bateria, e o MIDI sairia errado sem nenhum erro no caminho. Use
+        `candidates()` e desambigue por familia ou por ferramenta-alvo.
+        """
+        found = self.candidates(canonical_or_name)
+        return found[0] if len(found) == 1 else None
 
     def names(self) -> tuple[str, ...]:
         return tuple(t.canonical for t in self.techniques)

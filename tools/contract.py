@@ -1571,7 +1571,29 @@ def _techniques_describe_impl(
         ) from None
 
     name = payload["name"]
-    t = idx.get(name)
+    tool_target = payload.get("tool")
+
+    found = idx.candidates(name)
+    # Nome cru que existe em mais de uma familia — `ghost_notes` esta em bateria
+    # e em baixo. A ferramenta-alvo desambigua quando so uma das familias tem
+    # receita para ela. Sem isso, ERRO com os candidatos: escolher em silencio
+    # entregaria a receita da familia errada.
+    if len(found) > 1 and tool_target:
+        narrowed = tuple(t for t in found if tool_target in t.tools)
+        if len(narrowed) == 1:
+            found = narrowed
+    if len(found) > 1:
+        raise ToolError(
+            "E_TECHNIQUE_AMBIGUOUS",
+            f"tecnica {name!r} existe em mais de uma familia",
+            path="name",
+            hint=(
+                "informe o nome canonico ou uma ferramenta-alvo que resolva: "
+                f"{[t.canonical for t in found]}"
+            ),
+        )
+
+    t = found[0] if found else None
     if t is None:
         candidates = list(idx.names()) + [tt.name for tt in idx.techniques]
         matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
@@ -1586,7 +1608,6 @@ def _techniques_describe_impl(
             ),
         )
 
-    tool_target = payload.get("tool")
     recipe: dict[str, Any] = t.tools.get("generic", {})
     used_generic = True
     if tool_target and tool_target in t.tools:

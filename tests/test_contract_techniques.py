@@ -60,7 +60,7 @@ def test_list_unknown_field_returns_error():
 
 def test_describe_ghost_notes_with_superior_drummer_returns_notes_velocity():
     env = call("techniques.describe", {
-        "name": "ghost_notes", "tool": "superior_drummer",
+        "name": "drums.ghost_notes", "tool": "superior_drummer",
     })
     assert env["ok"] is True
     d = env["data"]
@@ -72,7 +72,7 @@ def test_describe_ghost_notes_with_superior_drummer_returns_notes_velocity():
 
 
 def test_describe_without_tool_returns_generic_and_warns():
-    env = call("techniques.describe", {"name": "ghost_notes"})
+    env = call("techniques.describe", {"name": "drums.ghost_notes"})
     assert env["ok"] is True
     assert env["data"]["tool"] == "generic"
     codes = [w["code"] for w in env["warnings"]]
@@ -103,6 +103,33 @@ def test_describe_tool_without_recipe_warns_and_falls_back():
 
 
 def test_describe_carries_source_manual():
-    env = call("techniques.describe", {"name": "ghost_notes"})
+    env = call("techniques.describe", {"name": "drums.ghost_notes"})
     assert env["ok"] is True
     assert env["data"]["source_manual"] == "tecnicas_bateria_midi.md"
+
+
+def test_describe_ambiguous_bare_name_errors_with_candidates():
+    """`ghost_notes` existe em bateria e em baixo.
+
+    Escolher uma em silencio entregaria a receita da familia errada, e o MIDI
+    sairia errado sem nenhum erro no caminho. O contrato manda errar com os
+    candidatos.
+    """
+    env = call("techniques.describe", {"name": "ghost_notes"})
+
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_TECHNIQUE_AMBIGUOUS"
+    assert env["error"]["path"] == "name"
+    assert "bass.ghost_notes" in env["error"]["hint"]
+    assert "drums.ghost_notes" in env["error"]["hint"]
+
+
+def test_describe_ambiguous_name_is_resolved_by_target_tool():
+    """A ferramenta-alvo desambigua quando so uma familia tem receita para ela."""
+    drums = call("techniques.describe", {"name": "ghost_notes", "tool": "superior_drummer"})
+    bass = call("techniques.describe", {"name": "ghost_notes", "tool": "modo_bass"})
+
+    assert drums["ok"] is True
+    assert drums["data"]["canonical"] == "drums.ghost_notes"
+    assert bass["ok"] is True
+    assert bass["data"]["canonical"] == "bass.ghost_notes"
