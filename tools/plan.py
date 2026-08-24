@@ -18,11 +18,21 @@ consiga achar o campo sem ler o traceback inteiro.
 from __future__ import annotations
 
 import json
+import re
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from .constants import SYNC_ROLES
+from .style_schema import (
+    ISO_DATE_RE,
+    MIDI_PITCH_MAX,
+    MIDI_PITCH_MIN,
+    find_style_musical_content,
+    is_style_parameter_pair,
+)
 
 # --- vocabularios fechados (secao 5 do spec) --------------------------------
 
@@ -52,14 +62,60 @@ EDIT_PROFILES = ("bass", "drums", "keys", "generic")
 EDIT_INTENSITY_MIN = 0.0
 EDIT_INTENSITY_MAX = 1.0
 
+STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
+STYLE_CONFIDENCE_LEVELS = ("high", "medium", "low", "default")
+STYLE_FAMILY_REQUIRED_FIELDS = (
+    "reference",
+    "researched_at",
+    "sources",
+    "confidence",
+    "techniques",
+    "parameters",
+)
+STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale")
+DEFAULT_STYLE_REFERENCE = "persona base"
+DEFAULT_STYLE_RESEARCHED_AT = "0001-01-01"
+DEFAULT_STYLE_SOURCE = "knowledge/persona/persona_produtor_metal_moderno.md"
+DEFAULT_STYLE_ASSUMPTION_TEMPLATE = (
+    "Familia {family} sem style pesquisado; usando persona base como default."
+)
+ROLE_STYLE_FAMILIES = {
+    "bass": "bass",
+    "sub": "bass",
+    "sub_drop": "bass",
+    "growl_bass": "bass",
+    "drums": "drums",
+    "drum_groove": "drums",
+    "perc_elec": "drums",
+    "impact": "drums",
+    "snare_bomb": "drums",
+    "guitar": "guitar",
+    "rhythm_guitar": "guitar",
+    "lead_guitar": "guitar",
+    "shadow": "guitar",
+    "pad": "keys",
+    "piano": "keys",
+    "rhodes": "keys",
+    "strings": "keys",
+    "choir": "keys",
+    "drone": "keys",
+    "arp": "keys",
+    "arp_gated": "keys",
+    "rhythmic_machine": "keys",
+    "motor": "keys",
+    "pluck": "keys",
+    "riser": "keys",
+    "lead_agressivo": "keys",
+    "vox_chop": "keys",
+}
+
 ENERGY_AXES = ("densidade", "impacto", "largura", "altura", "instabilidade")
 ENERGY_MIN = 0
 ENERGY_MAX = 10
 
 SCHEMA_VERSION = 1
 
-MIDI_PITCH_MIN = 0
-MIDI_PITCH_MAX = 127
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 # --- excecao ----------------------------------------------------------------
@@ -86,6 +142,12 @@ class SourceMidi:
     tempo: float | None = None
     key: str | None = None
     bars: int | None = None
+
+
+@dataclass
+class BriefRef:
+    path: str
+    sha256: str
 
 
 @dataclass
@@ -143,6 +205,23 @@ class PlanEdit:
 
 
 @dataclass
+class StyleTechnique:
+    name: str
+    density: float | None = None
+    rationale: str | None = None
+
+
+@dataclass
+class FamilyStyle:
+    reference: str
+    researched_at: str
+    sources: list[str]
+    confidence: str
+    techniques: list[StyleTechnique]
+    parameters: dict[str, float | list[float]]
+
+
+@dataclass
 class ArrangementPlan:
     version: int
     seed: int
@@ -150,9 +229,11 @@ class ArrangementPlan:
     route: str
     sections: list[PlanSection]
     elements: list[Element]
+    brief_ref: BriefRef | None = None
     assumptions: list[str] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
     edits: list[PlanEdit] = field(default_factory=list)
+    style: dict[str, FamilyStyle] | None = None
 
 
 # --- validacao --------------------------------------------------------------
@@ -168,6 +249,11 @@ def _require_in(value: Any, allowed: tuple[str, ...], path: str) -> None:
 def _require_nonempty_str(value: Any, path: str) -> None:
     if not isinstance(value, str) or not value:
         raise PlanValidationError(path, "must be non-empty string")
+
+
+def _require_nonblank_str(value: Any, path: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise PlanValidationError(path, "must be non-empty string after strip")
 
 
 def _validate_energy(energy: Any, path: str) -> None:
@@ -186,6 +272,308 @@ def _validate_energy(energy: Any, path: str) -> None:
             raise PlanValidationError(f"{path}.{ax}", f"must be int, got {type(v).__name__}")
         if v < ENERGY_MIN or v > ENERGY_MAX:
             raise PlanValidationError(f"{path}.{ax}", f"must be in {ENERGY_MIN}-{ENERGY_MAX}, got {v}")
+
+
+def _build_techniques_index_for_style():
+    from .techniques import TechniqueError, build_index
+
+    try:
+        return build_index()
+    except TechniqueError as exc:
+        raise PlanValidationError(
+            "style.techniques",
+            f"could not build techniques index: {exc}",
+        ) from None
+
+
+def _resolve_style_technique(index, family: str, name: str, path: str):
+    import difflib
+
+    found = index.candidates(name)
+    in_family = tuple(t for t in found if t.family == family)
+    if in_family:
+        return in_family[0]
+
+    if found:
+        raise PlanValidationError(
+            path,
+            (
+                f"technique {name!r} is not available for style family {family!r}; "
+                f"candidates: {[t.canonical for t in found]}"
+            ),
+        )
+
+    candidates = list(index.names()) + [t.name for t in index.techniques]
+    matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
+    hint = f"; close candidates: {matches}" if matches else ""
+    raise PlanValidationError(
+        path,
+        f"technique {name!r} does not exist in techniques index{hint}",
+    )
+
+
+def _style_parameter_values(value: float | list[float]) -> tuple[float, ...]:
+    if is_style_parameter_pair(value):
+        return float(value[0]), float(value[1])
+    return (float(value),)
+
+
+def _format_manual_range(lo: float, hi: float) -> str:
+    return f"[{lo:g}, {hi:g}]"
+
+
+def _validate_style_parameters_against_techniques(
+    parameters: dict[str, float | list[float]],
+    techniques: list[Any],
+    base: str,
+    warnings: list[str],
+) -> None:
+    for key, value in parameters.items():
+        path = f"{base}.parameters.{key}"
+        declarations = [
+            (technique, parameter)
+            for technique in techniques
+            for parameter in technique.parameters
+            if parameter.name == key
+        ]
+        for technique, parameter in declarations:
+            if parameter.range is not None:
+                lo, hi = float(parameter.range[0]), float(parameter.range[1])
+                values = _style_parameter_values(value)
+                if any(v < lo or v > hi for v in values):
+                    raise PlanValidationError(
+                        path,
+                        (
+                            f"value {value!r} outside expected range "
+                            f"{_format_manual_range(lo, hi)} declared by "
+                            f"{technique.canonical}.{parameter.name}"
+                        ),
+                    )
+                continue
+
+            if parameter.value is None and parameter.source is None:
+                warnings.append(
+                    f"{path}: parameter {key!r} is a source gap in "
+                    f"{technique.canonical}; no manual range/source exists"
+                )
+
+
+def _raise_style_musical_content(path: str, reason: str) -> None:
+    raise PlanValidationError(
+        path,
+        (
+            f"{reason}; perfil de estilo aceita parametros de tecnica, "
+            "nunca conteudo musical"
+        ),
+    )
+
+
+def _reject_musical_content_in_style_value(
+    value: Any,
+    path: str,
+    *,
+    allow_parameter_pair: bool = False,
+) -> None:
+    violation = find_style_musical_content(
+        value,
+        path,
+        allow_parameter_pair=allow_parameter_pair,
+    )
+    if violation is not None:
+        _raise_style_musical_content(*violation)
+
+
+def _family_style_content_scan_dict(entry: FamilyStyle) -> dict[str, Any]:
+    techniques = entry.techniques
+    if isinstance(techniques, list):
+        techniques = [
+            {
+                "name": technique.name,
+                "density": technique.density,
+                "rationale": technique.rationale,
+            }
+            if isinstance(technique, StyleTechnique)
+            else technique
+            for technique in techniques
+        ]
+    return {
+        "reference": entry.reference,
+        "researched_at": entry.researched_at,
+        "sources": entry.sources,
+        "confidence": entry.confidence,
+        "techniques": techniques,
+        "parameters": entry.parameters,
+    }
+
+
+def _validate_style(plan_style: Any) -> list[str]:
+    warnings: list[str] = []
+    if plan_style is None:
+        return warnings
+    if not isinstance(plan_style, dict):
+        raise PlanValidationError(
+            "style",
+            f"must be dict with families {list(STYLE_FAMILIES)}, got {type(plan_style).__name__}",
+        )
+    technique_index = (
+        _build_techniques_index_for_style()
+        if any(
+            isinstance(entry, FamilyStyle) and entry.techniques
+            for entry in plan_style.values()
+        )
+        else None
+    )
+    for family, entry in plan_style.items():
+        base = f"style.{family}"
+        if family not in STYLE_FAMILIES:
+            raise PlanValidationError(
+                base,
+                f"unknown style family {family!r}; expected one of {list(STYLE_FAMILIES)}",
+            )
+        if not isinstance(entry, FamilyStyle):
+            raise PlanValidationError(base, f"must be FamilyStyle, got {type(entry).__name__}")
+        _reject_musical_content_in_style_value(_family_style_content_scan_dict(entry), base)
+        _require_nonempty_str(entry.reference, f"{base}.reference")
+        _require_nonempty_str(entry.researched_at, f"{base}.researched_at")
+        # `date.fromisoformat` aceita `20260824` e `2026-W35-1`, que a fachada
+        # JSON Schema recusa. Duas verdades sobre a mesma data e exatamente o
+        # tipo de divergencia dominio/fachada que este projeto nao tolera.
+        if not ISO_DATE_RE.match(entry.researched_at):
+            raise PlanValidationError(
+                f"{base}.researched_at",
+                f"must be an ISO-8601 date in YYYY-MM-DD, got {entry.researched_at!r}",
+            )
+        try:
+            date.fromisoformat(entry.researched_at)
+        except ValueError:
+            raise PlanValidationError(
+                f"{base}.researched_at",
+                f"must be a real calendar date, got {entry.researched_at!r}",
+            ) from None
+        if not isinstance(entry.sources, list) or not entry.sources:
+            raise PlanValidationError(f"{base}.sources", "must be non-empty list of strings")
+        for i, source in enumerate(entry.sources):
+            _require_nonempty_str(source, f"{base}.sources[{i}]")
+        _require_in(entry.confidence, STYLE_CONFIDENCE_LEVELS, f"{base}.confidence")
+        if not isinstance(entry.techniques, list):
+            raise PlanValidationError(
+                f"{base}.techniques",
+                f"must be list, got {type(entry.techniques).__name__}",
+            )
+        resolved_techniques: list[Any] = []
+        for i, technique in enumerate(entry.techniques):
+            technique_base = f"{base}.techniques[{i}]"
+            if not isinstance(technique, StyleTechnique):
+                raise PlanValidationError(
+                    technique_base,
+                    f"must be StyleTechnique, got {type(technique).__name__}",
+                )
+            _require_nonempty_str(technique.name, f"{technique_base}.name")
+            if technique.density is not None:
+                if not isinstance(technique.density, (int, float)) or isinstance(technique.density, bool):
+                    raise PlanValidationError(
+                        f"{technique_base}.density",
+                        f"must be number, got {type(technique.density).__name__}",
+                )
+                if not 0.0 <= float(technique.density) <= 1.0:
+                    raise PlanValidationError(
+                        f"{technique_base}.density",
+                        f"must be in 0.0-1.0, got {technique.density}",
+                    )
+            if technique.rationale is not None and not isinstance(technique.rationale, str):
+                raise PlanValidationError(
+                    f"{technique_base}.rationale",
+                    f"must be string or null, got {type(technique.rationale).__name__}",
+                )
+            if technique_index is not None:
+                resolved_techniques.append(_resolve_style_technique(
+                    technique_index,
+                    family,
+                    technique.name,
+                    f"{technique_base}.name",
+                ))
+        if not isinstance(entry.parameters, dict):
+            raise PlanValidationError(
+                f"{base}.parameters",
+                f"must be dict of numbers, got {type(entry.parameters).__name__}",
+            )
+        for key, value in entry.parameters.items():
+            if not isinstance(key, str) or not key:
+                raise PlanValidationError(f"{base}.parameters", "parameter names must be non-empty strings")
+            if is_style_parameter_pair(value):
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise PlanValidationError(
+                    f"{base}.parameters.{key}",
+                    f"must be number or [min, max] pair, got {type(value).__name__}",
+                )
+        _validate_style_parameters_against_techniques(
+            entry.parameters,
+            resolved_techniques,
+            base,
+            warnings,
+        )
+    return warnings
+
+
+def _style_family_for_role(role: str) -> str | None:
+    if role in STYLE_FAMILIES:
+        return role
+    return ROLE_STYLE_FAMILIES.get(role)
+
+
+def style_families_used_by_plan(plan: ArrangementPlan) -> tuple[str, ...]:
+    """Familias de `style` que o plano efetivamente usa.
+
+    A fronteira do schema tem quatro familias musicais, enquanto elementos
+    usam roles de render. Este helper centraliza a traducao para que defaults
+    de estilo, validadores futuros e fachadas falem a mesma lingua.
+    """
+    used: set[str] = set()
+    for edit in plan.edits:
+        if edit.profile in STYLE_FAMILIES:
+            used.add(edit.profile)
+    for element in plan.elements:
+        family = _style_family_for_role(element.role)
+        if family is not None:
+            used.add(family)
+    return tuple(family for family in STYLE_FAMILIES if family in used)
+
+
+def _default_family_style() -> FamilyStyle:
+    return FamilyStyle(
+        reference=DEFAULT_STYLE_REFERENCE,
+        researched_at=DEFAULT_STYLE_RESEARCHED_AT,
+        sources=[DEFAULT_STYLE_SOURCE],
+        confidence="default",
+        techniques=[],
+        parameters={},
+    )
+
+
+def normalize_style_defaults(plan: ArrangementPlan) -> ArrangementPlan:
+    """Devolve copia do plano com `style` default para familias usadas.
+
+    A funcao nao muta `plan`: o arquivo de origem e o objeto do chamador seguem
+    representando exatamente o que foi escrito. A copia normalizada explicita
+    quando uma familia caiu na persona base por falta de perfil pesquisado.
+    """
+    normalized = deepcopy(plan)
+    used_families = style_families_used_by_plan(normalized)
+    if not used_families:
+        return normalized
+
+    if normalized.style is None:
+        normalized.style = {}
+
+    for family in used_families:
+        if family in normalized.style:
+            continue
+        normalized.style[family] = _default_family_style()
+        assumption = DEFAULT_STYLE_ASSUMPTION_TEMPLATE.format(family=family)
+        if assumption not in normalized.assumptions:
+            normalized.assumptions.append(assumption)
+    return normalized
 
 
 def validate(plan: ArrangementPlan) -> list[str]:
@@ -212,6 +600,14 @@ def validate(plan: ArrangementPlan) -> list[str]:
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
     _require_nonempty_str(plan.source_midi.sha256, "source_midi.sha256")
+    if plan.brief_ref is not None:
+        _require_nonempty_str(plan.brief_ref.path, "brief_ref.path")
+        if not isinstance(plan.brief_ref.sha256, str) or not SHA256_RE.fullmatch(plan.brief_ref.sha256):
+            raise PlanValidationError(
+                "brief_ref.sha256",
+                "must be 64 lowercase hexadecimal characters",
+            )
+    warnings.extend(_validate_style(plan.style))
 
     section_labels: set[str] = set()
     for i, s in enumerate(plan.sections):
@@ -242,6 +638,7 @@ def validate(plan: ArrangementPlan) -> list[str]:
         _require_in(e.sync_role, SYNC_ROLES, f"{base}.sync_role")
         _require_in(e.articulation, ARTICULATIONS, f"{base}.articulation")
         _require_in(e.harmony, HARMONY_MODES, f"{base}.harmony")
+        _require_nonblank_str(e.rationale, f"{base}.rationale")
 
         if not isinstance(e.register, list) or len(e.register) != 2:
             raise PlanValidationError(
@@ -347,6 +744,13 @@ def _source_midi_to_dict(s: SourceMidi) -> dict[str, Any]:
     }
 
 
+def _brief_ref_to_dict(ref: BriefRef) -> dict[str, Any]:
+    return {
+        "path": ref.path,
+        "sha256": ref.sha256,
+    }
+
+
 def _section_to_dict(s: PlanSection) -> dict[str, Any]:
     return {
         "label": s.label,
@@ -386,6 +790,26 @@ def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
     }
 
 
+def _style_technique_to_dict(t: StyleTechnique) -> dict[str, Any]:
+    data: dict[str, Any] = {"name": t.name}
+    if t.density is not None:
+        data["density"] = float(t.density)
+    if t.rationale is not None:
+        data["rationale"] = t.rationale
+    return data
+
+
+def _family_style_to_dict(s: FamilyStyle) -> dict[str, Any]:
+    return {
+        "reference": s.reference,
+        "researched_at": s.researched_at,
+        "sources": list(s.sources),
+        "confidence": s.confidence,
+        "techniques": [_style_technique_to_dict(t) for t in s.techniques],
+        "parameters": dict(s.parameters),
+    }
+
+
 def _transition_to_dict(t: Transition) -> dict[str, Any]:
     return {
         "at_bar": t.at_bar,
@@ -398,7 +822,7 @@ def _transition_to_dict(t: Transition) -> dict[str, Any]:
 
 
 def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
-    return {
+    data = {
         "version": plan.version,
         "seed": plan.seed,
         "source_midi": _source_midi_to_dict(plan.source_midi),
@@ -409,6 +833,14 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
         "transitions": [_transition_to_dict(t) for t in plan.transitions],
         "edits": [_edit_to_dict(ed) for ed in plan.edits],
     }
+    if plan.style is not None:
+        data["style"] = {
+            family: _family_style_to_dict(entry)
+            for family, entry in plan.style.items()
+        }
+    if plan.brief_ref is not None:
+        data["brief_ref"] = _brief_ref_to_dict(plan.brief_ref)
+    return data
 
 
 def _source_midi_from_dict(data: dict[str, Any]) -> SourceMidi:
@@ -418,6 +850,16 @@ def _source_midi_from_dict(data: dict[str, Any]) -> SourceMidi:
         tempo=data.get("tempo"),
         key=data.get("key"),
         bars=data.get("bars"),
+    )
+
+
+def _brief_ref_from_dict(data: Any) -> BriefRef:
+    if not isinstance(data, dict):
+        raise PlanValidationError("brief_ref", f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, ("path", "sha256"), "brief_ref")
+    return BriefRef(
+        path=_require_field(data, "path", "brief_ref"),
+        sha256=_require_field(data, "sha256", "brief_ref"),
     )
 
 
@@ -433,7 +875,7 @@ def _section_from_dict(data: dict[str, Any]) -> PlanSection:
     )
 
 
-def _element_from_dict(data: dict[str, Any]) -> Element:
+def _element_from_dict(data: dict[str, Any], path: str) -> Element:
     return Element(
         id=data["id"],
         role=data["role"],
@@ -447,7 +889,7 @@ def _element_from_dict(data: dict[str, Any]) -> Element:
         degrees=list(data["degrees"]) if data.get("degrees") is not None else None,
         dynamics=data.get("dynamics"),
         instrument=data.get("instrument"),
-        rationale=data.get("rationale"),
+        rationale=_require_field(data, "rationale", path),
         is_protagonist=data.get("is_protagonist", False),
     )
 
@@ -471,6 +913,65 @@ def _transition_from_dict(data: dict[str, Any]) -> Transition:
     )
 
 
+def _reject_unknown_keys(data: dict[str, Any], allowed: tuple[str, ...], path: str) -> None:
+    for key in data:
+        if key not in allowed:
+            raise PlanValidationError(path if not path else f"{path}.{key}", f"unknown field {key!r}")
+
+
+def _require_field(data: dict[str, Any], key: str, path: str) -> Any:
+    if key not in data:
+        raise PlanValidationError(f"{path}.{key}", "missing required field")
+    return data[key]
+
+
+def _style_technique_from_dict(data: dict[str, Any], path: str) -> StyleTechnique:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, STYLE_TECHNIQUE_FIELDS, path)
+    return StyleTechnique(
+        name=_require_field(data, "name", path),
+        density=data.get("density"),
+        rationale=data.get("rationale"),
+    )
+
+
+def _family_style_from_dict(data: dict[str, Any], path: str) -> FamilyStyle:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, STYLE_FAMILY_REQUIRED_FIELDS, path)
+    sources = _require_field(data, "sources", path)
+    if not isinstance(sources, list):
+        raise PlanValidationError(f"{path}.sources", f"must be list, got {type(sources).__name__}")
+    techniques = _require_field(data, "techniques", path)
+    if not isinstance(techniques, list):
+        raise PlanValidationError(f"{path}.techniques", f"must be list, got {type(techniques).__name__}")
+    parameters = _require_field(data, "parameters", path)
+    if not isinstance(parameters, dict):
+        raise PlanValidationError(f"{path}.parameters", f"must be dict, got {type(parameters).__name__}")
+    return FamilyStyle(
+        reference=_require_field(data, "reference", path),
+        researched_at=_require_field(data, "researched_at", path),
+        sources=list(sources),
+        confidence=_require_field(data, "confidence", path),
+        techniques=[
+            _style_technique_from_dict(t, f"{path}.techniques[{i}]")
+            for i, t in enumerate(techniques)
+        ],
+        parameters=dict(parameters),
+    )
+
+
+def _style_from_dict(data: Any) -> dict[str, FamilyStyle]:
+    if not isinstance(data, dict):
+        raise PlanValidationError("style", f"must be object, got {type(data).__name__}")
+    _reject_musical_content_in_style_value(data, "style")
+    return {
+        family: _family_style_from_dict(entry, f"style.{family}")
+        for family, entry in data.items()
+    }
+
+
 def from_dict(data: dict[str, Any]) -> ArrangementPlan:
     return ArrangementPlan(
         version=data["version"],
@@ -478,10 +979,15 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         source_midi=_source_midi_from_dict(data["source_midi"]),
         route=data["route"],
         sections=[_section_from_dict(s) for s in data["sections"]],
-        elements=[_element_from_dict(e) for e in data["elements"]],
+        elements=[
+            _element_from_dict(e, f"elements[{i}]")
+            for i, e in enumerate(data["elements"])
+        ],
         assumptions=list(data.get("assumptions", [])),
         transitions=[_transition_from_dict(t) for t in data.get("transitions", [])],
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],
+        style=_style_from_dict(data["style"]) if "style" in data else None,
+        brief_ref=_brief_ref_from_dict(data["brief_ref"]) if "brief_ref" in data else None,
     )
 
 

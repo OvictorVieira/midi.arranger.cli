@@ -24,6 +24,24 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   intenções determinísticas.
 - Perfil de artista pesquisado **nunca** vira base de conhecimento — vive no plano daquela música.
 - A pesquisa levanta **técnica e comportamento**, jamais conteúdo musical.
+- Em `style.<familia>.techniques[].name`, valide contra `tools.techniques.build_index()`; não
+  duplique nem hardcode o índice no schema ou em `tools/plan.py`.
+- Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
+  notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
+- Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em
+  domínio e fachada em vez de duplicar listas de chaves musicais, detecção anticópia ou schema de
+  `techniques[]`.
+- Quando `style.<familia>.parameters.<nome>` casar parâmetro declarado por técnica citada em
+  `style.<familia>.techniques`, valor fora do `range` do manual é erro; parâmetro-lacuna sem
+  `value`, sem `range` e sem `source` passa só com aviso, nunca com clamp silencioso.
+- Defaults de `style` são uma normalização em memória: use `tools.plan.normalize_style_defaults()`;
+  `plan.validate()` continua read-only e a fachada `plan.validate` expõe a cópia em `normalized_plan`.
+- `tools.render.render()` normaliza defaults de `style` em memória antes de avisos/validadores;
+  `confidence: low` e `confidence: default` viram warning de render, nunca erro.
+- `plan.brief_ref.sha256` deve ser calculado com `tools.brief_ref.brief_sha256()`; é o SHA-256 dos
+  bytes exatos do `arrangement-brief.json`, mesmo formato de `.midiarranger/brief.sha256`.
+- Todo `plan.elements[]` deve carregar `rationale` string não vazia após `strip()`; fixtures e
+  testes precisam usar uma razão real do elemento, não placeholder.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto
@@ -38,6 +56,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   interno do pipeline.
 - Em `tools.edits.apply_edit`, retiming pode mudar ticks, velocity e duração, mas a sequência de
   `note_on` por canal/altura deve preservar a ordem original.
+- Ao adicionar campo em `ArrangementPlan`, atualize juntos `tools/plan.py` (dataclass,
+  serialização e validação) e `tools/contract.py` (JSON Schema das tools).
 
 ## Qualidade
 

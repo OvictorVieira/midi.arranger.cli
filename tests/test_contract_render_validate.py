@@ -135,6 +135,32 @@ def test_render_seed_override_is_used(tmp_path: Path):
     assert env["data"]["seed"] == 999
 
 
+def test_render_exposes_low_style_confidence_as_warning(tmp_path: Path):
+    midi = _require_fixture()
+    plan = _pad_plan(midi)
+    plan["style"] = {
+        "keys": {
+            "reference": "Thin research",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/keys"],
+            "confidence": "low",
+            "techniques": [],
+            "parameters": {},
+        },
+    }
+    out = tmp_path / "out.mid"
+
+    env = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out),
+    })
+
+    assert env["ok"] is True
+    warning = next(w for w in env["warnings"] if "confidence low" in w["message"])
+    assert warning["code"] == "W_RENDER"
+    assert "style.keys" in warning["message"]
+    assert "Thin research" in warning["message"]
+
+
 def test_render_missing_midi_returns_error():
     midi = _require_fixture()
     plan = _pad_plan(midi)

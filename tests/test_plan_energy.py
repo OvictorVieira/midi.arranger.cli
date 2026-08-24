@@ -66,6 +66,7 @@ def _valid_plan() -> ArrangementPlan:
                 sync_role="sustain_through",
                 articulation="sustained",
                 harmony="follow_chords",
+                rationale="Pad sustenta a intro para validar energia e protagonismo.",
             ),
         ],
     )
@@ -185,6 +186,7 @@ def test_blocks_when_two_elements_declare_protagonist_in_same_section():
             sync_role="guitar_unison",
             articulation="tight",
             harmony="unison_guitar",
+            rationale="Guitarra dobra o riff da intro para testar conflito de protagonismo.",
             is_protagonist=True,
         )
     )

@@ -628,6 +628,18 @@ initialize_project_paths() {
 }
 
 sha256_file() {
+  if command -v python3 >/dev/null 2>&1; then
+    if PYTHONPATH="$INSTALL_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$1" 2>/dev/null <<'PY'
+import sys
+from tools.brief_ref import brief_sha256
+
+print(brief_sha256(sys.argv[1]))
+PY
+    then
+      return 0
+    fi
+  fi
+
   shasum -a 256 "$1" | awk '{ print $1 }'
 }
 

@@ -47,6 +47,8 @@ o unico permitido em tools/ e `mido` + `pretty_midi`. Os subsets aceitos:
 - `minimum`, `maximum` — para number/integer.
 - `minLength`, `maxLength`, `pattern` — para string.
 - `oneOf`, `anyOf` — combinadores.
+- `x_forbid_style_musical_content` — varredura recursiva usada pelo
+  arrangement-plan para impedir que `style` carregue conteudo musical.
 
 Suficiente para descrever as tools deste repo. Nao suporta `$ref`, `allOf`,
 `if/then/else` — se a necessidade surgir, adicione com teste, nao antes.
@@ -58,6 +60,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from .style_schema import find_style_musical_content
 
 # --- excecao de dominio -----------------------------------------------------
 
@@ -97,6 +101,33 @@ class SchemaError(ToolError):
     """Falha de validacao de entrada ou saida contra o schema declarado."""
 
 
+def _raise_style_musical_schema_error(code: str, path: str, reason: str) -> None:
+    raise SchemaError(
+        code,
+        (
+            f"{reason}; perfil de estilo aceita parametros de tecnica, "
+            "nunca conteudo musical"
+        ),
+        path=path,
+    )
+
+
+def _validate_no_style_musical_content(
+    value: Any,
+    path: str,
+    code: str,
+    *,
+    allow_parameter_pair: bool = False,
+) -> None:
+    violation = find_style_musical_content(
+        value,
+        path,
+        allow_parameter_pair=allow_parameter_pair,
+    )
+    if violation is not None:
+        _raise_style_musical_schema_error(code, *violation)
+
+
 def _type_matches(value: Any, expected: str) -> bool:
     if expected == "object":
         return isinstance(value, dict)
@@ -125,6 +156,9 @@ def _validate(value: Any, schema: dict[str, Any], path: str, code: str) -> None:
     apontar exatamente o campo em falha. `code` e o codigo de erro a atribuir
     (E_INPUT_SCHEMA ou E_OUTPUT_SCHEMA).
     """
+    if schema.get("x_forbid_style_musical_content"):
+        _validate_no_style_musical_content(value, path, code)
+
     # oneOf / anyOf sao avaliados antes de type — as branches costumam
     # divergir exatamente em type.
     if "oneOf" in schema:

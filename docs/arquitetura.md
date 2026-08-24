@@ -98,6 +98,49 @@ Contexto limpo a cada iteração significa que **todo estado vive em arquivo**.
 de ser consumido em memória: o render fica determinístico, auditável e re-executável sem refazer
 pesquisa.
 
+### Bloco `style`
+
+`style` é o recorte do perfil pesquisado que o maquinário determinístico pode auditar e aplicar.
+Ele fica dentro do `arrangement-plan.json`, por família (`bass`, `drums`, `guitar`, `keys`), e
+nunca vira arquivo em `knowledge/`. Cada família declara:
+
+- `reference`: a referência pesquisada, como string não vazia.
+- `researched_at`: data ISO-8601 (`YYYY-MM-DD`) da pesquisa.
+- `sources`: lista não vazia de fontes quando há referência.
+- `confidence`: vocabulário fechado: `high`, `medium`, `low` ou `default`.
+- `techniques`: nomes validados contra `tools.techniques.build_index()`, em forma canônica ou
+  simples quando o caminho da família desambigua.
+- `parameters`: apenas número escalar ou par `[min, max]`.
+
+O bloco é estruturalmente anticópia: chaves ou formas que carreguem notas, tempos, riffs, grooves,
+frases, melodias, motivos ou sequências musicais são erro. Quando um parâmetro casa com uma técnica
+citada e o manual declara `range`, valor fora da faixa é erro, nunca clamp silencioso.
+
+Exemplo mínimo válido:
+
+```json
+{
+  "style": {
+    "drums": {
+      "reference": "baterista pesquisado para esta musica",
+      "researched_at": "2026-08-24",
+      "sources": ["https://example.test/drums-technique"],
+      "confidence": "medium",
+      "techniques": [
+        {
+          "name": "drums.ghost_notes",
+          "density": 0.25,
+          "rationale": "A referencia usa ghost notes como articulacao de dinamica, sem copiar levada."
+        }
+      ],
+      "parameters": {
+        "velocity": [20, 45]
+      }
+    }
+  }
+}
+```
+
 ### Conclusão
 
 O agente emite `<promise>COMPLETE</promise>` no stdout quando o arranjo está pronto e validado. O

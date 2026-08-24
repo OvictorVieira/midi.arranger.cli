@@ -46,11 +46,14 @@ from .plan import (
     SCHEMA_VERSION,
     SECTION_KINDS,
     SECTION_SOURCES,
+    STYLE_CONFIDENCE_LEVELS,
+    STYLE_FAMILIES,
     ArrangementPlan,
     PlanValidationError,
     SourceMidi,
 )
 from .registry import Tool, ToolError, register
+from .style_schema import ISO_DATE_PATTERN, style_technique_schema
 from .tracks import TrackNameError, name_for_element
 from .validators import (
     RenderedNote,
@@ -63,6 +66,7 @@ from .validators import (
 )
 
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 # --- helpers de IO ---------------------------------------------------------
@@ -130,6 +134,60 @@ _ENERGY_SCHEMA: dict[str, Any] = {
 }
 
 
+def _plan_style_technique_schema() -> dict[str, Any]:
+    return style_technique_schema(additional_properties=False)
+
+
+def _plan_style_parameter_schema() -> dict[str, Any]:
+    return {
+        "oneOf": [
+            {"type": "number"},
+            {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+        ],
+    }
+
+
+def _plan_family_style_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "reference": {"type": "string", "minLength": 1},
+            "researched_at": {
+                "type": "string",
+                "pattern": ISO_DATE_PATTERN,
+            },
+            "sources": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+            },
+            "confidence": {"enum": list(STYLE_CONFIDENCE_LEVELS)},
+            "techniques": {
+                "type": "array",
+                "items": _plan_style_technique_schema(),
+            },
+            "parameters": {
+                "type": "object",
+                "additionalProperties": _plan_style_parameter_schema(),
+            },
+        },
+        "required": [
+            "reference",
+            "researched_at",
+            "sources",
+            "confidence",
+            "techniques",
+            "parameters",
+        ],
+        "additionalProperties": False,
+    }
+
+
 def _plan_schema() -> dict[str, Any]:
     """Schema JSON estrito do ArrangementPlan.
 
@@ -153,8 +211,26 @@ def _plan_schema() -> dict[str, Any]:
                 },
                 "required": ["path", "sha256"],
             },
+            "brief_ref": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "sha256": {"type": "string", "pattern": SHA256_PATTERN},
+                },
+                "required": ["path", "sha256"],
+                "additionalProperties": False,
+            },
             "route": {"enum": list(ROUTES)},
             "assumptions": {"type": "array", "items": {"type": "string"}},
+            "style": {
+                "type": "object",
+                "x_forbid_style_musical_content": True,
+                "properties": {
+                    family: _plan_family_style_schema()
+                    for family in STYLE_FAMILIES
+                },
+                "additionalProperties": False,
+            },
             "sections": {
                 "type": "array",
                 "items": {
@@ -225,12 +301,12 @@ def _plan_schema() -> dict[str, Any]:
                                 {"type": "object", "additionalProperties": True},
                             ],
                         },
-                        "rationale": {"type": ["string", "null"]},
+                        "rationale": {"type": "string", "minLength": 1},
                         "is_protagonist": {"type": "boolean"},
                     },
                     "required": [
                         "id", "role", "sections", "register", "layers",
-                        "sync_role", "articulation", "harmony",
+                        "sync_role", "articulation", "harmony", "rationale",
                     ],
                 },
             },
@@ -672,6 +748,8 @@ def _load_plan_from_dict(data: dict[str, Any]) -> ArrangementPlan:
     """Constroi ArrangementPlan a partir de dict, com erros mapeados."""
     try:
         return plan_mod.from_dict(data)
+    except PlanValidationError:
+        raise
     except KeyError as exc:
         raise ToolError(
             "E_PLAN_FIELD_MISSING",
@@ -770,6 +848,11 @@ def _plan_validate_impl(
     data = {
         "valid": len(errors) == 0,
         "errors": errors,
+        "normalized_plan": (
+            plan_mod.to_dict(plan_mod.normalize_style_defaults(plan_obj))
+            if plan_obj is not None and not errors
+            else None
+        ),
     }
     warnings: list[dict[str, Any]] = [
         {"code": "W_PLAN", "message": w, "path": "plan"} for w in domain_warnings
@@ -804,8 +887,14 @@ PLAN_VALIDATE_TOOL = Tool(
                     "required": ["path", "message"],
                 },
             },
+            "normalized_plan": {
+                "anyOf": [
+                    _plan_schema(),
+                    {"type": "null"},
+                ],
+            },
         },
-        "required": ["valid", "errors"],
+        "required": ["valid", "errors", "normalized_plan"],
     },
     func=_plan_validate_impl,
 )

@@ -74,6 +74,7 @@ def _element(articulation: str = "sustained") -> Element:
         layers=3, sync_role="sustain_through", articulation=articulation,
         harmony="follow_chords", pattern=None, dynamics={"shape": "hold"},
         instrument={"plugin": "Omnisphere", "preset": "Strings", "verified": True},
+        rationale="Strings sustentam tons comuns para validar conexao entre vozes.",
     )
 
 
