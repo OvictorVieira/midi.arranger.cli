@@ -29,6 +29,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - `tools/techniques/index.py` apenas lê os manuais; técnicas aplicáveis pelo motor são registradas
   explicitamente em `tools/techniques/engine.py`, e `SUPPORTED_TECHNIQUES` deve ser derivado desse
   registro.
+- Técnica documentada no manual não é automaticamente técnica suportada pelo motor: só registre em
+  `SUPPORTED_TECHNIQUES` quando houver aplicador real, nunca placeholder/no-op.
 - Toda técnica aplicável registrada em `tools/techniques/engine.py` recebe
   `context: TechniqueContext`; o despacho exige `seed` explícita e toda variação pseudoaleatória deve
   derivar de `context.rng(...)`.

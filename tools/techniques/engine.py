@@ -9,6 +9,7 @@ fronteira entre tecnica documentada e tecnica realmente implementada.
 
 from __future__ import annotations
 
+import dis
 import hashlib
 import inspect
 import random
@@ -837,12 +838,18 @@ def register_technique(
 ) -> Callable[[TechniqueApply], TechniqueApply]:
     """Decorator para registrar uma tecnica no registro global."""
 
-    return _REGISTRY.register(
+    register = _REGISTRY.register(
         canonical,
         level,
         allow_structural_velocity_change=allow_structural_velocity_change,
         allow_structural_duration_change=allow_structural_duration_change,
     )
+
+    def decorator(func: TechniqueApply) -> TechniqueApply:
+        _validate_global_apply_is_not_identity_stub(canonical, func)
+        return register(func)
+
+    return decorator
 
 
 def get_technique(canonical: str) -> RegisteredTechnique:
@@ -901,23 +908,66 @@ def validate_registry_against_index(index: TechniqueIndex | None = None) -> None
         )
 
 
-def _identity_apply(
-    subject: Any = None,
-    *_args: Any,
-    context: TechniqueContext,
-    **_kwargs: Any,
-) -> Any:
-    """Aplicador neutro ate os contratos de mutacao entrarem nas proximas US."""
-
-    _ = context
-    return subject
+_IGNORED_IDENTITY_OPS = frozenset({
+    "CACHE",
+    "COPY_FREE_VARS",
+    "EXTENDED_ARG",
+    "NOP",
+    "RESUME",
+})
+_LOAD_FAST_OPS = frozenset({"LOAD_FAST", "LOAD_FAST_BORROW"})
 
 
-# Populacao explicita inicial. As implementacoes reais chegam nas historias de
-# contrato dos niveis; estes registros ja estabelecem o despacho por nome.
-register_technique("drums.microtiming", "humanize")(_identity_apply)
-register_technique("drums.ghost_notes", "technique")(_identity_apply)
-register_technique("bass.ghost_notes", "technique")(_identity_apply)
+def _validate_global_apply_is_not_identity_stub(
+    canonical: str,
+    func: TechniqueApply,
+) -> None:
+    if _returns_first_argument_unchanged(func):
+        raise TechniqueRegistrationError(
+            f"tecnica aplicavel {canonical!r} usa aplicador neutro; "
+            "registre somente tecnicas com implementacao real"
+        )
+
+
+def _returns_first_argument_unchanged(func: TechniqueApply) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+
+    subject_name = None
+    for parameter in signature.parameters.values():
+        if parameter.name == "context":
+            continue
+        if parameter.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }:
+            subject_name = parameter.name
+            break
+    if subject_name is None:
+        return False
+
+    instructions = [
+        instruction
+        for instruction in dis.get_instructions(func)
+        if instruction.opname not in _IGNORED_IDENTITY_OPS
+    ]
+    while (
+        len(instructions) >= 2
+        and instructions[0].opname in _LOAD_FAST_OPS
+        and instructions[0].argval == "context"
+        and instructions[1].opname == "STORE_FAST"
+    ):
+        instructions = instructions[2:]
+
+    return (
+        len(instructions) == 2
+        and instructions[0].opname in _LOAD_FAST_OPS
+        and instructions[0].argval == subject_name
+        and instructions[1].opname == "RETURN_VALUE"
+    )
 
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 

@@ -39,7 +39,7 @@ from tools.techniques import (
     apply_technique,
     apply_technique_with_warnings,
     build_index,
-    get_technique,
+    register_technique,
     registered_techniques,
     validate_registry_against_index,
 )
@@ -48,7 +48,26 @@ MANUALS_DIR = Path(__file__).resolve().parent.parent / "knowledge" / "tecnicas"
 
 
 def test_registered_technique_declares_canonical_level_and_apply_function():
-    tech = get_technique("drums.ghost_notes")
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=9,
+            note=38,
+            velocity=32,
+            start_tick=240,
+            end_tick=300,
+        )
+        return mid
+
+    tech = registry.get("drums.ghost_notes")
 
     assert tech.canonical == "drums.ghost_notes"
     assert tech.level == "technique"
@@ -128,6 +147,15 @@ def test_registration_requires_explicit_context_parameter():
         registry.register("drums.microtiming", "humanize")(lambda payload: payload)
 
 
+def test_global_registration_rejects_identity_stub():
+    def apply(subject, *, context: TechniqueContext):
+        _ = context
+        return subject
+
+    with pytest.raises(TechniqueRegistrationError, match="aplicador neutro"):
+        register_technique("drums.noop", "technique")(apply)
+
+
 def test_registration_rejects_context_var_keyword_only():
     registry = TechniqueRegistry()
 
@@ -146,17 +174,16 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert set(SUPPORTED_TECHNIQUES) == {
-        "bass.ghost_notes",
-        "drums.ghost_notes",
-        "drums.microtiming",
-    }
+    assert SUPPORTED_TECHNIQUES == ()
 
 
-def test_global_dispatch_uses_registered_implementation():
+def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     payload = {"notes": [38]}
 
-    assert apply_technique("drums.ghost_notes", payload, seed=1) is payload
+    with pytest.raises(UnknownTechniqueError) as exc:
+        apply_technique("drums.ghost_notes", payload, seed=1)
+
+    assert exc.value.available == ()
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
@@ -761,8 +788,33 @@ def test_apply_fails_without_target_or_generic_recipe_before_calling_function():
     assert calls == []
 
 
-def test_global_apply_technique_with_warnings_exposes_engine_warnings():
-    result = apply_technique_with_warnings(
+def test_apply_technique_with_warnings_rejects_unimplemented_technique():
+    with pytest.raises(UnknownTechniqueError):
+        apply_technique_with_warnings(
+            "drums.ghost_notes",
+            {"ok": True},
+            seed=1,
+            tool="maschine",
+            index=_technique_index(
+                "drums.ghost_notes",
+                {"generic": {"notes": [38]}},
+            ),
+        )
+
+
+def test_registry_apply_with_warnings_exposes_engine_warnings():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        payload: dict[str, bool],
+        *,
+        context: TechniqueContext,
+    ) -> dict[str, bool]:
+        _ = context
+        return payload
+
+    result = registry.apply_with_warnings(
         "drums.ghost_notes",
         {"ok": True},
         seed=1,
