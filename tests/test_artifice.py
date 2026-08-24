@@ -79,6 +79,7 @@ def _element(
         register=[48, 71], layers=1,
         sync_role="cycles", articulation=articulation,
         harmony="follow_chords",
+        rationale="Arp repetitivo alimenta os checks de artificialidade.",
     )
 
 
@@ -526,6 +527,7 @@ def test_duplicates_source_exempt_for_shadow_role():
         register=[48, 84], layers=1,
         sync_role="response", articulation="sustained",
         harmony="free",
+        rationale="Shadow responde a guitarra para validar isencao de duplicacao.",
     )
     plan = _plan([shadow_elem])
     issues = validate_artifice([tr], plan, ana)
@@ -554,6 +556,7 @@ def test_duplicates_source_still_flags_other_roles_over_guitar():
         register=[48, 71], layers=1,
         sync_role="sustain_through", articulation="staccato",
         harmony="follow_chords",
+        rationale="Motor copia a guitarra para validar o bloqueio de duplicacao.",
     )
     plan = _plan([motor_elem])
     issues = validate_artifice([tr], plan, ana)
@@ -825,6 +828,7 @@ def _synthetic_pad_plan(src: Path, tmp_path: Path) -> Path:
             dynamics={"shape": "hold"},
             instrument={"plugin": "Omnisphere", "preset": "Desert Wind",
                         "verified": True},
+            rationale="Pad sustentado cobre a secao sintetica para validar artificialidade.",
         )],
     )
     plan_path = tmp_path / "plan.json"

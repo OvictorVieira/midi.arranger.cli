@@ -74,6 +74,7 @@ def _element(
         sync_role=sync_role,
         articulation=articulation,
         harmony=harmony,
+        rationale=f"{role} ocupa registro {register[0]}-{register[1]} para validar colisao.",
     )
 
 

@@ -702,6 +702,36 @@ def test_rejects_element_with_empty_role():
     assert exc.value.path == "elements[0].role"
 
 
+def test_rejects_element_without_rationale():
+    data = to_dict(_valid_plan())
+    del data["elements"][0]["rationale"]
+
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+
+    assert exc.value.path == "elements[0].rationale"
+    assert "missing required field" in exc.value.message
+
+
+@pytest.mark.parametrize("rationale", ["", "   "])
+def test_rejects_element_with_blank_rationale(rationale: str):
+    plan = _valid_plan()
+    plan.elements[0].rationale = rationale
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "elements[0].rationale"
+    assert "after strip" in exc.value.message
+
+
+def test_accepts_element_with_nonempty_rationale():
+    plan = _valid_plan()
+    plan.elements[0].rationale = "Pad cria sustentacao antes do refrao."
+
+    validate(plan)
+
+
 def test_rejects_layers_zero():
     """AC: 'rejeita layers menor que 1' — 0 nao gera track nenhuma."""
     plan = _valid_plan()

@@ -220,7 +220,9 @@ def test_plan_validate_returns_normalized_style_default_for_used_family():
         "articulation": "tight",
         "harmony": "follow_chords",
         "pattern": None, "degrees": None, "dynamics": None,
-        "instrument": None, "rationale": None, "is_protagonist": False,
+        "instrument": None,
+        "rationale": "Piano sustenta a familia keys para exercitar default de estilo.",
+        "is_protagonist": False,
     }]
 
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -514,7 +516,9 @@ def test_plan_validate_reports_layers_lt_1_error():
         "articulation": "sustained",
         "harmony": "follow_chords",
         "pattern": None, "degrees": None, "dynamics": None,
-        "instrument": None, "rationale": None, "is_protagonist": False,
+        "instrument": None,
+        "rationale": "Pad usa layers invalido para testar erro de schema.",
+        "is_protagonist": False,
     }]
     # schema layers minimum=1 pega antes do dominio.
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -536,7 +540,9 @@ def test_plan_validate_reports_register_out_of_range():
         "articulation": "sustained",
         "harmony": "follow_chords",
         "pattern": None, "degrees": None, "dynamics": None,
-        "instrument": None, "rationale": None, "is_protagonist": False,
+        "instrument": None,
+        "rationale": "Pad usa registro invalido para testar erro de schema.",
+        "is_protagonist": False,
     }]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is False
@@ -558,7 +564,9 @@ def test_plan_validate_reports_missing_section_reference_via_domain():
         "articulation": "sustained",
         "harmony": "follow_chords",
         "pattern": None, "degrees": None, "dynamics": None,
-        "instrument": None, "rationale": None, "is_protagonist": False,
+        "instrument": None,
+        "rationale": "Pad referencia uma secao inexistente para testar erro de dominio.",
+        "is_protagonist": False,
     }]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
@@ -582,7 +590,9 @@ def test_plan_validate_reports_multiple_protagonists_in_same_section():
         "articulation": "sustained",
         "harmony": "follow_chords",
         "pattern": None, "degrees": None, "dynamics": None,
-        "instrument": None, "rationale": None, "is_protagonist": True,
+        "instrument": None,
+        "rationale": "Pad disputa protagonismo para testar conflito de secao.",
+        "is_protagonist": True,
     }
     plan["elements"] = [
         {**copy.deepcopy(base_el), "id": "el_a"},
@@ -626,8 +636,7 @@ def test_plan_validate_both_plan_and_plan_path_returns_error(tmp_path: Path):
     assert env["error"]["code"] == "E_PLAN_INPUT"
 
 
-def test_plan_validate_rationale_may_be_null():
-    """Skeleton devolve rationale=None em cada elemento (ha zero); validar."""
+def test_plan_validate_rejects_null_rationale():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["elements"] = [{
@@ -643,5 +652,25 @@ def test_plan_validate_rationale_may_be_null():
         "instrument": None, "rationale": None, "is_protagonist": False,
     }]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
-    assert env["ok"] is True
-    assert env["data"]["valid"] is True
+    assert env["ok"] is False
+    assert env["error"]["path"] == "plan.elements[0].rationale"
+
+
+def test_plan_validate_rejects_missing_rationale():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["elements"] = [{
+        "id": "el_a",
+        "role": "pad",
+        "sections": [plan["sections"][0]["label"]],
+        "register": [40, 80],
+        "layers": 1,
+        "sync_role": "sustain_through",
+        "articulation": "sustained",
+        "harmony": "follow_chords",
+        "pattern": None, "degrees": None, "dynamics": None,
+        "instrument": None, "is_protagonist": False,
+    }]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["path"] == "plan.elements[0].rationale"

@@ -260,6 +260,11 @@ def _require_nonempty_str(value: Any, path: str) -> None:
         raise PlanValidationError(path, "must be non-empty string")
 
 
+def _require_nonblank_str(value: Any, path: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise PlanValidationError(path, "must be non-empty string after strip")
+
+
 def _validate_energy(energy: Any, path: str) -> None:
     """Cada secao carrega os 5 eixos (0-10) do spec, sem chave extra e sem faltar."""
     if not isinstance(energy, dict):
@@ -655,6 +660,7 @@ def validate(plan: ArrangementPlan) -> list[str]:
         _require_in(e.sync_role, SYNC_ROLES, f"{base}.sync_role")
         _require_in(e.articulation, ARTICULATIONS, f"{base}.articulation")
         _require_in(e.harmony, HARMONY_MODES, f"{base}.harmony")
+        _require_nonblank_str(e.rationale, f"{base}.rationale")
 
         if not isinstance(e.register, list) or len(e.register) != 2:
             raise PlanValidationError(
@@ -891,7 +897,7 @@ def _section_from_dict(data: dict[str, Any]) -> PlanSection:
     )
 
 
-def _element_from_dict(data: dict[str, Any]) -> Element:
+def _element_from_dict(data: dict[str, Any], path: str) -> Element:
     return Element(
         id=data["id"],
         role=data["role"],
@@ -905,7 +911,7 @@ def _element_from_dict(data: dict[str, Any]) -> Element:
         degrees=list(data["degrees"]) if data.get("degrees") is not None else None,
         dynamics=data.get("dynamics"),
         instrument=data.get("instrument"),
-        rationale=data.get("rationale"),
+        rationale=_require_field(data, "rationale", path),
         is_protagonist=data.get("is_protagonist", False),
     )
 
@@ -995,7 +1001,10 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         source_midi=_source_midi_from_dict(data["source_midi"]),
         route=data["route"],
         sections=[_section_from_dict(s) for s in data["sections"]],
-        elements=[_element_from_dict(e) for e in data["elements"]],
+        elements=[
+            _element_from_dict(e, f"elements[{i}]")
+            for i, e in enumerate(data["elements"])
+        ],
         assumptions=list(data.get("assumptions", [])),
         transitions=[_transition_from_dict(t) for t in data.get("transitions", [])],
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],

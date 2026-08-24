@@ -83,6 +83,7 @@ def _element(
         articulation=articulation,
         harmony=harmony,
         degrees=degrees,
+        rationale="Pad sintetico segue a harmonia declarada para validar notas geradas.",
     )
 
 
@@ -613,6 +614,7 @@ def test_ancora_pad_render_passes_harmony(tmp_path):
                 harmony="follow_chords",
                 dynamics={"shape": "hold"},
                 instrument={"plugin": "Omnisphere", "preset": "Desert Wind", "verified": True},
+                rationale="Pad segue os acordes do ANCORA para validar harmonia real.",
             ),
         ],
     )

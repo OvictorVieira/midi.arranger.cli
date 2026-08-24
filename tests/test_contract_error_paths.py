@@ -507,7 +507,9 @@ def test_plan_validate_plan_with_bad_field_type_reports_domain_error(tmp_path: P
         "sync_role": "not_a_role",  # schema aceita string livre; dominio rejeita
         "articulation": "sustained", "harmony": "follow_chords",
         "pattern": None, "degrees": None, "dynamics": None,
-        "instrument": None, "rationale": None, "is_protagonist": False,
+        "instrument": None,
+        "rationale": "Pad deliberately uses an invalid sync role to test domain error paths.",
+        "is_protagonist": False,
     }]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True

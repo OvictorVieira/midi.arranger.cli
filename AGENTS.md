@@ -37,6 +37,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `confidence: low` e `confidence: default` viram warning de render, nunca erro.
 - `plan.brief_ref.sha256` deve ser calculado com `tools.brief_ref.brief_sha256()`; é o SHA-256 dos
   bytes exatos do `arrangement-brief.json`, mesmo formato de `.midiarranger/brief.sha256`.
+- Todo `plan.elements[]` deve carregar `rationale` string não vazia após `strip()`; fixtures e
+  testes precisam usar uma razão real do elemento, não placeholder.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto

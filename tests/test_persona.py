@@ -90,6 +90,7 @@ def _element(
         sync_role=sync_role, articulation=articulation,
         harmony=harmony,
         is_protagonist=is_protagonist,
+        rationale=f"{role} participa da secao para validar regras de persona.",
     )
 
 

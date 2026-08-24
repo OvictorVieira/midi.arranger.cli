@@ -410,6 +410,7 @@ def test_non_pad_element_is_skipped_with_note(tmp_path):
         articulation="sustained",
         harmony="follow_chords",
         instrument={"plugin": "Alchemy", "preset": "Grand Motif", "verified": False},
+        rationale="Piano motif fica fora do renderer de pad para validar o skip reportado.",
     ))
     out = tmp_path / "out.mid"
     report = render(plan, out)

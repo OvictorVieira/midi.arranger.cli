@@ -91,6 +91,7 @@ def _element(
         register=[48, 71], layers=1,
         sync_role="sustain_through", articulation=articulation,
         harmony="follow_chords",
+        rationale=f"{role} soa nas secoes declaradas para validar placement.",
     )
 
 
@@ -542,6 +543,7 @@ def _pad_plan(source: Path) -> ArrangementPlan:
                 dynamics={"shape": "hold"},
                 instrument={"plugin": "Omnisphere", "preset": "Desert Wind",
                             "verified": True},
+                rationale="Pad cobre a secao MAIN para validar boundaries de placement.",
             ),
         ],
     )
@@ -610,6 +612,7 @@ def test_ancora_pad_render_passes_placement(tmp_path):
                 dynamics={"shape": "hold"},
                 instrument={"plugin": "Omnisphere", "preset": "Desert Wind",
                             "verified": True},
+                rationale="Pad cobre todo o ANCORA para validar placement em secao unica.",
             ),
         ],
     )

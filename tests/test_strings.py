@@ -379,6 +379,7 @@ def _plan_with_tutti(section_labels: list[str]) -> ArrangementPlan:
         articulation="sustained", harmony="follow_chords",
         pattern={"tutti": True},
         instrument={"plugin": "Omnisphere", "preset": "Layered Strings", "verified": True},
+        rationale="Strings tutti cobre todas as secoes para validar unicidade de vozes.",
     )
     return ArrangementPlan(
         version=1, seed=0,
