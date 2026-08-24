@@ -25,6 +25,32 @@ gerencia o estado entre as iterações. Mesmo modelo do [Ralph](https://github.c
 Como todo agente suportado já tem acesso a shell, as tools são simplesmente comandos. Não há MCP,
 não há SDK, não há integração por provider.
 
+## Instalação
+
+```bash
+git clone git@github.com:OvictorVieira/midi.arranger.cli.git
+cd midi.arranger.cli
+./install.sh
+```
+
+Escreve em exatamente três lugares:
+
+| Onde | O quê |
+|---|---|
+| `~/.local/bin/midi-arranger` | O comando. Garanta que esse diretório está no `PATH` |
+| `~/.local/share/midi-arranger/` | O corpo: harness, prompts, tools e a base de técnicas |
+| `~/.claude/skills/`, `~/.opencode/skills/`, `~/.agents/skills/` | Symlink da skill `midi-brief`, só nos providers que existirem |
+
+Dá para mudar os dois primeiros com `MIDI_ARRANGER_HOME` e `XDG_BIN_DIR`. Nada é escrito fora
+deles — o instalador não mexe em nenhuma outra configuração de provider, e diz no fim exatamente o
+que fez.
+
+Requer **Python ≥ 3.11**. As dependências das tools são `mido` e `pretty_midi`; se faltarem, o
+instalador avisa quais e dá o comando exato, mas não roda `pip` por conta própria.
+
+Rodar de novo é idempotente. Depois de um `git pull`, rode `./install.sh` outra vez — o harness e a
+skill vêm do corpo instalado, não do checkout, justamente para nunca ficarem em versões diferentes.
+
 ## Os dois comandos
 
 ```bash

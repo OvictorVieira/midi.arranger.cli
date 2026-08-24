@@ -85,7 +85,26 @@ Nunca `--no-verify`. Nunca amend em commit publicado. Nunca force-push em `main`
 
 ## Skills
 
-- A entrevista de arranjo vive em `skills/midi-brief/SKILL.md`. Rode `./install.sh` para criar os
-  symlinks nos providers presentes (`~/.claude/skills/`, `~/.opencode/skills/`, `~/.agents/skills/`);
-  provider ausente é ignorado, rodar duas vezes não duplica. Um agente sem sistema de skill deve
-  ler `skills/midi-brief/SKILL.md` diretamente — é o mesmo contrato.
+- A entrevista de arranjo vive em `skills/midi-brief/SKILL.md`. Um agente sem sistema de skill deve
+  ler esse arquivo diretamente — é o mesmo contrato.
+
+## Instalação
+
+`./install.sh [root]` escreve em exatamente três lugares e em nenhum outro:
+
+| Onde | O quê | Variável |
+|---|---|---|
+| `$XDG_BIN_DIR/midi-arranger` | O shim que entra no `PATH` | `XDG_BIN_DIR` (default `<root>/.local/bin`) |
+| `$MIDI_ARRANGER_HOME/` | O corpo: `bin`, `prompts`, `tools`, `knowledge`, `skills`, `AGENTS.md`, `requirements.txt` | `MIDI_ARRANGER_HOME` (default `<root>/.local/share/midi-arranger`) |
+| `<provider>/skills/midi-brief` | Symlink para o corpo instalado | — |
+
+- `root` posicional é só para teste; sem argumento é `$HOME`.
+- O symlink da skill aponta para o **corpo instalado**, nunca para o checkout: harness e skill
+  precisam ser sempre a mesma versão. Depois de um `git pull`, rode `./install.sh` de novo.
+- O shim é arquivo, não symlink — `bin/midi-arranger` deriva `PROMPTS_DIR` do próprio diretório, e um
+  symlink no `PATH` faria isso apontar para fora da instalação.
+- Reinstalar é idempotente e remove do corpo o que sumiu da origem.
+- Dependência Python faltando **avisa** e não aborta; o instalador não roda `pip`, porque isso
+  escreveria fora dos diretórios declarados. Python < 3.11 aborta antes de instalar qualquer coisa.
+- `CLAUDE.md` é uma linha, `@AGENTS.md` — o Claude Code não lê `AGENTS.md`, e duplicar a instrução
+  criaria duas verdades.
