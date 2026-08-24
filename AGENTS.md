@@ -38,6 +38,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   interno do pipeline.
 - Em `tools.edits.apply_edit`, retiming pode mudar ticks, velocity e duração, mas a sequência de
   `note_on` por canal/altura deve preservar a ordem original.
+- Ao adicionar campo em `ArrangementPlan`, atualize juntos `tools/plan.py` (dataclass,
+  serialização e validação) e `tools/contract.py` (JSON Schema das tools).
 
 ## Qualidade
 

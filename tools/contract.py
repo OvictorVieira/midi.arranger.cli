@@ -46,6 +46,8 @@ from .plan import (
     SCHEMA_VERSION,
     SECTION_KINDS,
     SECTION_SOURCES,
+    STYLE_CONFIDENCE_LEVELS,
+    STYLE_FAMILIES,
     ArrangementPlan,
     PlanValidationError,
     SourceMidi,
@@ -130,6 +132,60 @@ _ENERGY_SCHEMA: dict[str, Any] = {
 }
 
 
+def _plan_style_technique_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "density": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                ],
+            },
+            "rationale": {"type": ["string", "null"]},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    }
+
+
+def _plan_family_style_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "reference": {"type": "string", "minLength": 1},
+            "researched_at": {
+                "type": "string",
+                "pattern": r"^\d{4}-\d{2}-\d{2}$",
+            },
+            "sources": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+            },
+            "confidence": {"enum": list(STYLE_CONFIDENCE_LEVELS)},
+            "techniques": {
+                "type": "array",
+                "items": _plan_style_technique_schema(),
+            },
+            "parameters": {
+                "type": "object",
+                "additionalProperties": {"type": "number"},
+            },
+        },
+        "required": [
+            "reference",
+            "researched_at",
+            "sources",
+            "confidence",
+            "techniques",
+            "parameters",
+        ],
+        "additionalProperties": False,
+    }
+
+
 def _plan_schema() -> dict[str, Any]:
     """Schema JSON estrito do ArrangementPlan.
 
@@ -155,6 +211,14 @@ def _plan_schema() -> dict[str, Any]:
             },
             "route": {"enum": list(ROUTES)},
             "assumptions": {"type": "array", "items": {"type": "string"}},
+            "style": {
+                "type": "object",
+                "properties": {
+                    family: _plan_family_style_schema()
+                    for family in STYLE_FAMILIES
+                },
+                "additionalProperties": False,
+            },
             "sections": {
                 "type": "array",
                 "items": {
@@ -672,6 +736,8 @@ def _load_plan_from_dict(data: dict[str, Any]) -> ArrangementPlan:
     """Constroi ArrangementPlan a partir de dict, com erros mapeados."""
     try:
         return plan_mod.from_dict(data)
+    except PlanValidationError:
+        raise
     except KeyError as exc:
         raise ToolError(
             "E_PLAN_FIELD_MISSING",

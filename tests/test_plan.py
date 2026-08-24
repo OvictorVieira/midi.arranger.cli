@@ -11,10 +11,12 @@ import pytest
 from tools.plan import (
     ArrangementPlan,
     Element,
+    FamilyStyle,
     PlanEdit,
     PlanSection,
     PlanValidationError,
     SourceMidi,
+    StyleTechnique,
     Transition,
     dump,
     from_dict,
@@ -135,6 +137,138 @@ def test_load_reads_hand_written_json(tmp_path: Path):
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     plan = load(path)
     assert plan.route == "hook_eletronico_pesado"
+
+
+def _complete_style() -> dict[str, FamilyStyle]:
+    return {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[StyleTechnique(name="ghost_notes", density=0.2)],
+            parameters={"ghost_note_velocity": 35.0},
+        ),
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
+            researched_at="2026-08-24",
+            sources=["https://example.test/drums"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="backbeat", rationale="Caixa seca no pulso.")],
+            parameters={"swing": 0.12},
+        ),
+        "guitar": FamilyStyle(
+            reference="The Edge",
+            researched_at="2026-08-24",
+            sources=["https://example.test/guitar"],
+            confidence="low",
+            techniques=[],
+            parameters={"delay_feedback": 0.35},
+        ),
+        "keys": FamilyStyle(
+            reference="Nigel Godrich",
+            researched_at="2026-08-24",
+            sources=["https://example.test/keys"],
+            confidence="default",
+            techniques=[],
+            parameters={"voicing_openness": 0.6},
+        ),
+    }
+
+
+def test_validate_accepts_complete_style_for_all_four_families():
+    plan = _valid_plan()
+    plan.style = _complete_style()
+    validate(plan)  # nao levanta
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("reference", "style.bass.reference"),
+        ("researched_at", "style.bass.researched_at"),
+        ("sources", "style.bass.sources"),
+        ("confidence", "style.bass.confidence"),
+        ("techniques", "style.bass.techniques"),
+        ("parameters", "style.bass.parameters"),
+    ],
+)
+def test_from_dict_rejects_missing_required_style_family_field(field: str, path: str):
+    data = to_dict(_valid_plan())
+    data["style"] = {
+        family: {
+            "reference": entry.reference,
+            "researched_at": entry.researched_at,
+            "sources": entry.sources,
+            "confidence": entry.confidence,
+            "techniques": [_style_technique_to_dict_for_test(t) for t in entry.techniques],
+            "parameters": entry.parameters,
+        }
+        for family, entry in _complete_style().items()
+    }
+    del data["style"]["bass"][field]
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+    assert exc.value.path == path
+
+
+def _style_technique_to_dict_for_test(technique: StyleTechnique) -> dict[str, object]:
+    data: dict[str, object] = {"name": technique.name}
+    if technique.density is not None:
+        data["density"] = technique.density
+    if technique.rationale is not None:
+        data["rationale"] = technique.rationale
+    return data
+
+
+def test_validate_rejects_invalid_style_confidence():
+    plan = _valid_plan()
+    plan.style = _complete_style()
+    plan.style["drums"].confidence = "bastante"
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.confidence"
+
+
+def test_validate_rejects_unknown_style_family_with_exact_path():
+    plan = _valid_plan()
+    plan.style = {
+        "vocals": FamilyStyle(
+            reference="cantor",
+            researched_at="2026-08-24",
+            sources=["https://example.test/vocals"],
+            confidence="medium",
+            techniques=[],
+            parameters={},
+        )
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.vocals"
+
+
+def test_from_dict_rejects_extra_style_family_field():
+    data = to_dict(_valid_plan())
+    data["style"] = {
+        "bass": {
+            "reference": "James Jamerson",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/bass"],
+            "confidence": "high",
+            "techniques": [],
+            "parameters": {},
+            "extra": True,
+        }
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        from_dict(data)
+    assert exc.value.path == "style.bass.extra"
+
+
+def test_style_survives_dict_round_trip():
+    plan = _valid_plan()
+    plan.style = _complete_style()
+    assert from_dict(to_dict(plan)) == plan
 
 
 def test_dump_writes_indented_json_that_parses(tmp_path: Path):

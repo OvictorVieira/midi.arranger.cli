@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,18 @@ HARMONY_MODES = ("follow_chords", "pedal", "free", "unison_guitar")
 EDIT_PROFILES = ("bass", "drums", "keys", "generic")
 EDIT_INTENSITY_MIN = 0.0
 EDIT_INTENSITY_MAX = 1.0
+
+STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
+STYLE_CONFIDENCE_LEVELS = ("high", "medium", "low", "default")
+STYLE_FAMILY_REQUIRED_FIELDS = (
+    "reference",
+    "researched_at",
+    "sources",
+    "confidence",
+    "techniques",
+    "parameters",
+)
+STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale")
 
 ENERGY_AXES = ("densidade", "impacto", "largura", "altura", "instabilidade")
 ENERGY_MIN = 0
@@ -143,6 +156,23 @@ class PlanEdit:
 
 
 @dataclass
+class StyleTechnique:
+    name: str
+    density: float | None = None
+    rationale: str | None = None
+
+
+@dataclass
+class FamilyStyle:
+    reference: str
+    researched_at: str
+    sources: list[str]
+    confidence: str
+    techniques: list[StyleTechnique]
+    parameters: dict[str, float]
+
+
+@dataclass
 class ArrangementPlan:
     version: int
     seed: int
@@ -153,6 +183,7 @@ class ArrangementPlan:
     assumptions: list[str] = field(default_factory=list)
     transitions: list[Transition] = field(default_factory=list)
     edits: list[PlanEdit] = field(default_factory=list)
+    style: dict[str, FamilyStyle] | None = None
 
 
 # --- validacao --------------------------------------------------------------
@@ -188,6 +219,81 @@ def _validate_energy(energy: Any, path: str) -> None:
             raise PlanValidationError(f"{path}.{ax}", f"must be in {ENERGY_MIN}-{ENERGY_MAX}, got {v}")
 
 
+def _validate_style(plan_style: Any) -> None:
+    if plan_style is None:
+        return
+    if not isinstance(plan_style, dict):
+        raise PlanValidationError(
+            "style",
+            f"must be dict with families {list(STYLE_FAMILIES)}, got {type(plan_style).__name__}",
+        )
+    for family, entry in plan_style.items():
+        base = f"style.{family}"
+        if family not in STYLE_FAMILIES:
+            raise PlanValidationError(
+                base,
+                f"unknown style family {family!r}; expected one of {list(STYLE_FAMILIES)}",
+            )
+        if not isinstance(entry, FamilyStyle):
+            raise PlanValidationError(base, f"must be FamilyStyle, got {type(entry).__name__}")
+        _require_nonempty_str(entry.reference, f"{base}.reference")
+        _require_nonempty_str(entry.researched_at, f"{base}.researched_at")
+        try:
+            date.fromisoformat(entry.researched_at)
+        except ValueError:
+            raise PlanValidationError(
+                f"{base}.researched_at",
+                f"must be ISO-8601 date string, got {entry.researched_at!r}",
+            ) from None
+        if not isinstance(entry.sources, list) or not entry.sources:
+            raise PlanValidationError(f"{base}.sources", "must be non-empty list of strings")
+        for i, source in enumerate(entry.sources):
+            _require_nonempty_str(source, f"{base}.sources[{i}]")
+        _require_in(entry.confidence, STYLE_CONFIDENCE_LEVELS, f"{base}.confidence")
+        if not isinstance(entry.techniques, list):
+            raise PlanValidationError(
+                f"{base}.techniques",
+                f"must be list, got {type(entry.techniques).__name__}",
+            )
+        for i, technique in enumerate(entry.techniques):
+            technique_base = f"{base}.techniques[{i}]"
+            if not isinstance(technique, StyleTechnique):
+                raise PlanValidationError(
+                    technique_base,
+                    f"must be StyleTechnique, got {type(technique).__name__}",
+                )
+            _require_nonempty_str(technique.name, f"{technique_base}.name")
+            if technique.density is not None:
+                if not isinstance(technique.density, (int, float)) or isinstance(technique.density, bool):
+                    raise PlanValidationError(
+                        f"{technique_base}.density",
+                        f"must be number, got {type(technique.density).__name__}",
+                    )
+                if not 0.0 <= float(technique.density) <= 1.0:
+                    raise PlanValidationError(
+                        f"{technique_base}.density",
+                        f"must be in 0.0-1.0, got {technique.density}",
+                    )
+            if technique.rationale is not None and not isinstance(technique.rationale, str):
+                raise PlanValidationError(
+                    f"{technique_base}.rationale",
+                    f"must be string or null, got {type(technique.rationale).__name__}",
+                )
+        if not isinstance(entry.parameters, dict):
+            raise PlanValidationError(
+                f"{base}.parameters",
+                f"must be dict of numbers, got {type(entry.parameters).__name__}",
+            )
+        for key, value in entry.parameters.items():
+            if not isinstance(key, str) or not key:
+                raise PlanValidationError(f"{base}.parameters", "parameter names must be non-empty strings")
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise PlanValidationError(
+                    f"{base}.parameters.{key}",
+                    f"must be number, got {type(value).__name__}",
+                )
+
+
 def validate(plan: ArrangementPlan) -> list[str]:
     """Valida um `ArrangementPlan` e devolve avisos nao-bloqueantes.
 
@@ -212,6 +318,7 @@ def validate(plan: ArrangementPlan) -> list[str]:
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
     _require_nonempty_str(plan.source_midi.sha256, "source_midi.sha256")
+    _validate_style(plan.style)
 
     section_labels: set[str] = set()
     for i, s in enumerate(plan.sections):
@@ -386,6 +493,26 @@ def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
     }
 
 
+def _style_technique_to_dict(t: StyleTechnique) -> dict[str, Any]:
+    data: dict[str, Any] = {"name": t.name}
+    if t.density is not None:
+        data["density"] = float(t.density)
+    if t.rationale is not None:
+        data["rationale"] = t.rationale
+    return data
+
+
+def _family_style_to_dict(s: FamilyStyle) -> dict[str, Any]:
+    return {
+        "reference": s.reference,
+        "researched_at": s.researched_at,
+        "sources": list(s.sources),
+        "confidence": s.confidence,
+        "techniques": [_style_technique_to_dict(t) for t in s.techniques],
+        "parameters": dict(s.parameters),
+    }
+
+
 def _transition_to_dict(t: Transition) -> dict[str, Any]:
     return {
         "at_bar": t.at_bar,
@@ -398,7 +525,7 @@ def _transition_to_dict(t: Transition) -> dict[str, Any]:
 
 
 def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
-    return {
+    data = {
         "version": plan.version,
         "seed": plan.seed,
         "source_midi": _source_midi_to_dict(plan.source_midi),
@@ -409,6 +536,12 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
         "transitions": [_transition_to_dict(t) for t in plan.transitions],
         "edits": [_edit_to_dict(ed) for ed in plan.edits],
     }
+    if plan.style is not None:
+        data["style"] = {
+            family: _family_style_to_dict(entry)
+            for family, entry in plan.style.items()
+        }
+    return data
 
 
 def _source_midi_from_dict(data: dict[str, Any]) -> SourceMidi:
@@ -471,6 +604,64 @@ def _transition_from_dict(data: dict[str, Any]) -> Transition:
     )
 
 
+def _reject_unknown_keys(data: dict[str, Any], allowed: tuple[str, ...], path: str) -> None:
+    for key in data:
+        if key not in allowed:
+            raise PlanValidationError(path if not path else f"{path}.{key}", f"unknown field {key!r}")
+
+
+def _require_field(data: dict[str, Any], key: str, path: str) -> Any:
+    if key not in data:
+        raise PlanValidationError(f"{path}.{key}", "missing required field")
+    return data[key]
+
+
+def _style_technique_from_dict(data: dict[str, Any], path: str) -> StyleTechnique:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, STYLE_TECHNIQUE_FIELDS, path)
+    return StyleTechnique(
+        name=_require_field(data, "name", path),
+        density=data.get("density"),
+        rationale=data.get("rationale"),
+    )
+
+
+def _family_style_from_dict(data: dict[str, Any], path: str) -> FamilyStyle:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, STYLE_FAMILY_REQUIRED_FIELDS, path)
+    sources = _require_field(data, "sources", path)
+    if not isinstance(sources, list):
+        raise PlanValidationError(f"{path}.sources", f"must be list, got {type(sources).__name__}")
+    techniques = _require_field(data, "techniques", path)
+    if not isinstance(techniques, list):
+        raise PlanValidationError(f"{path}.techniques", f"must be list, got {type(techniques).__name__}")
+    parameters = _require_field(data, "parameters", path)
+    if not isinstance(parameters, dict):
+        raise PlanValidationError(f"{path}.parameters", f"must be dict, got {type(parameters).__name__}")
+    return FamilyStyle(
+        reference=_require_field(data, "reference", path),
+        researched_at=_require_field(data, "researched_at", path),
+        sources=list(sources),
+        confidence=_require_field(data, "confidence", path),
+        techniques=[
+            _style_technique_from_dict(t, f"{path}.techniques[{i}]")
+            for i, t in enumerate(techniques)
+        ],
+        parameters=dict(parameters),
+    )
+
+
+def _style_from_dict(data: Any) -> dict[str, FamilyStyle]:
+    if not isinstance(data, dict):
+        raise PlanValidationError("style", f"must be object, got {type(data).__name__}")
+    return {
+        family: _family_style_from_dict(entry, f"style.{family}")
+        for family, entry in data.items()
+    }
+
+
 def from_dict(data: dict[str, Any]) -> ArrangementPlan:
     return ArrangementPlan(
         version=data["version"],
@@ -482,6 +673,7 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         assumptions=list(data.get("assumptions", [])),
         transitions=[_transition_from_dict(t) for t in data.get("transitions", [])],
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],
+        style=_style_from_dict(data["style"]) if "style" in data else None,
     )
 
 

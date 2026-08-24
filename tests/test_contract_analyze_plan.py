@@ -204,6 +204,103 @@ def test_plan_validate_accepts_skeleton_output():
     assert env["data"]["errors"] == []
 
 
+def _complete_style_dict() -> dict:
+    return {
+        "bass": {
+            "reference": "James Jamerson",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/bass"],
+            "confidence": "high",
+            "techniques": [{"name": "ghost_notes", "density": 0.2}],
+            "parameters": {"ghost_note_velocity": 35},
+        },
+        "drums": {
+            "reference": "Steve Jordan",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/drums"],
+            "confidence": "medium",
+            "techniques": [{"name": "backbeat", "rationale": "Caixa seca."}],
+            "parameters": {"swing": 0.12},
+        },
+        "guitar": {
+            "reference": "The Edge",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/guitar"],
+            "confidence": "low",
+            "techniques": [],
+            "parameters": {"delay_feedback": 0.35},
+        },
+        "keys": {
+            "reference": "Nigel Godrich",
+            "researched_at": "2026-08-24",
+            "sources": ["https://example.test/keys"],
+            "confidence": "default",
+            "techniques": [],
+            "parameters": {"voicing_openness": 0.6},
+        },
+    }
+
+
+def test_plan_validate_accepts_complete_style_in_all_four_families():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is True
+    assert env["data"]["valid"] is True
+
+
+def test_plan_validate_rejects_unknown_style_family_in_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["vocals"] = {
+        "reference": "cantor",
+        "researched_at": "2026-08-24",
+        "sources": ["https://example.test/vocals"],
+        "confidence": "medium",
+        "techniques": [],
+        "parameters": {},
+    }
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == "plan.style.vocals"
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("reference", "plan.style.bass.reference"),
+        ("researched_at", "plan.style.bass.researched_at"),
+        ("sources", "plan.style.bass.sources"),
+        ("confidence", "plan.style.bass.confidence"),
+        ("techniques", "plan.style.bass.techniques"),
+        ("parameters", "plan.style.bass.parameters"),
+    ],
+)
+def test_plan_validate_rejects_missing_style_field_in_schema(field: str, path: str):
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    del plan["style"]["bass"][field]
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == path
+
+
+def test_plan_validate_rejects_invalid_style_confidence_in_schema():
+    midi = _require_fixture()
+    plan = _valid_plan_from_skeleton()
+    plan["style"] = _complete_style_dict()
+    plan["style"]["drums"]["confidence"] = "bastante"
+    env = call("plan.validate", {"plan": plan, "midi_path": midi})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_INPUT_SCHEMA"
+    assert env["error"]["path"] == "plan.style.drums.confidence"
+
+
 def test_plan_validate_reports_layers_lt_1_error():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
