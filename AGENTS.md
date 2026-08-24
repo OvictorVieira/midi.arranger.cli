@@ -29,6 +29,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - `tools/techniques/index.py` apenas lê os manuais; técnicas aplicáveis pelo motor são registradas
   explicitamente em `tools/techniques/engine.py`, e `SUPPORTED_TECHNIQUES` deve ser derivado desse
   registro.
+- Toda técnica aplicável registrada em `tools/techniques/engine.py` recebe
+  `context: TechniqueContext`; o despacho exige `seed` explícita e toda variação pseudoaleatória deve
+  derivar de `context.rng(...)`.
 - `tools/techniques/notes.py` classifica notas como `structural` ou `ornamental` por derivação em
   ticks; não grave essa marcação como metadado no MIDI, porque o round-trip não preserva isso de
   forma confiável.

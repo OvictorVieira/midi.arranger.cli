@@ -9,8 +9,12 @@ fronteira entre tecnica documentada e tecnica realmente implementada.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import hashlib
+import inspect
+import random
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal
 
 import mido
@@ -41,6 +45,36 @@ class UnknownTechniqueError(LookupError):
 
 class TechniqueContractError(ValueError):
     """Violacao do contrato runtime de uma tecnica aplicavel."""
+
+
+@dataclass(frozen=True)
+class TechniqueContext:
+    """Contexto explicito e imutavel de uma aplicacao de tecnica.
+
+    A seed entra no despacho e qualquer componente pseudoaleatorio deve derivar
+    dela via `rng()`. Assim a funcao aplicadora nao precisa ler estado global,
+    relogio nem `random` de modulo para variar uma execucao.
+    """
+
+    seed: int
+    canonical: str
+    parameters: Mapping[str, Any] = MappingProxyType({})
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.seed, int):
+            raise TechniqueRegistrationError("seed da tecnica precisa ser int")
+        object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
+
+    def derived_seed(self, purpose: str = "") -> int:
+        """Deriva uma seed estavel para um subcomponente da tecnica."""
+
+        payload = f"{self.seed}|{self.canonical}|{purpose}".encode()
+        return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+    def rng(self, purpose: str = "") -> random.Random:
+        """Cria um RNG local e reprodutivel a partir da seed do contexto."""
+
+        return random.Random(self.derived_seed(purpose))
 
 
 @dataclass(frozen=True)
@@ -82,6 +116,7 @@ class TechniqueRegistry:
                 raise TechniqueRegistrationError(
                     f"funcao de aplicacao de {canonical!r} nao e chamavel"
                 )
+            _validate_apply_accepts_context(canonical, func)
             if canonical in self._items:
                 raise TechniqueRegistrationError(
                     f"tecnica aplicavel duplicada: {canonical!r}"
@@ -105,17 +140,29 @@ class TechniqueRegistry:
         except KeyError:
             raise UnknownTechniqueError(canonical, self.supported()) from None
 
-    def apply(self, canonical: str, *args: Any, **kwargs: Any) -> Any:
+    def apply(
+        self,
+        canonical: str,
+        *args: Any,
+        seed: int,
+        parameters: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
         """Despacha por nome canonico para a funcao registrada."""
 
         technique = self.get(canonical)
+        context = TechniqueContext(
+            seed=seed,
+            canonical=canonical,
+            parameters={} if parameters is None else parameters,
+        )
         before_humanize = (
             _humanize_snapshot(args, kwargs) if technique.level == "humanize" else None
         )
         before_technique = (
             _technique_snapshot(args, kwargs) if technique.level == "technique" else None
         )
-        result = technique.apply(*args, **kwargs)
+        result = technique.apply(*args, context=context, **kwargs)
         if before_humanize is not None:
             after_mid = _result_midi(result) or before_humanize.midi
             after = _MidiContentSnapshot.from_midi(after_mid)
@@ -160,6 +207,23 @@ def _validate_level(level: str) -> None:
     if level not in _VALID_LEVELS:
         raise TechniqueRegistrationError(
             f"nivel {level!r} invalido; use um de {sorted(_VALID_LEVELS)!r}"
+        )
+
+
+def _validate_apply_accepts_context(canonical: str, func: TechniqueApply) -> None:
+    signature = inspect.signature(func)
+    context = signature.parameters.get("context")
+    if context is None:
+        raise TechniqueRegistrationError(
+            f"funcao de aplicacao de {canonical!r} precisa receber parametro "
+            "explicito 'context'"
+        )
+    if context.kind not in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }:
+        raise TechniqueRegistrationError(
+            f"parametro 'context' de {canonical!r} precisa aceitar keyword"
         )
 
 
@@ -518,10 +582,22 @@ def get_technique(canonical: str) -> RegisteredTechnique:
     return _REGISTRY.get(canonical)
 
 
-def apply_technique(canonical: str, *args: Any, **kwargs: Any) -> Any:
+def apply_technique(
+    canonical: str,
+    *args: Any,
+    seed: int,
+    parameters: Mapping[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
     """Despacha `canonical` para sua funcao registrada."""
 
-    return _REGISTRY.apply(canonical, *args, **kwargs)
+    return _REGISTRY.apply(
+        canonical,
+        *args,
+        seed=seed,
+        parameters=parameters,
+        **kwargs,
+    )
 
 
 def registered_techniques() -> tuple[RegisteredTechnique, ...]:
@@ -546,9 +622,15 @@ def validate_registry_against_index(index: TechniqueIndex | None = None) -> None
         )
 
 
-def _identity_apply(subject: Any = None, *_args: Any, **_kwargs: Any) -> Any:
+def _identity_apply(
+    subject: Any = None,
+    *_args: Any,
+    context: TechniqueContext,
+    **_kwargs: Any,
+) -> Any:
     """Aplicador neutro ate os contratos de mutacao entrarem nas proximas US."""
 
+    _ = context
     return subject
 
 
@@ -566,6 +648,7 @@ __all__ = [
     "SUPPORTED_TECHNIQUES",
     "TechniqueApply",
     "TechniqueContractError",
+    "TechniqueContext",
     "TechniqueLevel",
     "TechniqueRegistrationError",
     "TechniqueRegistry",

@@ -3,6 +3,7 @@
 from .engine import (
     SUPPORTED_TECHNIQUES,
     RegisteredTechnique,
+    TechniqueContext,
     TechniqueContractError,
     TechniqueLevel,
     TechniqueRegistrationError,
@@ -46,6 +47,7 @@ __all__ = [
     "SUPPORTED_TECHNIQUES",
     "Technique",
     "TechniqueContractError",
+    "TechniqueContext",
     "TechniqueError",
     "TechniqueIndex",
     "TechniqueLevel",

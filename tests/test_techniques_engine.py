@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from io import BytesIO
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from tools.techniques import (
     SUPPORTED_TECHNIQUES,
+    TechniqueContext,
     TechniqueContractError,
     TechniqueRegistrationError,
     TechniqueRegistry,
@@ -39,23 +41,37 @@ def test_dispatch_by_canonical_name_calls_registered_function():
     calls = []
 
     @registry.register("drums.ghost_notes", "technique")
-    def apply(payload: dict[str, str], *, intensity: float) -> dict[str, object]:
-        calls.append((payload, intensity))
+    def apply(
+        payload: dict[str, str],
+        *,
+        context: TechniqueContext,
+        intensity: float,
+    ) -> dict[str, object]:
+        calls.append((payload, context.seed, intensity))
         return {"payload": payload, "intensity": intensity}
 
-    result = registry.apply("drums.ghost_notes", {"track": "Drums"}, intensity=0.5)
+    result = registry.apply(
+        "drums.ghost_notes",
+        {"track": "Drums"},
+        seed=123,
+        intensity=0.5,
+    )
 
     assert result == {"payload": {"track": "Drums"}, "intensity": 0.5}
-    assert calls == [({"track": "Drums"}, 0.5)]
+    assert calls == [({"track": "Drums"}, 123, 0.5)]
 
 
 def test_unknown_technique_error_names_available_techniques():
     registry = TechniqueRegistry()
-    registry.register("drums.microtiming", "humanize")(lambda payload: payload)
-    registry.register("drums.ghost_notes", "technique")(lambda payload: payload)
+    registry.register("drums.microtiming", "humanize")(
+        lambda payload, *, context: payload
+    )
+    registry.register("drums.ghost_notes", "technique")(
+        lambda payload, *, context: payload
+    )
 
     with pytest.raises(UnknownTechniqueError) as exc:
-        registry.apply("drums.flanm", object())
+        registry.apply("drums.flanm", object(), seed=1)
 
     assert exc.value.available == ("drums.ghost_notes", "drums.microtiming")
     assert "drums.ghost_notes" in str(exc.value)
@@ -64,16 +80,31 @@ def test_unknown_technique_error_names_available_techniques():
 
 def test_duplicate_or_malformed_registration_fails():
     registry = TechniqueRegistry()
-    registry.register("drums.ghost_notes", "technique")(lambda payload: payload)
+    registry.register("drums.ghost_notes", "technique")(
+        lambda payload, *, context: payload
+    )
 
     with pytest.raises(TechniqueRegistrationError, match="duplicada"):
-        registry.register("drums.ghost_notes", "technique")(lambda payload: payload)
+        registry.register("drums.ghost_notes", "technique")(
+            lambda payload, *, context: payload
+        )
     with pytest.raises(TechniqueRegistrationError, match="<familia>.<nome>"):
-        registry.register("ghost_notes", "technique")(lambda payload: payload)
+        registry.register("ghost_notes", "technique")(
+            lambda payload, *, context: payload
+        )
     with pytest.raises(TechniqueRegistrationError, match="nivel"):
-        registry.register("drums.microtiming", "ornament")(lambda payload: payload)
+        registry.register("drums.microtiming", "ornament")(
+            lambda payload, *, context: payload
+        )
     with pytest.raises(TechniqueRegistrationError, match="chamavel"):
         registry.register("drums.microtiming", "humanize")(None)
+
+
+def test_registration_requires_explicit_context_parameter():
+    registry = TechniqueRegistry()
+
+    with pytest.raises(TechniqueRegistrationError, match="context"):
+        registry.register("drums.microtiming", "humanize")(lambda payload: payload)
 
 
 def test_supported_techniques_is_derived_from_the_registry():
@@ -89,14 +120,27 @@ def test_supported_techniques_is_derived_from_the_registry():
 def test_global_dispatch_uses_registered_implementation():
     payload = {"notes": [38]}
 
-    assert apply_technique("drums.ghost_notes", payload) is payload
+    assert apply_technique("drums.ghost_notes", payload, seed=1) is payload
+
+
+def test_registered_techniques_do_not_capture_global_or_nonlocal_state():
+    for tech in registered_techniques():
+        closure = inspect.getclosurevars(tech.apply)
+
+        assert closure.globals == {}
+        assert closure.nonlocals == {}
 
 
 def test_humanize_allows_only_timing_velocity_and_duration_changes():
     registry = TechniqueRegistry()
 
     @registry.register("drums.microtiming", "humanize")
-    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         out = _midi_with_two_notes(first_note=60, second_note=64)
         first_on = out.tracks[1][1]
         first_off = out.tracks[1][2]
@@ -104,7 +148,7 @@ def test_humanize_allows_only_timing_velocity_and_duration_changes():
         out.tracks[1][2] = first_off.copy(time=300)
         return out
 
-    result = registry.apply("drums.microtiming", _midi_with_two_notes())
+    result = registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
 
     assert result.tracks[1][1].time == 12
     assert result.tracks[1][1].velocity == 70
@@ -115,7 +159,12 @@ def test_humanize_contract_rejects_added_notes():
     registry = TechniqueRegistry()
 
     @registry.register("drums.microtiming", "humanize")
-    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         mid.tracks[1].append(mido.Message(
             "note_on", channel=9, note=38, velocity=90, time=0
         ))
@@ -125,29 +174,39 @@ def test_humanize_contract_rejects_added_notes():
         return mid
 
     with pytest.raises(TechniqueContractError, match="contagem de note_on"):
-        registry.apply("drums.microtiming", _midi_with_two_notes())
+        registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
 
 
 def test_humanize_contract_rejects_pitch_changes():
     registry = TechniqueRegistry()
 
     @registry.register("drums.microtiming", "humanize")
-    def apply(_mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        _mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         return _midi_with_two_notes(first_note=61, second_note=64)
 
     with pytest.raises(TechniqueContractError, match="multiconjunto de pitches"):
-        registry.apply("drums.microtiming", _midi_with_two_notes())
+        registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
 
 
 def test_humanize_contract_rejects_note_on_order_changes():
     registry = TechniqueRegistry()
 
     @registry.register("drums.microtiming", "humanize")
-    def apply(_mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        _mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         return _midi_with_two_notes(first_note=64, second_note=60)
 
     with pytest.raises(TechniqueContractError, match="ordem dos note_on"):
-        registry.apply("drums.microtiming", _midi_with_two_notes())
+        registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
 
 
 def test_registered_techniques_preserve_structural_notes_by_default():
@@ -156,7 +215,7 @@ def test_registered_techniques_preserve_structural_notes_by_default():
             continue
 
         source = _midi_with_two_notes()
-        result = apply_technique(tech.canonical, source)
+        result = apply_technique(tech.canonical, source, seed=1)
 
         assert _note_tuples(result) == _note_tuples(_midi_with_two_notes())
 
@@ -165,7 +224,12 @@ def test_technique_allows_ornamental_notes_cc_and_pitch_bend():
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
-    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         track = mid.tracks[1]
         track.append(mido.Message(
             "control_change", channel=9, control=4, value=48, time=0
@@ -179,7 +243,7 @@ def test_technique_allows_ornamental_notes_cc_and_pitch_bend():
         ))
         return mid
 
-    result = registry.apply("drums.ghost_notes", _midi_with_two_notes())
+    result = registry.apply("drums.ghost_notes", _midi_with_two_notes(), seed=1)
 
     note_ons = [
         msg for msg in result.tracks[1]
@@ -208,48 +272,68 @@ def test_technique_contract_rejects_structural_pitch_or_position_changes():
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
-    def change_pitch(_mid: mido.MidiFile) -> mido.MidiFile:
+    def change_pitch(
+        _mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         return _midi_with_two_notes(first_note=61, second_note=64)
 
     with pytest.raises(TechniqueContractError, match="pitch ou posicao"):
-        registry.apply("drums.ghost_notes", _midi_with_two_notes())
+        registry.apply("drums.ghost_notes", _midi_with_two_notes(), seed=1)
 
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
-    def change_position(mid: mido.MidiFile) -> mido.MidiFile:
+    def change_position(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         first_on = mid.tracks[1][1]
         mid.tracks[1][1] = first_on.copy(time=24)
         return mid
 
     with pytest.raises(TechniqueContractError, match="pitch ou posicao"):
-        registry.apply("drums.ghost_notes", _midi_with_two_notes())
+        registry.apply("drums.ghost_notes", _midi_with_two_notes(), seed=1)
 
 
 def test_technique_contract_rejects_structural_velocity_without_permission():
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
-    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         first_on = mid.tracks[1][1]
         mid.tracks[1][1] = first_on.copy(velocity=72)
         return mid
 
     with pytest.raises(TechniqueContractError, match="velocity"):
-        registry.apply("drums.ghost_notes", _midi_with_two_notes())
+        registry.apply("drums.ghost_notes", _midi_with_two_notes(), seed=1)
 
 
 def test_technique_contract_rejects_structural_duration_without_permission():
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
-    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         first_off = mid.tracks[1][2]
         mid.tracks[1][2] = first_off.copy(time=300)
         return mid
 
     with pytest.raises(TechniqueContractError, match="duracao"):
-        registry.apply("drums.ghost_notes", _midi_with_single_note())
+        registry.apply("drums.ghost_notes", _midi_with_single_note(), seed=1)
 
 
 def test_technique_can_declare_structural_velocity_and_duration_changes():
@@ -261,14 +345,19 @@ def test_technique_can_declare_structural_velocity_and_duration_changes():
         allow_structural_velocity_change=True,
         allow_structural_duration_change=True,
     )
-    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         first_on = mid.tracks[1][1]
         first_off = mid.tracks[1][2]
         mid.tracks[1][1] = first_on.copy(velocity=72)
         mid.tracks[1][2] = first_off.copy(time=300)
         return mid
 
-    result = registry.apply("bass.ghost_notes", _midi_with_single_note())
+    result = registry.apply("bass.ghost_notes", _midi_with_single_note(), seed=1)
 
     assert result.tracks[1][1].velocity == 72
     assert result.tracks[1][2].time == 300
@@ -303,6 +392,40 @@ def test_technique_application_is_idempotent_after_saved_round_trip(
 
     assert _midi_bytes(twice) == once_path.read_bytes()
     assert _note_tuples(twice) == _note_tuples(once)
+
+
+def test_technique_context_makes_seed_effect_explicit_and_deterministic():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        first_on = mid.tracks[1][1]
+        mid.tracks[1][1] = first_on.copy(velocity=70 + context.seed % 16)
+        return mid
+
+    same_a = registry.apply("drums.microtiming", _midi_with_two_notes(), seed=17)
+    same_b = registry.apply("drums.microtiming", _midi_with_two_notes(), seed=17)
+    different = registry.apply("drums.microtiming", _midi_with_two_notes(), seed=18)
+
+    assert _midi_bytes(same_a) == _midi_bytes(same_b)
+    assert _midi_bytes(same_a) != _midi_bytes(different)
+
+
+def test_technique_context_derives_local_rng_from_seed_and_name():
+    ctx_a = TechniqueContext(seed=7, canonical="drums.microtiming")
+    ctx_b = TechniqueContext(seed=7, canonical="drums.microtiming")
+    ctx_c = TechniqueContext(seed=8, canonical="drums.microtiming")
+
+    assert ctx_a.rng("offset").randrange(10_000) == ctx_b.rng("offset").randrange(
+        10_000
+    )
+    assert ctx_a.rng("offset").randrange(10_000) != ctx_c.rng("offset").randrange(
+        10_000
+    )
 
 
 def test_every_registered_technique_exists_in_manual_index():
@@ -348,7 +471,12 @@ def _ornament_registry() -> TechniqueRegistry:
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
-    def apply_drums(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply_drums(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         _insert_note(
             mid.tracks[1],
             channel=9,
@@ -360,7 +488,12 @@ def _ornament_registry() -> TechniqueRegistry:
         return mid
 
     @registry.register("bass.ghost_notes", "technique")
-    def apply_bass(mid: mido.MidiFile) -> mido.MidiFile:
+    def apply_bass(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
         _insert_note(
             mid.tracks[2],
             channel=0,
@@ -378,8 +511,8 @@ def _apply_two_ornament_techniques(
     registry: TechniqueRegistry,
     mid: mido.MidiFile,
 ) -> mido.MidiFile:
-    mid = registry.apply("drums.ghost_notes", mid)
-    return registry.apply("bass.ghost_notes", mid)
+    mid = registry.apply("drums.ghost_notes", mid, seed=1)
+    return registry.apply("bass.ghost_notes", mid, seed=1)
 
 
 def _insert_note(
