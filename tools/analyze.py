@@ -23,6 +23,8 @@ from .primitives import KICKS, SNARES
 from .primitives import bars_from as _bars_from
 from .primitives import chord_root as _chord_root
 from .primitives import key_root as _key_root
+from .tuning import TrackChannelDistribution
+from .tuning import channel_distribution as _channel_distribution
 
 UNISON_WINDOW_S = 0.010  # 10 ms — mesmo limiar de cluster de strum do humanize
 
@@ -70,6 +72,7 @@ class Analysis:
     guitar_unison_positions: list[float]       # segundos
     track_names: list[str]                     # ordem estavel
     guitar_notes: list[GuitarNote] = field(default_factory=list)
+    channel_distribution: list[TrackChannelDistribution] = field(default_factory=list)
 
 
 def find_bar(analysis: Analysis, onset_s: float) -> BarAnalysis | None:
@@ -258,6 +261,7 @@ def analyze(midi_path: str) -> Analysis:
         guitar_unison_positions=unisons,
         track_names=track_names,
         guitar_notes=guitar_notes,
+        channel_distribution=_channel_distribution(midi_path),
     )
 
 

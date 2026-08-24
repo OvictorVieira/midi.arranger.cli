@@ -466,6 +466,24 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "snare_positions_s": [float(x) for x in a.snare_positions],
             "guitar_unison_positions_s": [float(x) for x in a.guitar_unison_positions],
         },
+        "channel_distribution": [
+            {
+                "track_index": int(td.track_index),
+                "track_name": td.track_name,
+                "channels": [
+                    {
+                        "channel": int(c.channel),
+                        "note_count": int(c.note_count),
+                        "pitch_min": int(c.pitch_min),
+                        "pitch_max": int(c.pitch_max),
+                        "span": int(c.span),
+                        "percentage": float(c.percentage),
+                    }
+                    for c in td.channels
+                ],
+            }
+            for td in a.channel_distribution
+        ],
     }
 
     warnings: list[dict[str, Any]] = []
@@ -581,11 +599,44 @@ ANALYZE_TOOL = Tool(
                     "kick_positions_s", "snare_positions_s",
                     "guitar_unison_positions_s",
                 ],
+                "additionalProperties": False,
+            },
+            "channel_distribution": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "track_index": {"type": "integer", "minimum": 0},
+                        "track_name": {"type": "string"},
+                        "channels": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+                                    "note_count": {"type": "integer", "minimum": 1},
+                                    "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
+                                    "pitch_max": {"type": "integer", "minimum": 0, "maximum": 127},
+                                    "span": {"type": "integer", "minimum": 0},
+                                    "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+                                },
+                                "required": [
+                                    "channel", "note_count", "pitch_min", "pitch_max",
+                                    "span", "percentage",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["track_index", "track_name", "channels"],
+                    "additionalProperties": False,
+                },
             },
         },
         "required": [
             "midi_path", "sha256", "tempo", "time_signature", "key_root",
             "key_name", "sections", "bars", "tracks", "rhythmic_anchors",
+            "channel_distribution",
         ],
     },
     func=_analyze_impl,
