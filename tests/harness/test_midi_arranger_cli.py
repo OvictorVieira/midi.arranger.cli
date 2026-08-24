@@ -440,6 +440,157 @@ def test_agent_adapter_does_not_pass_model_or_effort_when_not_requested(
         assert unexpected not in joined_args
 
 
+def test_run_prompt_includes_default_driver_for_selected_tool(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "codex")
+    env = complete_on(env, 1)
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "codex", "1", env=env)
+
+    assert result.returncode == 0, result.stderr
+    prompt = read_mock_log(log_path)["PROMPT"]
+    driver = REPO_ROOT / "prompts" / "CODEX.md"
+    assert f"prompt_driver_file={driver}" in prompt
+    assert driver.read_text() in prompt
+    assert (REPO_ROOT / "prompts" / "CLAUDE.md").read_text() not in prompt
+
+
+@pytest.mark.parametrize(
+    ("tool", "binary", "driver_name"),
+    [
+        ("claude", "claude", "CLAUDE.md"),
+        ("codex", "codex", "CODEX.md"),
+        ("agy", "agy", "AGY.md"),
+        ("cursor", "cursor-agent", "CURSOR.md"),
+        ("opencode", "opencode", "OPENCODE.md"),
+        ("amp", "amp", "AMP.md"),
+        ("gemini", "gemini", "GEMINI.md"),
+    ],
+)
+def test_run_prompt_delivers_selected_tool_driver_to_mock_agent(
+    tmp_path: Path,
+    tool: str,
+    binary: str,
+    driver_name: str,
+) -> None:
+    log_path, env = install_mock_binary(tmp_path, binary)
+    env = complete_on(env, 1)
+    project = prepare_run_project(tmp_path, name=f"project-{tool}")
+
+    result = run_cli("run", "--cwd", str(project), "--tool", tool, "1", env=env)
+
+    assert result.returncode == 0, result.stderr
+    prompt = read_mock_log(log_path)["PROMPT"]
+    selected_driver = REPO_ROOT / "prompts" / driver_name
+    other_drivers = [
+        path
+        for path in (REPO_ROOT / "prompts").glob("*.md")
+        if path.name != driver_name
+    ]
+
+    assert f"prompt_driver_file={selected_driver}" in prompt
+    assert selected_driver.read_text() in prompt
+    for other_driver in other_drivers:
+        assert other_driver.read_text() not in prompt
+
+
+def test_changing_run_tool_changes_prompt_driver_delivered_to_mock_agent(tmp_path: Path) -> None:
+    claude_log, claude_env = install_mock_binary(tmp_path, "claude")
+    gemini_log, gemini_env = install_mock_binary(tmp_path, "gemini")
+    claude_env = complete_on(claude_env, 1)
+    gemini_env = complete_on(gemini_env, 1)
+    claude_project = prepare_run_project(tmp_path, name="claude-project")
+    gemini_project = prepare_run_project(tmp_path, name="gemini-project")
+
+    claude_result = run_cli(
+        "run",
+        "--cwd",
+        str(claude_project),
+        "--tool",
+        "claude",
+        "1",
+        env=claude_env,
+    )
+    gemini_result = run_cli(
+        "run",
+        "--cwd",
+        str(gemini_project),
+        "--tool",
+        "gemini",
+        "1",
+        env=gemini_env,
+    )
+
+    assert claude_result.returncode == 0, claude_result.stderr
+    assert gemini_result.returncode == 0, gemini_result.stderr
+    claude_prompt = read_mock_log(claude_log)["PROMPT"]
+    gemini_prompt = read_mock_log(gemini_log)["PROMPT"]
+
+    assert f"prompt_driver_file={REPO_ROOT / 'prompts' / 'CLAUDE.md'}" in claude_prompt
+    assert f"prompt_driver_file={REPO_ROOT / 'prompts' / 'GEMINI.md'}" in gemini_prompt
+    assert (REPO_ROOT / "prompts" / "CLAUDE.md").read_text() in claude_prompt
+    assert (REPO_ROOT / "prompts" / "GEMINI.md").read_text() in gemini_prompt
+    assert claude_prompt != gemini_prompt
+
+
+def test_run_prompt_file_override_takes_precedence(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    env = complete_on(env, 1)
+    custom_driver = tmp_path / "custom-driver.md"
+    custom_driver.write_text(
+        "# Custom driver\n\nUse this project-specific driver.\n<promise>COMPLETE</promise>\n",
+    )
+    env["MIDI_ARRANGER_PROMPT_FILE"] = str(custom_driver)
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
+
+    assert result.returncode == 0, result.stderr
+    prompt = read_mock_log(log_path)["PROMPT"]
+    assert f"prompt_driver_file={custom_driver}" in prompt
+    assert custom_driver.read_text() in prompt
+    assert (REPO_ROOT / "prompts" / "CLAUDE.md").read_text() not in prompt
+
+
+def test_run_prompt_file_override_missing_fails_clearly_without_fallback(tmp_path: Path) -> None:
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    missing_driver = tmp_path / "missing-driver.md"
+    env["MIDI_ARRANGER_PROMPT_FILE"] = str(missing_driver)
+    project = prepare_run_project(tmp_path)
+
+    result = run_cli("run", "--cwd", str(project), "--tool", "claude", "1", env=env)
+
+    assert result.returncode == 66
+    assert "MIDI_ARRANGER_PROMPT_FILE points to a prompt driver that does not exist" in result.stderr
+    assert str(missing_driver) in result.stderr
+    assert not log_path.exists()
+
+
+def test_missing_bundled_run_driver_fails_clearly_without_invocation(tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    app_bin = app / "bin"
+    app_bin.mkdir(parents=True)
+    script_copy = app_bin / "midi-arranger"
+    shutil.copy2(SCRIPT, script_copy)
+    script_copy.chmod(script_copy.stat().st_mode | stat.S_IXUSR)
+    log_path, env = install_mock_binary(tmp_path, "claude")
+    project = prepare_run_project(tmp_path)
+
+    result = subprocess.run(
+        [str(script_copy), "run", "--cwd", str(project), "--tool", "claude", "1"],
+        cwd=app,
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 66
+    assert "Prompt driver for tool 'claude' not found" in result.stderr
+    assert str(app / "prompts" / "CLAUDE.md") in result.stderr
+    assert not log_path.exists()
+
+
 def test_run_loop_invokes_agent_once_per_requested_iteration(tmp_path: Path) -> None:
     log_path, env = install_mock_binary(tmp_path, "claude")
     env = complete_on(env, 4)
