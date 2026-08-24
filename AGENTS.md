@@ -29,6 +29,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - `tools/techniques/index.py` apenas lê os manuais; técnicas aplicáveis pelo motor são registradas
   explicitamente em `tools/techniques/engine.py`, e `SUPPORTED_TECHNIQUES` deve ser derivado desse
   registro.
+- `tools/techniques/notes.py` classifica notas como `structural` ou `ornamental` por derivação em
+  ticks; não grave essa marcação como metadado no MIDI, porque o round-trip não preserva isso de
+  forma confiável.
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
 - Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em
