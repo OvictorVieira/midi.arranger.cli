@@ -34,6 +34,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Toda técnica aplicável registrada em `tools/techniques/engine.py` recebe
   `context: TechniqueContext`; o despacho exige `seed` explícita e toda variação pseudoaleatória deve
   derivar de `context.rng(...)`.
+- Aplicador registrado no registro global de `tools/techniques/engine.py` deve ser autocontido:
+  não capture estado global/nonlocal nem dependa de helper global; quando precisar de números do
+  manual, leia-os pelo índice (`build_index()`) dentro da aplicação.
 - Quando a aplicação de técnica recebe ferramenta-alvo, o despacho resolve a receita do manual:
   usa a receita específica quando existir, cai em `generic` com warning `W_NO_TOOL_RECIPE`, e falha
   antes de chamar a função se não houver receita específica nem `generic`.

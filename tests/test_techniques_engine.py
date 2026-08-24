@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from io import BytesIO
 from pathlib import Path
+from statistics import mean, pstdev
 
 import mido
 import pytest
@@ -174,7 +175,7 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert SUPPORTED_TECHNIQUES == ()
+    assert SUPPORTED_TECHNIQUES == ("drums.accent_hierarchy",)
 
 
 def test_global_dispatch_rejects_documented_but_unimplemented_technique():
@@ -183,7 +184,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError) as exc:
         apply_technique("drums.ghost_notes", payload, seed=1)
 
-    assert exc.value.available == ()
+    assert exc.value.available == ("drums.accent_hierarchy",)
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
@@ -676,6 +677,63 @@ def test_technique_context_derives_local_rng_from_seed_and_name():
     assert ctx_a.rng("offset").randrange(10_000) != ctx_c.rng("offset").randrange(
         10_000
     )
+
+
+def test_drums_accent_hierarchy_redistributes_flat_127_velocity():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 120, 36, 127),
+        (0, 120, 42, 127),
+        (240, 360, 42, 127),
+        (360, 420, 38, 127),
+        (480, 600, 38, 127),
+        (480, 600, 42, 127),
+        (720, 840, 42, 127),
+        (960, 1080, 36, 127),
+        (960, 1080, 42, 127),
+        (1200, 1320, 42, 127),
+        (1440, 1560, 38, 127),
+        (1440, 1560, 42, 127),
+        (1440, 1560, 49, 127),
+    ])
+    before = _note_tuples(source)
+    before_velocities = [note[5] for note in before]
+    targets = _accent_hierarchy_targets()
+
+    result = apply_technique("drums.accent_hierarchy", source, seed=1)
+    after = _note_tuples(result)
+    after_velocities = [note[5] for note in after]
+
+    assert len(after) == len(before)
+    assert sorted(note[2] for note in after) == sorted(note[2] for note in before)
+    assert mean(after_velocities) < mean(before_velocities)
+    assert pstdev(after_velocities) > pstdev(before_velocities)
+    assert 127 not in after_velocities
+    assert set(after_velocities) == {
+        targets["accent"],
+        targets["normal"],
+        targets["soft"],
+        targets["ghost"],
+    }
+
+    velocities_by_tick_pitch = {
+        (start, pitch): velocity
+        for _, _, pitch, start, _, velocity in after
+    }
+    assert velocities_by_tick_pitch[(480, 38)] > velocities_by_tick_pitch[(720, 42)]
+
+
+def test_drums_accent_hierarchy_preserves_coherent_velocity_below_ceiling():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 120, 36, 92),
+        (240, 360, 42, 65),
+        (360, 420, 38, 35),
+        (480, 600, 38, 110),
+    ])
+    before = _note_tuples(source)
+
+    result = apply_technique("drums.accent_hierarchy", source, seed=1)
+
+    assert _note_tuples(result) == before
 
 
 def test_apply_uses_requested_tool_recipe_without_warning():
@@ -1455,6 +1513,28 @@ def _technique_index(
             source_manual="manual_teste.md",
         ),
     ))
+
+
+def _accent_hierarchy_targets() -> dict[str, int]:
+    technique = build_index(MANUALS_DIR).get("drums.accent_hierarchy")
+    assert technique is not None
+    params = {param.name: param for param in technique.parameters}
+
+    def target(name: str) -> int:
+        param = params[name]
+        if param.value is not None:
+            return int(param.value)
+        assert param.range is not None
+        lo, hi = param.range
+        return int(round((lo + hi) / 2))
+
+    hard_ceiling = target("hard_ceiling")
+    return {
+        "accent": min(target("accent"), hard_ceiling),
+        "normal": min(target("normal"), hard_ceiling),
+        "soft": min(target("soft"), hard_ceiling),
+        "ghost": min(target("ghost"), hard_ceiling),
+    }
 
 
 def _note_tuples(mid: mido.MidiFile) -> list[tuple[int, int, int, int, int, int]]:

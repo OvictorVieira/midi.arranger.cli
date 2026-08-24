@@ -969,6 +969,96 @@ def _returns_first_argument_unchanged(func: TechniqueApply) -> bool:
         and instructions[1].opname == "RETURN_VALUE"
     )
 
+
+@register_technique("drums.accent_hierarchy", "humanize")
+def _apply_drums_accent_hierarchy(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+    params = {param.name: param for param in technique.parameters}
+
+    def range_for(name: str) -> tuple[int, int]:
+        param = params[name]
+        if param.range is None:
+            raise ValueError(
+                f"tecnica {context.canonical!r} nao declara range para {name!r}"
+            )
+        lo, hi = param.range
+        return int(lo), int(hi)
+
+    def target(range_: tuple[int, int]) -> int:
+        lo, hi = range_
+        return int(round((lo + hi) / 2))
+
+    hard_ceiling = int(params["hard_ceiling"].value)
+    ranges = {
+        "accent": range_for("accent"),
+        "normal": range_for("normal"),
+        "soft": range_for("soft"),
+        "ghost": range_for("ghost"),
+    }
+    targets = {
+        name: min(target(range_), hard_ceiling)
+        for name, range_ in ranges.items()
+    }
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+
+    def layer_for(note: int, tick: int) -> str:
+        # General MIDI / SD3 core map from knowledge/tecnicas/tecnicas_bateria_midi.md.
+        kicks = {35, 36}
+        snares = {37, 38, 40}
+        hi_hats = {
+            10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26, 42,
+            44, 46, 60, 61, 62, 63, 64,
+        }
+        crashes = {49, 52, 55, 57, 59}
+
+        beat_tick = tick % ticks_per_beat
+        on_beat = beat_tick == 0
+        beat_in_bar = (tick // ticks_per_beat) % 4
+        backbeat = on_beat and beat_in_bar in {1, 3}
+
+        if note in crashes:
+            return "accent"
+        if note in snares:
+            return "accent" if backbeat else "ghost"
+        if note in kicks or note in hi_hats:
+            return "normal" if on_beat else "soft"
+        return "normal" if on_beat else "soft"
+
+    def velocity_for(current: int, layer: str) -> int:
+        lo, hi = ranges[layer]
+        if current <= hard_ceiling and lo <= current <= hi:
+            return current
+        return max(1, min(current, targets[layer]))
+
+    for track in mid.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if (
+                msg.is_meta
+                or msg.type != "note_on"
+                or msg.velocity <= 0
+                or msg.channel != 9
+            ):
+                continue
+            layer = layer_for(msg.note, tick)
+            msg.velocity = velocity_for(msg.velocity, layer)
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
