@@ -20,8 +20,8 @@ MANUALS_DIR = (
 
 # --- manual real de bateria ------------------------------------------------
 
-def test_index_finds_all_techniques_from_versioned_drums_manual():
-    """O manual de bateria versionado tem exatamente os blocos que documentamos.
+def test_index_finds_all_techniques_from_versioned_manuals():
+    """Os manuais versionados tem exatamente os blocos que documentamos.
 
     Este teste amarra os canonicos que a US-005 exige exista no indice.
     Adicionar um bloco novo no manual quebra o teste — atualize-o AO adicionar
@@ -29,13 +29,29 @@ def test_index_finds_all_techniques_from_versioned_drums_manual():
     idx = build_index(MANUALS_DIR)
     canonicals = sorted(t.canonical for t in idx.techniques)
     assert canonicals == sorted([
+        "bass.attack_style",
+        "bass.ghost_notes",
+        "bass.hammer_pull",
+        "bass.harmonic",
+        "bass.let_ring",
+        "bass.palm_mute",
+        "bass.slide",
+        "bass.string_selection",
+        "bass.velocity_contour",
+        "bass.vibrato",
         "drums.accent_hierarchy",
-        "drums.ghost_notes",
-        "drums.flam",
-        "drums.microtiming",
+        "drums.articulation_diff",
         "drums.buzz_roll",
         "drums.cymbal_choke",
-        "drums.articulation_diff",
+        "drums.flam",
+        "drums.ghost_notes",
+        "drums.microtiming",
+        "keys.bass_anticipation",
+        "keys.hand_asynchrony",
+        "keys.melody_lead",
+        "keys.rolled_chord",
+        "keys.syncopated_pedal",
+        "keys.voice_dynamics",
     ])
 
 
@@ -63,7 +79,9 @@ def test_technique_marked_unverified_when_any_param_has_no_source():
 def test_by_family_filters_correctly():
     idx = build_index(MANUALS_DIR)
     assert len(idx.by_family("drums")) == 7
-    assert idx.by_family("bass") == ()
+    assert len(idx.by_family("bass")) == 10
+    assert len(idx.by_family("keys")) == 6
+    assert idx.by_family("guitar") == ()
 
 
 # --- manuals malformados ---------------------------------------------------

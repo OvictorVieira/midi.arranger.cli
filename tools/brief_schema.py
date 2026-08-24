@@ -260,7 +260,13 @@ def validate_brief(brief: Any) -> None:
     for family, entry in style.items():
         for i, tech in enumerate(entry.get("techniques", [])):
             name = tech["name"]
-            if idx.get(name) is None:
+            # A familia ja esta no caminho (`style.drums.techniques[...]`), entao
+            # nome cru aqui NAO e ambiguo: `ghost_notes` sob `style.drums` so pode
+            # ser o de bateria. Resolve pela familia antes de cair no erro.
+            resolved = idx.get(name) or next(
+                (t for t in idx.candidates(name) if t.family == family), None
+            )
+            if resolved is None:
                 candidates = list(idx.names()) + [t.name for t in idx.techniques]
                 matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
                 raise ToolError(
