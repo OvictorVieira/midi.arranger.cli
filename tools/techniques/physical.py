@@ -21,7 +21,10 @@ class TechniquePhysicalError(ValueError):
     """Ornamento rejeitado por plausibilidade fisica do instrumento."""
 
 
-_DRUM_FOOT_NOTES: frozenset[int] = frozenset({23, 35, 36, 44, 48, 59})
+# Fonte: `knowledge/tecnicas/tecnicas_bateria_midi.md`, §1.1/§1.2.
+# No mapa GM/SD3 central, apenas bumbo e hi-hat pedal entram no orçamento de pes;
+# toms (48), ride/crash (59) e qualquer outra peca contam como mao.
+_DRUM_FOOT_NOTES: frozenset[int] = frozenset({35, 36, 44})
 _BASS_DEFAULT_TUNING: tuple[int, ...] = (28, 33, 38, 43)
 _GUITAR_TUNINGS: dict[str, tuple[int, ...]] = {
     "e_padrao": (40, 45, 50, 55, 59, 64),

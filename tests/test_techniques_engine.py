@@ -830,7 +830,10 @@ def test_engine_warnings_fit_the_tool_envelope_shape():
     assert env["warnings"][0]["code"] == "W_NO_TOOL_RECIPE"
 
 
-def test_physical_drums_rejects_third_simultaneous_hand_and_keeps_source_clean():
+@pytest.mark.parametrize("ornament_note", [48, 59])
+def test_physical_drums_rejects_third_simultaneous_hand_and_keeps_source_clean(
+    ornament_note: int,
+):
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
@@ -843,7 +846,7 @@ def test_physical_drums_rejects_third_simultaneous_hand_and_keeps_source_clean()
         _insert_note(
             mid.tracks[1],
             channel=9,
-            note=47,
+            note=ornament_note,
             velocity=90,
             start_tick=0,
             end_tick=120,
@@ -862,7 +865,7 @@ def test_physical_drums_rejects_third_simultaneous_hand_and_keeps_source_clean()
     assert _midi_bytes(source) == before_bytes
 
 
-def test_physical_drums_accepts_two_hands_and_two_feet_at_same_tick():
+def test_physical_drums_accepts_two_hands_and_kick_at_same_tick():
     registry = TechniqueRegistry()
 
     @registry.register("drums.ghost_notes", "technique")
@@ -875,16 +878,8 @@ def test_physical_drums_accepts_two_hands_and_two_feet_at_same_tick():
         _insert_note(
             mid.tracks[1],
             channel=9,
-            note=42,
-            velocity=84,
-            start_tick=0,
-            end_tick=120,
-        )
-        _insert_note(
-            mid.tracks[1],
-            channel=9,
-            note=23,
-            velocity=70,
+            note=36,
+            velocity=100,
             start_tick=0,
             end_tick=120,
         )
@@ -894,16 +889,49 @@ def test_physical_drums_accepts_two_hands_and_two_feet_at_same_tick():
         "drums.ghost_notes",
         _midi_with_notes("Drums", 9, [
             (0, 480, 38, 96),
-            (0, 240, 35, 100),
+            (0, 480, 42, 88),
         ]),
         seed=1,
     )
 
     assert sorted(_note_tuples(result)) == [
-        (1, 9, 23, 0, 120, 70),
-        (1, 9, 35, 0, 240, 100),
+        (1, 9, 36, 0, 120, 100),
         (1, 9, 38, 0, 480, 96),
-        (1, 9, 42, 0, 120, 84),
+        (1, 9, 42, 0, 480, 88),
+    ]
+
+
+def test_physical_drums_accepts_kick_and_pedal_hihat_as_two_feet():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.ghost_notes", "technique")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        _insert_note(
+            mid.tracks[1],
+            channel=9,
+            note=44,
+            velocity=70,
+            start_tick=0,
+            end_tick=120,
+        )
+        return mid
+
+    result = registry.apply(
+        "drums.ghost_notes",
+        _midi_with_notes("Drums", 9, [
+            (0, 240, 36, 100),
+        ]),
+        seed=1,
+    )
+
+    assert sorted(_note_tuples(result)) == [
+        (1, 9, 36, 0, 240, 100),
+        (1, 9, 44, 0, 120, 70),
     ]
 
 
