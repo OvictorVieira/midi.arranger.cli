@@ -40,6 +40,7 @@ def test_index_finds_all_techniques_from_versioned_manuals():
         "bass.velocity_contour",
         "bass.vibrato",
         "drums.accent_hierarchy",
+        "drums.accented_roll",
         "drums.articulation_diff",
         "drums.buzz_roll",
         "drums.cymbal_choke",
@@ -65,6 +66,14 @@ def test_index_finds_all_techniques_from_versioned_manuals():
         "guitar.tremolo_picking",
         "guitar.vibrato",
         "keys.bass_anticipation",
+        "keys.damper_pedal",
+        "keys.expression",
+        "keys.hammond_dynamics",
+        "keys.human_articulation",
+        "keys.modulation",
+        "keys.pitch_bend",
+        "keys.rhodes_touch",
+        "keys.vibrato",
         "keys.hand_asynchrony",
         "keys.melody_lead",
         "keys.rolled_chord",
@@ -94,11 +103,27 @@ def test_technique_marked_unverified_when_any_param_has_no_source():
     assert flam.verified is False
 
 
+def test_accented_roll_velocities_agree_with_the_accent_hierarchy():
+    """O manual afirma que os valores do rufo corroboram a hierarquia de acento.
+
+    Se as duas fontes discordassem, a afirmacao de corroboracao seria falsa e
+    o arranjador teria duas verdades sobre o que e acento e o que e suave.
+    """
+    idx = build_index(MANUALS_DIR)
+    roll = {p.name: p for p in idx.get("drums.accented_roll").parameters}
+    hierarquia = {p.name: p for p in idx.get("drums.accent_hierarchy").parameters}
+
+    lo, hi = hierarquia["accent"].range
+    assert lo <= roll["velocity_acento"].value <= hi
+    lo, hi = hierarquia["soft"].range
+    assert lo <= roll["velocity_suave"].value <= hi
+
+
 def test_by_family_filters_correctly():
     idx = build_index(MANUALS_DIR)
-    assert len(idx.by_family("drums")) == 7
+    assert len(idx.by_family("drums")) == 8
     assert len(idx.by_family("bass")) == 10
-    assert len(idx.by_family("keys")) == 6
+    assert len(idx.by_family("keys")) == 14
     assert len(idx.by_family("guitar")) == 18
     assert idx.by_family("vocals") == ()
 

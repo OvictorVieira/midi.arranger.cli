@@ -175,3 +175,35 @@ def test_names_shared_by_guitar_and_bass_are_ambiguous_without_a_tool(name: str)
     assert env["error"]["code"] == "E_TECHNIQUE_AMBIGUOUS"
     assert f"bass.{name}" in env["error"]["hint"]
     assert f"guitar.{name}" in env["error"]["hint"]
+
+
+@pytest.mark.parametrize(
+    ("tool", "canonical"),
+    [
+        ("modo_bass", "bass.vibrato"),
+        ("shreddage3", "guitar.vibrato"),
+        ("rhodes", "keys.vibrato"),
+    ],
+)
+def test_vibrato_exists_in_three_families_and_the_tool_still_resolves(
+    tool: str, canonical: str,
+):
+    """`vibrato` e a primeira tecnica a existir em tres familias.
+
+    Sao tres receitas incompativeis: no baixo e CC1 com o rate do MODO BASS,
+    na guitarra e aftertouch ou LFO amostrado, e no teclado e um LFO cuja taxa
+    fixa e justamente o que denuncia programacao. Escolher a errada em silencio
+    produz MIDI plausivel e errado.
+    """
+    env = call("techniques.describe", {"name": "vibrato", "tool": tool})
+
+    assert env["ok"] is True
+    assert env["data"]["canonical"] == canonical
+
+
+def test_vibrato_without_a_tool_lists_all_three_candidates():
+    env = call("techniques.describe", {"name": "vibrato"})
+
+    assert env["ok"] is False
+    for canonical in ("bass.vibrato", "guitar.vibrato", "keys.vibrato"):
+        assert canonical in env["error"]["hint"]

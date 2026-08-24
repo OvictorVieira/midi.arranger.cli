@@ -244,7 +244,45 @@ Forma exata da rampa de velocity: `[NÃO VERIFICADO — sem fonte]`.
 Não confunda com `Snare Backward/Forward Swirl` (SD3 66/67) nem com a família Sweep do AD2 (26–35) —
 aquilo é vassoura, não rufo.
 
-### 3.2 Choke de prato
+### 3.2 Rufo acentuado — e por que ele não é buzz roll
+
+**Rufo acentuado e buzz roll são rudimentos diferentes.** O buzz é de rebote múltiplo, sem batidas
+discretas contáveis. O rufo acentuado é uma sucessão rápida de batidas **discretas e alternadas**,
+com acentos periódicos. Em metalcore o segundo é muito mais comum que o primeiro, e é o que aparece
+antes de refrão e breakdown.
+
+O que o denuncia como programado tem nome, e não é falta de aleatoriedade: é o contorno virar uma
+**onda quadrada deslocada** — todo acento na mesma velocity, toda batida suave na mesma velocity,
+alternando. Referência de partida demonstrada na tela: acento **118**, suave **55**
+([GetGood Drums, 1:05–1:16](https://www.youtube.com/watch?v=OPnrlXhJhOo), CONVENÇÃO). São valores
+compatíveis com as faixas da Toontrack já usadas em §7.1 — acento 105–120, suave 55–79 — o que é
+corroboração independente, não fonte nova.
+
+O problema não são os valores. É a uniformidade.
+
+#### As duas regras que consertam, e nenhuma é aleatória
+
+**1. A mão dominante bate mais forte.** Baterista destro toca R L R L, e o acento cai na direita
+"99 vezes em 100". Logo as batidas *suaves* tocadas pela **direita** ficam ligeiramente mais altas
+que as suaves tocadas pela esquerda. Isso é assimetria por alternância de mão — depende de saber a
+posição na sequência, não de sortear.
+
+**2. A batida imediatamente antes do acento sobe.** Preparando o acento, o braço levanta e o
+movimento do corpo faz a *outra* mão bater um pouco mais forte logo antes. Sobe, mas não até o nível
+do acento.
+
+Levar essa segunda regra ao extremo — subir **muito** a nota anterior ao acento — produz um efeito
+"rolando" em vez de reto e rígido. É truque de execução real, atribuído no vídeo ao baterista Jason
+Bowld (Bullet For My Valentine).
+
+> **O autor rejeita o humanize automático na frente da câmera.** Ele abre o MIDI Transform → Humanize
+> do Logic, aplica, ouve e desfaz: quer controle. É exatamente a ordem que este projeto adota —
+> intenção determinística primeiro, componente aleatório depois e menor.
+
+Generaliza para tom, bumbo e pratos. A forma da rampa de velocity de um **buzz** continua sem fonte;
+este vídeo não fala de buzz.
+
+### 3.3 Choke de prato
 
 | Ferramenta | Como |
 |---|---|
@@ -437,20 +475,49 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
 
 ### 7.3 Flam
 
+**A articulação gravada do SD3 e o flam montado à mão não são a mesma coisa, e há desacordo
+documentado sobre qual usar.** O manual mandava usar a gravada; um tutorial de produção que
+demonstra as duas na tela discorda, e a razão dele é específica: o espaçamento da articulação
+gravada é largo demais para o gosto dele, e montar à mão permite apertar
+([Levi Keller, 1:39–2:21](https://www.youtube.com/watch?v=x-Fjokn-YI4), CONVENÇÃO).
+
+As duas posições são legítimas e dependem do resultado que se quer. O que fica como regra é:
+
+| Se… | Então |
+|---|---|
+| O espaçamento da articulação gravada serve | Use nota 69. Uma nota, e o sample resolve |
+| Quer flam mais apertado que o gravado | Monte à mão, **duas notas, grid desligado** |
+
+E, montando à mão, há uma gradação de realismo que o mesmo tutorial demonstra (2:24–2:48): duas
+notas na **mesma** altura tocam o mesmo sample ou grupo de samples e já soa melhor que a articulação;
+mas colocar a segunda batida numa **amostra ou grupo ligeiramente diferente** imita melhor como um
+baterista real bate no tambor duas vezes seguidas. É o mesmo princípio do round robin, aplicado de
+propósito em vez de por sorteio.
+
+> **Regra que sai daí e vale além do flam:** dois toms atacados **exatamente** no mesmo tick não
+> existem em execução real. Num fill com dois toms simultâneos, flameie — "a real drummer is not
+> going to be hitting those at exactly the same time" (Levi Keller, 3:11–3:33). Isso é decisão de
+> colocação, não de timbre, e o arranjador pode aplicar sozinho.
+
+O gap de 8–15 ms continua sendo o único número com fonte. **A razão de velocity entre a graça e a
+principal, e o teto em que o flam deixa de ler como flam, continuam sem fonte** — nenhum dos dois
+tutoriais dá número.
+
 ```technique
 {
   "name": "flam",
   "family": "drums",
   "summary": "Nota de graca precedendo a principal em 8-15ms; a principal e mais forte.",
   "verified": false,
-  "description": "Prefira a articulacao gravada (SD3 nota 69). No AD2, monte com dois hits e ponha a graca na alternada (40) para as duas nao roubarem voz. Acima de ~35ms deixa de ler como flam.",
+  "description": "DUAS ESTRATEGIAS, e ha desacordo documentado. A articulacao gravada do SD3 (nota 69) resolve com uma nota so, mas ha tutorial de producao que a considera larga demais e prefere montar a mao para apertar. Montando a mao: duas notas com o GRID DESLIGADO, senao a DAW gruda a graca na grade e o flam some. Gradacao de realismo, da pior para a melhor: articulacao gravada < duas notas na mesma altura < segunda batida numa amostra ou grupo LIGEIRAMENTE DIFERENTE, que imita como um baterista bate duas vezes seguidas. No AD2 nao ha articulacao gravada, entao a graca vai na alternada (40) para as duas nao roubarem voz. REGRA QUE VALE ALEM DO FLAM: dois toms atacados no mesmo tick nao existem em execucao real — num fill com toms simultaneos, flameie.",
   "parameters": [
     {"name": "gap_ms", "range": [8, 15], "source": "Moozix"},
-    {"name": "grace_velocity_ratio", "range": [0.30, 0.45], "source": null},
-    {"name": "reading_ceiling_ms", "value": 35, "source": null}
+    {"name": "grace_velocity_ratio", "source": null},
+    {"name": "reading_ceiling_ms", "source": null}
   ],
   "tools": {
-    "superior_drummer": {"notes": [69], "note": "usar a articulacao Snare Flams gravada; NAO montar na mao"},
+    "generic": {"note": "grid DESLIGADO para arrastar a graca livre; segunda batida em amostra diferente quando a lib permitir"},
+    "superior_drummer": {"notes": [69], "note": "articulacao Snare Flams gravada — uma nota so. Alternativa: montar a mao em 38 se o espacamento gravado ficar largo demais", "fonte_do_desacordo": "https://www.youtube.com/watch?v=x-Fjokn-YI4"},
     "addictive_drums": {"notes_main": [38], "notes_grace": [40], "note": "AD2 nao tem articulacao de flam gravada"}
   }
 }
@@ -536,6 +603,30 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
       "ride_bow_tip": [60], "ride_bow_shank": [62], "ride_bell": [61],
       "snare_center": [38], "snare_rimshot": [37]
     }
+  }
+}
+```
+
+### 7.8 Rufo acentuado
+
+```technique
+{
+  "name": "accented_roll",
+  "family": "drums",
+  "summary": "Sucessao rapida de batidas discretas alternadas com acentos periodicos. NAO e buzz roll — e o rufo que aparece antes de refrao e breakdown.",
+  "verified": false,
+  "description": "MARCADO NAO VERIFICADO: os valores vem de tutorial de fabricante de biblioteca de bateria, demonstrados na tela, sem medicao. O que denuncia programacao tem nome: o contorno vira ONDA QUADRADA DESLOCADA, todo acento na mesma velocity e toda suave na mesma velocity. O problema nao sao os valores, e a uniformidade. DUAS REGRAS DETERMINISTICAS consertam, e nenhuma e sorteio. (1) MAO DOMINANTE: destro toca R L R L e o acento cai na direita 99 vezes em 100, entao as batidas SUAVES da direita ficam um pouco mais altas que as suaves da esquerda — depende da posicao na sequencia, nao de random. (2) LIFT PRE-ACENTO: a batida imediatamente anterior ao acento sobe, porque o braco levanta e o corpo faz a outra mao bater mais forte; sobe mas NAO ate o nivel do acento. Levar a regra 2 ao extremo produz efeito rolando em vez de reto. NAO substituir isso por funcao de humanize da DAW: o proprio autor aplica e desfaz na camera porque quer controle. Generaliza para tom, bumbo e pratos.",
+  "parameters": [
+    {"name": "velocity_acento", "value": 118, "source": "CONVENCAO — GetGood Drums, demonstrado na tela, https://www.youtube.com/watch?v=OPnrlXhJhOo 1:05-1:16"},
+    {"name": "velocity_suave", "value": 55, "source": "CONVENCAO — mesma fonte; coincide com o piso da faixa soft da Toontrack em accent_hierarchy"},
+    {"name": "delta_mao_dominante", "source": null},
+    {"name": "delta_lift_pre_acento", "source": null},
+    {"name": "sticking_padrao", "value": "RLRL com acento na dominante", "source": "CONVENCAO — mesma fonte, 2:32-2:47"}
+  ],
+  "tools": {
+    "generic": {"note": "precisa saber a posicao de cada nota na sequencia e qual mao a toca; jitter aleatorio nao produz nenhuma das duas regras"},
+    "superior_drummer": {"notes": [38], "note": "Hit Variation ligado para as repeticoes nao reusarem o mesmo sample"},
+    "addictive_drums": {"notes": [38, 40], "note": "alternar entre 38 e 40 evita roubo de voz entre batidas consecutivas"}
   }
 }
 ```
