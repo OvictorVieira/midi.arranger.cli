@@ -30,12 +30,12 @@ pesquisado por familia — com fontes, data e confianca.
 from __future__ import annotations
 
 import difflib
-import re
 from typing import Any
 
 from . import techniques as techniques_mod
 from .plan import ROUTES
 from .registry import SchemaError, Tool, ToolError, validate_input
+from .style_schema import NOTE_NAME_RE as _NOTE_NAME_RE
 from .style_schema import style_technique_schema
 
 # --- vocabularios fechados -------------------------------------------------
@@ -55,7 +55,7 @@ REQUISITO_FAMILIES = (
 STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
 
 _SHA256_RE = r"^[0-9a-f]{64}$"
-_NOTE_NAME_RE = re.compile(r"^[A-G][#b]?-?\d+$")
+
 _MIDI_PITCH_MIN = 0
 _MIDI_PITCH_MAX = 127
 

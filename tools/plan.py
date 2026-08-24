@@ -27,6 +27,7 @@ from typing import Any
 
 from .constants import SYNC_ROLES
 from .style_schema import (
+    ISO_DATE_RE,
     MIDI_PITCH_MAX,
     MIDI_PITCH_MIN,
     find_style_musical_content,
@@ -434,12 +435,20 @@ def _validate_style(plan_style: Any) -> list[str]:
         _reject_musical_content_in_style_value(_family_style_content_scan_dict(entry), base)
         _require_nonempty_str(entry.reference, f"{base}.reference")
         _require_nonempty_str(entry.researched_at, f"{base}.researched_at")
+        # `date.fromisoformat` aceita `20260824` e `2026-W35-1`, que a fachada
+        # JSON Schema recusa. Duas verdades sobre a mesma data e exatamente o
+        # tipo de divergencia dominio/fachada que este projeto nao tolera.
+        if not ISO_DATE_RE.match(entry.researched_at):
+            raise PlanValidationError(
+                f"{base}.researched_at",
+                f"must be an ISO-8601 date in YYYY-MM-DD, got {entry.researched_at!r}",
+            )
         try:
             date.fromisoformat(entry.researched_at)
         except ValueError:
             raise PlanValidationError(
                 f"{base}.researched_at",
-                f"must be ISO-8601 date string, got {entry.researched_at!r}",
+                f"must be a real calendar date, got {entry.researched_at!r}",
             ) from None
         if not isinstance(entry.sources, list) or not entry.sources:
             raise PlanValidationError(f"{base}.sources", "must be non-empty list of strings")

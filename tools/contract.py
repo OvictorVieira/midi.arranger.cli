@@ -53,7 +53,7 @@ from .plan import (
     SourceMidi,
 )
 from .registry import Tool, ToolError, register
-from .style_schema import style_technique_schema
+from .style_schema import ISO_DATE_PATTERN, style_technique_schema
 from .tracks import TrackNameError, name_for_element
 from .validators import (
     RenderedNote,
@@ -159,7 +159,7 @@ def _plan_family_style_schema() -> dict[str, Any]:
             "reference": {"type": "string", "minLength": 1},
             "researched_at": {
                 "type": "string",
-                "pattern": r"^\d{4}-\d{2}-\d{2}$",
+                "pattern": ISO_DATE_PATTERN,
             },
             "sources": {
                 "type": "array",

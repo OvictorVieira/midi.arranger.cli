@@ -197,6 +197,22 @@ def test_load_reads_hand_written_json(tmp_path: Path):
     assert plan.route == "hook_eletronico_pesado"
 
 
+def _plan_with_style(*, researched_at: str) -> ArrangementPlan:
+    """Plano valido cujo unico ponto sob teste e `style.bass.researched_at`."""
+    plan = _valid_plan()
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at=researched_at,
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[],
+            parameters={},
+        ),
+    }
+    return plan
+
+
 def _complete_style() -> dict[str, FamilyStyle]:
     return {
         "bass": FamilyStyle(
@@ -1116,3 +1132,31 @@ def test_load_raises_on_invalid_plan(tmp_path: Path):
     with pytest.raises(PlanValidationError) as exc:
         load(path)
     assert exc.value.path == "elements[0].register[1]"
+
+
+@pytest.mark.parametrize("valor", ["20260824", "2026-W35-1", "2026-8-4", "2026/08/24"])
+def test_researched_at_rejects_what_the_facade_would_reject(valor):
+    """Dominio e fachada precisam recusar exatamente as mesmas datas.
+
+    `date.fromisoformat` sozinho aceita `20260824` e `2026-W35-1`, que o JSON
+    Schema da fachada recusa pelo padrao `YYYY-MM-DD`. Aceitar no dominio o que
+    a fachada nega e ter duas verdades sobre a mesma data — o plano passaria
+    pela API Python e quebraria na tool.
+    """
+    plan = _plan_with_style(researched_at=valor)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path.endswith(".researched_at")
+
+
+def test_researched_at_accepts_a_real_iso_date():
+    validate(_plan_with_style(researched_at="2026-08-24"))
+
+
+def test_researched_at_rejects_an_impossible_calendar_date():
+    with pytest.raises(PlanValidationError) as exc:
+        validate(_plan_with_style(researched_at="2026-02-30"))
+
+    assert "calendar date" in str(exc.value)
