@@ -133,3 +133,45 @@ def test_describe_ambiguous_name_is_resolved_by_target_tool():
     assert drums["data"]["canonical"] == "drums.ghost_notes"
     assert bass["ok"] is True
     assert bass["data"]["canonical"] == "bass.ghost_notes"
+
+
+@pytest.mark.parametrize(
+    ("name", "tool", "canonical"),
+    [
+        ("palm_mute", "shreddage3", "guitar.palm_mute"),
+        ("palm_mute", "modo_bass", "bass.palm_mute"),
+        ("vibrato", "ample", "guitar.vibrato"),
+        ("vibrato", "modo_bass", "bass.vibrato"),
+        ("slide", "musiclab_reallpc", "guitar.slide"),
+        ("slide", "modo_bass", "bass.slide"),
+        ("hammer_pull", "shreddage3", "guitar.hammer_pull"),
+        ("hammer_pull", "modo_bass", "bass.hammer_pull"),
+    ],
+)
+def test_guitar_manual_collides_with_bass_and_the_tool_still_resolves(
+    name: str, tool: str, canonical: str,
+):
+    """O manual de guitarra colide com o de baixo em quatro nomes.
+
+    Sao tecnicas que existem de verdade nos dois instrumentos, com receitas
+    completamente diferentes. Entregar a de baixo para uma guitarra produziria
+    MIDI errado sem erro nenhum no caminho — a mesma classe de falha que ja
+    aconteceu com `ghost_notes`.
+    """
+    env = call("techniques.describe", {"name": name, "tool": tool})
+
+    assert env["ok"] is True
+    assert env["data"]["canonical"] == canonical
+    assert env["data"]["tool"] == tool
+
+
+@pytest.mark.parametrize(
+    "name", ["palm_mute", "vibrato", "slide", "hammer_pull"],
+)
+def test_names_shared_by_guitar_and_bass_are_ambiguous_without_a_tool(name: str):
+    env = call("techniques.describe", {"name": name})
+
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_TECHNIQUE_AMBIGUOUS"
+    assert f"bass.{name}" in env["error"]["hint"]
+    assert f"guitar.{name}" in env["error"]["hint"]
