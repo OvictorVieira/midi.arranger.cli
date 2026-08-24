@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import mido
 import pytest
 
 from tools.techniques import (
     SUPPORTED_TECHNIQUES,
+    TechniqueContractError,
     TechniqueRegistrationError,
     TechniqueRegistry,
     UnknownTechniqueError,
@@ -87,9 +89,93 @@ def test_global_dispatch_uses_registered_implementation():
     assert apply_technique("drums.ghost_notes", payload) is payload
 
 
+def test_humanize_allows_only_timing_velocity_and_duration_changes():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+        out = _midi_with_two_notes(first_note=60, second_note=64)
+        first_on = out.tracks[1][1]
+        first_off = out.tracks[1][2]
+        out.tracks[1][1] = first_on.copy(time=12, velocity=70)
+        out.tracks[1][2] = first_off.copy(time=300)
+        return out
+
+    result = registry.apply("drums.microtiming", _midi_with_two_notes())
+
+    assert result.tracks[1][1].time == 12
+    assert result.tracks[1][1].velocity == 70
+    assert result.tracks[1][2].time == 300
+
+
+def test_humanize_contract_rejects_added_notes():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(mid: mido.MidiFile) -> mido.MidiFile:
+        mid.tracks[1].append(mido.Message(
+            "note_on", channel=9, note=38, velocity=90, time=0
+        ))
+        mid.tracks[1].append(mido.Message(
+            "note_off", channel=9, note=38, velocity=0, time=120
+        ))
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="contagem de note_on"):
+        registry.apply("drums.microtiming", _midi_with_two_notes())
+
+
+def test_humanize_contract_rejects_pitch_changes():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(_mid: mido.MidiFile) -> mido.MidiFile:
+        return _midi_with_two_notes(first_note=61, second_note=64)
+
+    with pytest.raises(TechniqueContractError, match="multiconjunto de pitches"):
+        registry.apply("drums.microtiming", _midi_with_two_notes())
+
+
+def test_humanize_contract_rejects_note_on_order_changes():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(_mid: mido.MidiFile) -> mido.MidiFile:
+        return _midi_with_two_notes(first_note=64, second_note=60)
+
+    with pytest.raises(TechniqueContractError, match="ordem dos note_on"):
+        registry.apply("drums.microtiming", _midi_with_two_notes())
+
+
 def test_every_registered_technique_exists_in_manual_index():
     idx = build_index(MANUALS_DIR)
 
     validate_registry_against_index(idx)
     for canonical in SUPPORTED_TECHNIQUES:
         assert idx.get(canonical) is not None
+
+
+def _midi_with_two_notes(
+    *,
+    first_note: int = 60,
+    second_note: int = 64,
+) -> mido.MidiFile:
+    mid = mido.MidiFile(ticks_per_beat=480)
+    meta = mido.MidiTrack()
+    meta.append(mido.MetaMessage("track_name", name="Meta", time=0))
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    track.append(mido.Message(
+        "note_on", channel=9, note=first_note, velocity=96, time=0
+    ))
+    track.append(mido.Message(
+        "note_off", channel=9, note=first_note, velocity=0, time=480
+    ))
+    track.append(mido.Message(
+        "note_on", channel=9, note=second_note, velocity=88, time=0
+    ))
+    track.append(mido.Message(
+        "note_off", channel=9, note=second_note, velocity=0, time=480
+    ))
+    mid.tracks.extend([meta, track])
+    return mid

@@ -32,6 +32,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - `tools/techniques/notes.py` classifica notas como `structural` ou `ornamental` por derivação em
   ticks; não grave essa marcação como metadado no MIDI, porque o round-trip não preserva isso de
   forma confiável.
+- O contrato do nível `humanize` é checado em `tools.techniques.engine.TechniqueRegistry.apply`:
+  técnicas desse nível podem mudar timing, velocity e duração, mas não contagem, pitches ou ordem de
+  `note_on` por track/canal/altura.
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
 - Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em

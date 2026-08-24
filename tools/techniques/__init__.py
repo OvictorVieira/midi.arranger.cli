@@ -3,6 +3,7 @@
 from .engine import (
     SUPPORTED_TECHNIQUES,
     RegisteredTechnique,
+    TechniqueContractError,
     TechniqueLevel,
     TechniqueRegistrationError,
     TechniqueRegistry,
@@ -44,6 +45,7 @@ __all__ = [
     "MidiNoteLike",
     "SUPPORTED_TECHNIQUES",
     "Technique",
+    "TechniqueContractError",
     "TechniqueError",
     "TechniqueIndex",
     "TechniqueLevel",

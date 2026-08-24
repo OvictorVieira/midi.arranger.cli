@@ -13,6 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import mido
+
 from .index import TechniqueIndex, build_index
 
 TechniqueLevel = Literal["humanize", "technique"]
@@ -35,6 +37,10 @@ class UnknownTechniqueError(LookupError):
         super().__init__(
             f"tecnica aplicavel desconhecida {canonical!r}; disponiveis: {listing}"
         )
+
+
+class TechniqueContractError(ValueError):
+    """Violacao do contrato runtime de uma tecnica aplicavel."""
 
 
 @dataclass(frozen=True)
@@ -95,7 +101,14 @@ class TechniqueRegistry:
     def apply(self, canonical: str, *args: Any, **kwargs: Any) -> Any:
         """Despacha por nome canonico para a funcao registrada."""
 
-        return self.get(canonical).apply(*args, **kwargs)
+        technique = self.get(canonical)
+        before = _humanize_snapshot(args, kwargs) if technique.level == "humanize" else None
+        result = technique.apply(*args, **kwargs)
+        if before is not None:
+            after_mid = _result_midi(result) or before.midi
+            after = _MidiContentSnapshot.from_midi(after_mid)
+            _validate_humanize_contract(technique.canonical, before.snapshot, after)
+        return result
 
     def registered(self) -> tuple[RegisteredTechnique, ...]:
         """Tecnicas registradas em ordem estavel por nome canonico."""
@@ -122,6 +135,88 @@ def _validate_level(level: str) -> None:
     if level not in _VALID_LEVELS:
         raise TechniqueRegistrationError(
             f"nivel {level!r} invalido; use um de {sorted(_VALID_LEVELS)!r}"
+        )
+
+
+@dataclass(frozen=True)
+class _HumanizeBefore:
+    midi: mido.MidiFile
+    snapshot: _MidiContentSnapshot
+
+
+@dataclass(frozen=True)
+class _MidiContentSnapshot:
+    note_on_count: int
+    pitch_multiset: tuple[int, ...]
+    note_on_sequence: tuple[tuple[int, int, int], ...]
+
+    @classmethod
+    def from_midi(cls, mid: mido.MidiFile) -> _MidiContentSnapshot:
+        events: list[tuple[int, int, int]] = []
+        pitches: list[int] = []
+        for track_index, track in enumerate(mid.tracks):
+            for msg in track:
+                if (
+                    not msg.is_meta
+                    and msg.type == "note_on"
+                    and msg.velocity > 0
+                ):
+                    events.append((track_index, msg.channel, msg.note))
+                    pitches.append(msg.note)
+        return cls(
+            note_on_count=len(events),
+            pitch_multiset=tuple(sorted(pitches)),
+            note_on_sequence=tuple(events),
+        )
+
+
+def _humanize_snapshot(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> _HumanizeBefore | None:
+    mid = _first_midi((*args, *kwargs.values()))
+    if mid is None:
+        return None
+    return _HumanizeBefore(
+        midi=mid,
+        snapshot=_MidiContentSnapshot.from_midi(mid),
+    )
+
+
+def _result_midi(result: Any) -> mido.MidiFile | None:
+    if isinstance(result, mido.MidiFile):
+        return result
+    return None
+
+
+def _first_midi(values: tuple[Any, ...]) -> mido.MidiFile | None:
+    for value in values:
+        if isinstance(value, mido.MidiFile):
+            return value
+    return None
+
+
+def _validate_humanize_contract(
+    canonical: str,
+    before: _MidiContentSnapshot,
+    after: _MidiContentSnapshot,
+) -> None:
+    """Garante que `humanize` so muda execucao, nunca conteudo musical."""
+
+    if after.note_on_count != before.note_on_count:
+        raise TechniqueContractError(
+            f"contrato humanize violado por {canonical}: contagem de note_on "
+            f"mudou de {before.note_on_count} para {after.note_on_count}"
+        )
+    if after.pitch_multiset != before.pitch_multiset:
+        raise TechniqueContractError(
+            f"contrato humanize violado por {canonical}: multiconjunto de "
+            "pitches mudou"
+        )
+    if after.note_on_sequence != before.note_on_sequence:
+        raise TechniqueContractError(
+            f"contrato humanize violado por {canonical}: ordem dos note_on "
+            "por track/canal/altura mudou"
         )
 
 
@@ -190,6 +285,7 @@ __all__ = [
     "RegisteredTechnique",
     "SUPPORTED_TECHNIQUES",
     "TechniqueApply",
+    "TechniqueContractError",
     "TechniqueLevel",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
