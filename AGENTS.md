@@ -40,7 +40,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   forma confiável.
 - O contrato do nível `humanize` é checado em `tools.techniques.engine.TechniqueRegistry.apply`:
   técnicas desse nível podem mudar timing, velocity e duração, mas não contagem, pitches ou ordem de
-  `note_on` por track/canal/altura.
+  `note_on` por track/canal/altura. A fotografia do contrato trata nota como par fechado:
+  `note_off` e `note_on` com velocity 0 são equivalentes, e `note_off` órfão ou `note_on` sem
+  fechamento são violação.
 - O contrato do nível `technique` também é checado em `TechniqueRegistry.apply`: pode acrescentar
   ornamentos, CC e pitch bend, mas pitch e posição das notas estruturais são intocáveis; velocity e
   duração estrutural só mudam com flags explícitas no registro da técnica.

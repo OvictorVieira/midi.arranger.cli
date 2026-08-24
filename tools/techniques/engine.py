@@ -225,7 +225,10 @@ class TechniqueRegistry:
         result = technique.apply(*apply_args, context=context, **apply_kwargs)
         if before_humanize is not None:
             after_mid = _result_midi(result) or before_humanize.midi
-            after = _MidiContentSnapshot.from_midi(after_mid)
+            after = _MidiContentSnapshot.from_midi(
+                after_mid,
+                canonical=technique.canonical,
+            )
             _validate_humanize_contract(
                 technique.canonical,
                 before_humanize.snapshot,
@@ -367,24 +370,54 @@ class _MidiContentSnapshot:
     note_on_count: int
     pitch_multiset: tuple[int, ...]
     note_on_sequence: tuple[tuple[int, int, int], ...]
+    note_pairs: tuple[tuple[int, int, int], ...]
 
     @classmethod
-    def from_midi(cls, mid: mido.MidiFile) -> _MidiContentSnapshot:
+    def from_midi(
+        cls,
+        mid: mido.MidiFile,
+        *,
+        canonical: str,
+    ) -> _MidiContentSnapshot:
         events: list[tuple[int, int, int]] = []
+        pairs: list[tuple[int, int, int]] = []
         pitches: list[int] = []
         for track_index, track in enumerate(mid.tracks):
+            pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
             for msg in track:
-                if (
-                    not msg.is_meta
-                    and msg.type == "note_on"
-                    and msg.velocity > 0
-                ):
-                    events.append((track_index, msg.channel, msg.note))
+                if msg.is_meta:
+                    continue
+                if msg.type == "note_on" and msg.velocity > 0:
+                    event = (track_index, msg.channel, msg.note)
+                    events.append(event)
                     pitches.append(msg.note)
+                    pending.setdefault((msg.channel, msg.note), []).append(event)
+                elif msg.type == "note_off" or (
+                    msg.type == "note_on" and msg.velocity == 0
+                ):
+                    key = (msg.channel, msg.note)
+                    stack = pending.get(key)
+                    if not stack:
+                        raise TechniqueContractError(
+                            f"contrato humanize violado por {canonical}: "
+                            "note_off orfao encontrado"
+                        )
+                    pairs.append(stack.pop(0))
+            unclosed = [
+                event
+                for stack in pending.values()
+                for event in stack
+            ]
+            if unclosed:
+                raise TechniqueContractError(
+                    f"contrato humanize violado por {canonical}: note_on sem "
+                    "note_off correspondente"
+                )
         return cls(
             note_on_count=len(events),
             pitch_multiset=tuple(sorted(pitches)),
             note_on_sequence=tuple(events),
+            note_pairs=tuple(pairs),
         )
 
 
@@ -475,7 +508,10 @@ def _humanize_snapshot(
         return None
     return _HumanizeBefore(
         midi=mid,
-        snapshot=_MidiContentSnapshot.from_midi(mid),
+        snapshot=_MidiContentSnapshot.from_midi(
+            mid,
+            canonical="entrada",
+        ),
     )
 
 
@@ -552,6 +588,11 @@ def _validate_humanize_contract(
         raise TechniqueContractError(
             f"contrato humanize violado por {canonical}: ordem dos note_on "
             "por track/canal/altura mudou"
+        )
+    if after.note_pairs != before.note_pairs:
+        raise TechniqueContractError(
+            f"contrato humanize violado por {canonical}: pareamento de "
+            "note_on/note_off mudou"
         )
 
 

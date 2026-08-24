@@ -292,6 +292,81 @@ def test_humanize_contract_rejects_pitch_changes():
         registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
 
 
+def test_humanize_contract_rejects_changed_note_off_pitch():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        first_off = mid.tracks[1][2]
+        mid.tracks[1][2] = first_off.copy(note=61)
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="note_off orfao"):
+        registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
+
+
+def test_humanize_contract_rejects_removed_note_off():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        del mid.tracks[1][2]
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="note_on sem note_off"):
+        registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
+
+
+def test_humanize_contract_rejects_orphan_note_off():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        mid.tracks[1].append(mido.Message(
+            "note_off", channel=9, note=61, velocity=0, time=0
+        ))
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="note_off orfao"):
+        registry.apply("drums.microtiming", _midi_with_two_notes(), seed=1)
+
+
+def test_humanize_contract_treats_note_on_velocity_zero_as_note_off():
+    registry = TechniqueRegistry()
+
+    @registry.register("drums.microtiming", "humanize")
+    def apply(
+        _mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        return _midi_with_single_note()
+
+    result = registry.apply(
+        "drums.microtiming",
+        _midi_with_note_on_zero_note_off(),
+        seed=1,
+    )
+
+    assert result.tracks[1][2].type == "note_off"
+
+
 def test_humanize_contract_rejects_note_on_order_changes():
     registry = TechniqueRegistry()
 
@@ -1403,6 +1478,22 @@ def _midi_with_single_note() -> mido.MidiFile:
     ))
     track.append(mido.Message(
         "note_off", channel=0, note=40, velocity=0, time=480
+    ))
+    mid.tracks.extend([meta, track])
+    return mid
+
+
+def _midi_with_note_on_zero_note_off() -> mido.MidiFile:
+    mid = mido.MidiFile(ticks_per_beat=480)
+    meta = mido.MidiTrack()
+    meta.append(mido.MetaMessage("track_name", name="Meta", time=0))
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    track.append(mido.Message(
+        "note_on", channel=0, note=40, velocity=96, time=0
+    ))
+    track.append(mido.Message(
+        "note_on", channel=0, note=40, velocity=0, time=480
     ))
     mid.tracks.extend([meta, track])
     return mid
