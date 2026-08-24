@@ -13,33 +13,37 @@
 
 ---
 
-## 0. O que é oficial e o que não é
+## 0. Fonte: a própria página CONTROL do plugin
 
-O manual da versão 1 é a fonte de verdade aqui. Dele vêm, com texto citável: a faixa de keyswitch, a
-zona de parada e posição de mão, o CC de vibrato, o CC de let ring, e — o mais importante — **a faixa
-de bend fixa**.
+**Tudo nas seções 1 e 2 foi lido diretamente da página CONTROL do MODO BASS 1.5.2, com os defaults de
+fábrica intactos.** É fonte primária, melhor que qualquer manual — é o estado real do plugin.
 
-O que **não** está no manual e veio de duas fontes independentes que concordam entre si: os números
-de CC de slide, muting, pluck position e chord mode, e o mapa de keyswitch de estilo e articulação.
-Estão marcados como não verificados nos blocos da §5.
+Isso encerrou uma contradição entre duas rodadas de pesquisa. Registro o que ficou provado, porque
+evita refazer o trabalho:
 
-**Se você abrir o capítulo CONTROL do seu manual e me passar o que ele diz sobre esses CCs, eles
-sobem para verificado.** É a única lacuna que sobrou que depende de você.
+- O mapa de keyswitch de duas fontes independentes estava **inteiramente correto**: 12 de 12
+  conferem, e a convenção de oitava deduzida (dó central = C4, portanto C-1 = MIDI 0) também.
+- Uma segunda pesquisa trouxe um mapa **substancialmente errado** — trocava Force A com Force D,
+  Force D com Force G, e afirmava que A-1 era Let Ring quando é Force A. Não foi aplicado, e ainda
+  bem.
+- Sobre **MUTING**, quem estava certo era a segunda: **não existe CC padrão de fábrica.** As fontes
+  que diziam CC 9 estavam erradas.
 
 ### Diferença que importa: BEND e SLIDE são coisas separadas
 
-O manual da v1 é explícito: **a faixa de BEND é fixa em ±1 semitom.** Isso não é o mesmo que slide.
+Confirmado na tela — são duas linhas distintas, com mecanismos distintos:
 
-| | Controle | Faixa |
-|---|---|---|
-| **BEND** | CC 5 | **±1 semitom, fixo** — não é ajustável |
-| **SLIDE** | Pitch Wheel | escalada pelo controle **SLIDE RANGE** na interface |
+| | Tipo | Valor | Faixa |
+|---|---|---|---|
+| **BEND** | CC | **5** | não exposta na página CONTROL |
+| **SLIDE** | **Pitch Wheel** | — | knob **SLIDE RANGE**, default **2** semitons |
 
-Consequência prática: **não escreva slide como CC 5.** Bend de um semitom é ornamento de expressão,
-não deslocamento de posição. Slide de intervalo maior sai pelo pitch wheel, e o quanto ele percorre
-depende de onde o SLIDE RANGE está — que é estado da interface, não do MIDI. Se o plano depende de um
-intervalo específico de slide, ele precisa declarar o SLIDE RANGE esperado, senão o resultado varia
-com o preset carregado.
+Consequência prática: **não escreva slide como CC 5.** Slide sai pelo pitch wheel, e o quanto ele
+percorre depende do knob SLIDE RANGE — que é **estado da interface, não do MIDI**. No default de
+fábrica ele vale 2 semitons. Se o plano depende de um intervalo maior, ele precisa **declarar o
+SLIDE RANGE esperado**, senão o resultado varia com o preset carregado.
+
+Outro knob de topo com default de fábrica: **VIBRATO RATE = 4.0**.
 
 ### Convenção de oitava
 
@@ -61,57 +65,67 @@ Só a segunda leitura funciona.
 
 ## 1. Mapa de keyswitch
 
-Todos remapeáveis na página CONTROL / MIDI Control.
+Lido da página CONTROL, defaults de fábrica. Coluna MIDI derivada da convenção dó central = C4.
 
-| Função | Nome no MODO | **MIDI** | Latch |
+| Função | Nome no MODO | **MIDI** | Latch (default) |
 |---|---|---|---|
-| Forçar corda C | C-1 | **0** | latchável |
-| Index stroke (dedo) / Down stroke (palheta) / **Forçar slap** | C#-1 | **1** | latchável |
-| Middle stroke (dedo) / Up stroke (palheta) / **Forçar pop** | D#-1 | **3** | latchável |
-| Forçar corda A | A-1 | **9** | latchável |
-| **GHOST MODE** (nota morta) | A#-1 | **10** | **momentâneo** |
-| Forçar corda B | B-1 | **11** | latchável |
-| **HAMMER-ON / PULL-OFF** | C0 | **12** | **momentâneo** |
-| Estilo: **dedo / pizzicato** | C#0 | **13** | latching |
-| Forçar corda D | D0 | **14** | latchável |
-| Estilo: **palheta** | D#0 | **15** | latching |
-| Forçar corda E | E0 | **16** | latchável |
-| Harmônico | F0 | **17** | momentâneo |
-| Estilo: **slap** | F#0 | **18** | latching |
-| Forçar corda G | G0 | **19** | latchável |
-| Stop on detach | G#0 | **20** | latchável |
-| Parar todas as cordas | E5 | **76** | — |
-| Posição da mão esquerda | F5 … E7 | **77 … 100** | uma tecla por posição |
+| Forçar corda C | C-1 | **0** | Off |
+| Forçar corda A | A-1 | **9** | Off |
+| **GHOST MODE** (nota morta) | A#-1 | **10** | Off |
+| Forçar corda B | B-1 | **11** | Off |
+| **HAMMER-ON / PULL-OFF** | C0 | **12** | Off |
+| Estilo: **dedo** | C#0 | **13** | — |
+| Forçar corda D | D0 | **14** | Off |
+| Estilo: **palheta** | D#0 | **15** | — |
+| Forçar corda E | E0 | **16** | Off |
+| **Harmônico** | F0 | **17** | Off |
+| Estilo: **slap** | F#0 | **18** | — |
+| Forçar corda G | G0 | **19** | Off |
 
-Faixa legal de keyswitch: **MIDI 0–100** (`C-1` a `E7`) — manual oficial v1.
+**Sem atribuição de fábrica** — a página lista a função mas o tipo vem como `Off`:
 
-**Momentâneo significa segurar.** `GHOST MODE` e `HAMMER-ON/PULL-OFF` valem enquanto a tecla está
-pressionada — não são toggles. Escrever como nota curta antes do trecho não funciona.
+| Função | Situação |
+|---|---|
+| MUTING | **sem CC padrão** — precisa ser atribuído pelo usuário |
+| INDEX STROKE | sem atribuição |
+| MIDDLE STROKE | sem atribuição |
+| MASTER VOLUME | sem atribuição |
+
+**`Latch` vem desligado em tudo que o expõe.** Com latch desligado o controle é **momentâneo**: vale
+enquanto a tecla está pressionada. Os três keyswitches de estilo não expõem latch — o estilo persiste
+até outro estilo ser escolhido.
+
+Isso muda como escrever ghost note e hammer-on: **segure a tecla durante o trecho**, não escreva como
+nota curta antes dele.
 
 **Na versão 1 o keyswitch precisa ficar fora da região tocável.** Colocar keyswitch dentro da faixa
 de notas do baixo faz a nota soar junto — a prioridade de keyswitch sobre nota é comportamento da
 versão 2 e **não vale aqui**. Como a região tocável começa no MIDI 28 (mi grave do baixo de 4
-cordas), os keyswitches de 0 a 20 estão seguros; os de 76 a 100 ficam acima do braço.
+cordas), todos os keyswitches de fábrica — que vão de 0 a 19 — estão seguros.
 
 ---
 
 ## 2. Mapa de CC
 
-| Função | CC padrão | Fonte |
-|---|---|---|
-| **VIBRATO** | **CC 1** | **manual oficial v1** — "By default, the vibrato is controlled by the mod wheel, MIDI CC #1" |
-| **LET RING** | **CC 64** | **manual oficial v1** — "By default the assigned CC # is 64 (sustain pedal)" |
-| **BEND** | **CC 5**, faixa **±1 semitom fixa** | faixa: manual oficial v1. Número do CC: terceiros |
-| **SLIDE** | **Pitch Wheel**, escalado por SLIDE RANGE | terceiros |
-| **MUTING** (profundidade) | **CC 9** | terceiros — contínuo, desenhe curva, não valor único |
-| **Posição da mão esquerda** | **CC 4** | conceito no manual oficial ("can be done also with a MIDI continuous controller"); o número é de terceiros |
-| **PLUCK POSITION** | **CC 3** | terceiros |
-| **CHORD MODE** | **CC 2** | terceiros |
-| **LEGATO SLIDE** | **CC 65** | **fonte única** — o mais frágil da tabela |
-| Seleção de corda | — | só por keyswitch |
+Lido da página CONTROL, defaults de fábrica.
 
-Todos remapeáveis na página CONTROL. Os CCs marcados como "terceiros" são os que o seu manual pode
-confirmar.
+| Função | Tipo | Valor | Latch |
+|---|---|---|---|
+| **VIBRATO** | CC | **1** | — |
+| **CHORD MODE** | CC | **2** | Off |
+| **PLUCK POSITION** | CC | **3** | — |
+| **LEFT HAND POSITION** | CC | **4** | — |
+| **BEND** | CC | **5** | — |
+| **LET RING** | CC | **64** | Off |
+| **LEGATO SLIDE** | CC | **65** | Off |
+| **SLIDE** | **Pitch Wheel** | — | — |
+| **MUTING** | **Off** | — | — |
+| Seleção de corda | — | só por keyswitch | |
+
+**MUTING não tem CC de fábrica.** Isso muda o desenho: um plano que pede palm mute precisa **declarar
+qual CC o usuário atribuiu**, ou a técnica não sai. Não dá para assumir número nenhum.
+
+Os CCs de 1 a 5 formam um bloco contíguo e fácil de lembrar: vibrato, acorde, ataque, mão, bend.
 
 **Articulação por CC é gated por valor, não por evento.** Mande um valor de início diferente de zero
 e um `0` no fim para soltar. Esquecer o retorno a zero deixa a articulação presa.
@@ -252,9 +266,9 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "family": "bass",
   "summary": "Deslizamento entre notas; no MODO BASS via pitch wheel, no fallback via curva de pitch bend.",
   "verified": false,
-  "description": "ATENCAO na v1: BEND e SLIDE sao coisas separadas. BEND (CC 5) tem faixa FIXA de +/-1 semitom pelo manual oficial e serve so para ornamento de expressao — NAO use CC 5 para slide. Slide de intervalo real sai pelo pitch wheel, escalado pelo SLIDE RANGE da interface, que e estado da GUI e nao do MIDI: se o plano depende de um intervalo especifico, ele precisa declarar o SLIDE RANGE esperado. No fallback generico, ponha a faixa de bend em 12 semitons e escreva a curva; volte SEMPRE ao centro antes da proxima nota nao deslizada.",
+  "description": "ATENCAO: BEND e SLIDE sao linhas separadas na pagina CONTROL, com mecanismos distintos. BEND e CC 5; SLIDE e pitch wheel. NAO use CC 5 para slide. Slide de intervalo real sai pelo pitch wheel, escalado pelo SLIDE RANGE da interface, que e estado da GUI e nao do MIDI: se o plano depende de um intervalo especifico, ele precisa declarar o SLIDE RANGE esperado. No fallback generico, ponha a faixa de bend em 12 semitons e escreva a curva; volte SEMPRE ao centro antes da proxima nota nao deslizada.",
   "parameters": [
-    {"name": "bend_range_semitons_fixo", "value": 1, "source": "manual oficial MODO BASS v1 — 'BEND range is fixed to +/- 1 semitone'"},
+    {"name": "slide_range_default_semitons", "value": 2, "source": "pagina CONTROL do plugin, MODO BASS 1.5.2, default de fabrica"},
     {"name": "bend_por_semitom_com_faixa_12", "value": 683, "source": "MIDI Association — 8191/12, aritmetica"},
     {"name": "bend_por_oitava_com_faixa_12", "value": 8191, "source": "MIDI Association"},
     {"name": "duracao_curto_ms", "range": [40, 80]},
@@ -263,7 +277,7 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   ],
   "tools": {
     "generic": {"cc": "pitch_bend", "note": "faixa 12 semitons; curva S no slide longo; retorno obrigatorio ao centro"},
-    "modo_bass": {"cc": "pitch_wheel", "note": "escalado por SLIDE RANGE (estado da GUI). CC 5 e BEND com faixa fixa de +/-1 semitom, NAO serve para slide. LEGATO SLIDE em CC 65 tem fonte unica"}
+    "modo_bass": {"cc": "pitch_wheel", "note": "pitch wheel, escalado pelo knob SLIDE RANGE (estado da GUI, default 2 semitons). BEND e CC 5 e NAO serve para slide. LEGATO SLIDE e CC 65, confirmado na tela"}
   }
 }
 ```
@@ -276,14 +290,14 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "family": "bass",
   "summary": "Abafamento continuo por CC no MODO BASS, nao articulacao discreta.",
   "verified": false,
-  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua em CC 9 aplicada por cima do estilo ativo. Desenhe uma curva, nao um valor unico. Articulacao por CC e gated por valor — sem o retorno a zero, o mute fica preso.",
+  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario atribuiu, ou a tecnica nao sai. Desenhe uma curva, nao um valor unico; articulacao por CC e gated por valor e sem o retorno a zero o mute fica preso.",
   "parameters": [
     {"name": "velocity", "range": [60, 100]},
     {"name": "gate_pct", "range": [25, 50]}
   ],
   "tools": {
     "generic": {"note": "gate curto e velocity media; sem CC dedicado"},
-    "modo_bass": {"cc": 9, "note": "curva desenhada; retorno a 0 obrigatorio para soltar"}
+    "modo_bass": {"cc": null, "note": "SEM CC de fabrica (pagina CONTROL, v1.5.2). O plano declara o CC atribuido pelo usuario. Curva desenhada; retorno a 0 obrigatorio"}
   }
 }
 ```
@@ -298,13 +312,14 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "verified": true,
   "description": "Nunca comece o vibrato em t=0 — mao real ataca a nota e so depois vibra. Rampa de subida, sustentacao, rampa de descida antes do fim da nota.",
   "parameters": [
-    {"name": "cc", "value": 1, "source": "manual oficial MODO BASS v1"},
+    {"name": "cc", "value": 1, "source": "pagina CONTROL do plugin, v1.5.2"},
+    {"name": "vibrato_rate_default", "value": 4.0, "source": "knob VIBRATO RATE, default de fabrica"},
     {"name": "atraso_de_inicio_ms", "range": [150, 300]},
     {"name": "profundidade_cc", "range": [60, 90]}
   ],
   "tools": {
     "generic": {"cc": 1},
-    "modo_bass": {"cc": 1, "source": "manual oficial v1"}
+    "modo_bass": {"cc": 1, "source": "pagina CONTROL v1.5.2"}
   }
 }
 ```
@@ -345,11 +360,11 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "summary": "Sustentacao por CC 64; as notas podem ser curtas que o CC segura.",
   "verified": true,
   "parameters": [
-    {"name": "cc", "value": 64, "source": "manual oficial MODO BASS v1"}
+    {"name": "cc", "value": 64, "source": "pagina CONTROL do plugin, v1.5.2"}
   ],
   "tools": {
     "generic": {"cc": 64},
-    "modo_bass": {"cc": 64, "source": "manual oficial v1"}
+    "modo_bass": {"cc": 64, "source": "pagina CONTROL v1.5.2"}
   }
 }
 ```
@@ -364,19 +379,18 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "verified": false,
   "description": "A MESMA ALTURA soa diferente em cordas diferentes: na corda grave, mais fundamental e mais corpo; numa corda mais aguda na mesma altura, mais harmonico e menos peso. O MODO BASS escolhe a corda sozinho otimizando ECONOMIA DE MAO — menos deslocamento, posicao mais confortavel. Isso e o oposto do que metal em drop quer: ali a escolha e por TIMBRE, e o riff fica na corda mais grave mesmo quando daria para tocar mais acima com menos esforco. Sempre que a corda for decisao intencional, FORCE por keyswitch; deixar no automatico entrega uma linha com as notas certas e o peso errado. O keyswitch e latchavel: ele vale ate outro keyswitch de corda mudar, entao declare a troca, nao repita a cada nota.",
   "parameters": [
-    {"name": "keyswitch_corda_C", "value": 0},
-    {"name": "keyswitch_corda_A", "value": 9},
-    {"name": "keyswitch_corda_B", "value": 11},
-    {"name": "keyswitch_corda_D", "value": 14},
-    {"name": "keyswitch_corda_E", "value": 16},
-    {"name": "keyswitch_corda_G", "value": 19},
-    {"name": "keyswitch_posicao_mao_inicio", "value": 77, "source": "manual oficial MODO BASS v1 — F5 a E7, uma tecla por posicao"},
-    {"name": "keyswitch_posicao_mao_fim", "value": 100, "source": "manual oficial MODO BASS v1"}
+    {"source": "pagina CONTROL v1.5.2", "name": "keyswitch_corda_C", "value": 0},
+    {"source": "pagina CONTROL v1.5.2", "name": "keyswitch_corda_A", "value": 9},
+    {"source": "pagina CONTROL v1.5.2", "name": "keyswitch_corda_B", "value": 11},
+    {"source": "pagina CONTROL v1.5.2", "name": "keyswitch_corda_D", "value": 14},
+    {"source": "pagina CONTROL v1.5.2", "name": "keyswitch_corda_E", "value": 16},
+    {"source": "pagina CONTROL v1.5.2", "name": "keyswitch_corda_G", "value": 19},
+    {"name": "cc_posicao_mao", "value": 4, "source": "pagina CONTROL do plugin, v1.5.2 — LEFT HAND POSITION"}
   ],
   "tools": {
     "generic": {"note": "sem controle de corda: o timbre sai do que o instrumento decidir. Declare no plano que a intencao de corda nao pode ser honrada nesta ferramenta"},
     "modo_bass": {
-      "note": "keyswitch latchavel: vale ate a proxima troca. Combine com o keyswitch de posicao de mao (77-100) quando a posicao tambem for intencional. CC 4 controla posicao de forma continua, mas o numero do CC e de terceiros"
+      "note": "LATCH vem DESLIGADO de fabrica: o keyswitch e momentaneo e vale enquanto segurado. Ligue LATCH na pagina CONTROL se quiser que a corda persista. CC 4 controla a posicao da mao de forma continua"
     }
   }
 }
@@ -427,26 +441,20 @@ registro é linha melódica, não riff.
 
 | Item | Situação |
 |---|---|
-| Números de CC de slide, muting, pluck position, chord mode, bend e posição de mão | vêm de duas fontes independentes que concordam; **o capítulo CONTROL do seu manual confirma ou corrige** |
-| CC 65 para LEGATO SLIDE | **fonte única** — o item mais frágil do manual |
-| Mapa de keyswitch de estilo e articulação | duas fontes concordantes, não oficial |
-| Limiar de sobreposição em ms para hammer-on/pull-off | não documentado em lugar nenhum |
-| Limiar de velocity para ghost note | sem evidência de que exista; assumido só por keyswitch |
-| Se "Mute" existe como estilo discreto além do CC 9 | não confirmado na v1 |
+| ~~Números de CC~~ | **fechado** — lidos da página CONTROL do plugin, v1.5.2, defaults de fábrica |
+| ~~Mapa de keyswitch~~ | **fechado** — 12 de 12 conferidos contra a tela |
+| ~~CC 65 para LEGATO SLIDE~~ | **fechado** — confirmado na tela; a fonte única estava certa |
+| ~~CC de MUTING~~ | **fechado, e a resposta é que não existe** — precisa ser atribuído pelo usuário |
+| Faixa do BEND (CC 5) em semitons | **não exposta na página CONTROL** — só o SLIDE RANGE aparece, e vale para o pitch wheel |
+| Limiar de sobreposição em ms para hammer-on/pull-off | não documentado |
+| Limiar de velocity para ghost note | não existe: o gatilho é o keyswitch, e é binário |
+| Índice e médio (INDEX/MIDDLE STROKE) | existem como função mas **sem atribuição de fábrica** |
 | Todos os valores de velocity, gate e timing da §5 | convenção de ofício, sem medição publicada |
 | Offsets de gênero da §3.3 | extrapolados de dois estudos; só o ≈30 ms de funk tem fonte direta |
 
-**Resolvido pela confirmação de que a versão é a 1:** a faixa de bend deixou de ser conflito — é
-±1 semitom fixa, com texto oficial. A zona alta de keyswitch (E5 parar tudo, F5–E7 posição de mão)
-deixou de ser "vem da v1, não reconfirmado" e passou a ser simplesmente oficial. E a prioridade de
-keyswitch dentro da região tocável, que é comportamento da v2, saiu do manual — na v1 keyswitch
-dentro da faixa do baixo faz a nota soar junto.
-
----
-
 ## Fontes
 
-- **MODO BASS User Manual v1 — texto oficial** (a versão que o usuário tem)
+- **Página CONTROL do MODO BASS 1.5.2, defaults de fábrica** — fonte primária das seções 1 e 2
 - [newdtm-rain.com — seção CONTROL do MODO BASS](https://www.newdtm-rain.com/article/modo-bass-control.html)
 - [note.com/moonwhite — mapa de articulação do MODO BASS 2](https://note.com/moonwhite/n/nb457c31bf867)
 - [Senn, Kilchenmann, von Georgi & Bullerjahn — microtiming e groove em swing e funk, Frontiers in Psychology](https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.01487/full)
