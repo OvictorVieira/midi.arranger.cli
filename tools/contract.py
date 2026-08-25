@@ -344,6 +344,16 @@ def _plan_schema() -> dict[str, Any]:
                             "minimum": EDIT_INTENSITY_MIN,
                             "maximum": EDIT_INTENSITY_MAX,
                         },
+                        "suggested_instrument": {
+                            "type": "object",
+                            "properties": {
+                                "plugin": {"type": "string", "minLength": 1},
+                                "preset": {"type": "string", "minLength": 1},
+                                "verified": {"type": "boolean"},
+                            },
+                            "required": ["plugin", "preset"],
+                            "additionalProperties": False,
+                        },
                     },
                     "required": ["track", "profile", "intensity"],
                 },

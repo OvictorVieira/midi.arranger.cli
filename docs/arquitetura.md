@@ -155,6 +155,38 @@ Exemplo mínimo válido:
 }
 ```
 
+### Carimbo de plugin/preset em toda track tocada pelo arranjador
+
+Toda track de saída que o arranjador criou ou editou carrega, além do nome
+(`meta 0x03 track_name`), um **carimbo** em `meta 0x01 text` no tick 0. O
+carimbo é ASCII puro (o meta-evento SMF de texto não carrega encoding) e usa
+`|` como separador entre `chave=valor`:
+
+```
+midi-arranger v1|role=drums|plugin=Superior Drummer|preset=Metal Kit|verified=true|techniques=[drums.accent_hierarchy,drums.ghost_notes]
+```
+
+Campos, sempre nessa ordem quando presentes:
+
+- `role`: role do elemento (para elemento gerado) ou `profile` da edit
+  (para track de `plan.edits`).
+- `plugin`, `preset`, `verified`: instrumento do elemento gerado.
+- `techniques`: canônicos das técnicas de `style.<familia>` aplicadas.
+- `suggested_plugin`, `suggested_preset`, `suggested_verified`: sugestão
+  declarada em `plan.edits[].suggested_instrument` para uma track que já
+  existia no MIDI de origem. É metadado puro — nunca altera nota alguma.
+
+Regras:
+
+- Track de origem **não** declarada em `plan.edits` sai byte-idêntica: sem
+  carimbo. O carimbo aparece apenas em tracks que o arranjador tocou.
+- O carimbo nunca substitui o nome da track — os dois coexistem.
+- A sugestão passa pelas mesmas regras de `tools/tracks.py`: plugin em
+  `FORBIDDEN_PLUGINS` (Trigger_2, Addictive Trigger) é recusado; plugin
+  default por FR-24 é respeitado; Serum só pode aparecer em roles do FR-14.
+- O formato é determinístico: mesmo plano, mesma origem, mesma seed → mesmos
+  bytes.
+
 ### Conclusão
 
 O agente emite `<promise>COMPLETE</promise>` no stdout quando o arranjo está pronto e validado. O

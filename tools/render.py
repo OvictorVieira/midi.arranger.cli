@@ -88,7 +88,7 @@ from .techniques import (
 from .techniques import (
     build_index as build_techniques_index,
 )
-from .tracks import name_for_element
+from .tracks import is_ascii_safe, name_for_element
 from .validators.artifice import ArtificeIssue, validate_artifice
 from .validators.artifice import format_issues as format_artifice_issues
 from .validators.collision import CollisionReport, validate_collisions
@@ -133,6 +133,13 @@ SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
     "octave_shift", "tail_notes", "phrase_end_gap_s", "velocity_offset",
     "note_duration_s",
 })
+
+# Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
+# Exemplo literal (documentado em docs/arquitetura.md):
+#   "midi-arranger v1|role=drums|plugin=Superior Drummer|preset=Metal Kit|
+#    verified=true|techniques=[drums.accent_hierarchy,drums.ghost_notes]"
+# Coexiste com meta 0x03 (track_name); nunca substitui.
+STAMP_PREFIX = "midi-arranger v1"
 
 
 # --- excecoes ---------------------------------------------------------------
@@ -566,6 +573,158 @@ def _apply_style_techniques_to_edit_tracks(
         ):
             out_mid.tracks[slot] = new_track
     return warnings
+
+
+# --- carimbo de plugin/preset em meta text ---------------------------------
+
+def _bool_stamp(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _format_stamp(
+    *,
+    role: str,
+    plugin: str | None,
+    preset: str | None,
+    verified: bool,
+    techniques: tuple[str, ...] = (),
+    suggested_plugin: str | None = None,
+    suggested_preset: str | None = None,
+    suggested_verified: bool = False,
+) -> str:
+    """Formata o carimbo em `<prefixo>|k=v|k=v...`, com todos os valores ASCII.
+
+    Ordem estavel dos campos: `role`, `plugin`, `preset`, `verified`,
+    `techniques`, `suggested_plugin`, `suggested_preset`, `suggested_verified`.
+    Campos vazios sao omitidos. Nunca inclui campo cujo valor nao passe pela
+    checagem ASCII do `tools.tracks`; o meta-evento SMF de texto nao carrega
+    encoding, entao bytes >127 ficam a merce do decoder do DAW.
+    """
+
+    def _guarded(field_name: str, value: str) -> str:
+        if not is_ascii_safe(value):
+            raise RenderError(
+                f"stamp field {field_name!r} must be ASCII, got {value!r}"
+            )
+        if "|" in value:
+            raise RenderError(
+                f"stamp field {field_name!r} must not contain '|' — "
+                f"separador reservado do carimbo (got {value!r})"
+            )
+        return value
+
+    parts: list[str] = [STAMP_PREFIX, f"role={_guarded('role', role)}"]
+    if plugin:
+        parts.append(f"plugin={_guarded('plugin', plugin)}")
+    if preset:
+        parts.append(f"preset={_guarded('preset', preset)}")
+    if plugin or preset:
+        parts.append(f"verified={_bool_stamp(verified)}")
+    if techniques:
+        for i, name in enumerate(techniques):
+            _guarded(f"techniques[{i}]", name)
+        parts.append(f"techniques=[{','.join(techniques)}]")
+    if suggested_plugin or suggested_preset:
+        if suggested_plugin:
+            parts.append(
+                f"suggested_plugin={_guarded('suggested_plugin', suggested_plugin)}"
+            )
+        if suggested_preset:
+            parts.append(
+                f"suggested_preset={_guarded('suggested_preset', suggested_preset)}"
+            )
+        parts.append(f"suggested_verified={_bool_stamp(suggested_verified)}")
+    return "|".join(parts)
+
+
+def _insert_stamp(track: mido.MidiTrack, stamp: str) -> None:
+    """Insere o carimbo como meta text logo apos o `track_name` em tick 0.
+
+    Coexiste com o `track_name` — nunca substitui. Delta 0 preserva o tick
+    absoluto de todas as mensagens seguintes.
+    """
+    text = mido.MetaMessage("text", text=stamp, time=0)
+    for i, msg in enumerate(track):
+        if msg.is_meta and msg.type == "track_name":
+            track.insert(i + 1, text)
+            return
+    track.insert(0, text)
+
+
+def _stamp_element_tracks(
+    tracks: list[mido.MidiTrack],
+    element: Element,
+    *,
+    techniques: tuple[str, ...],
+) -> None:
+    inst = element.instrument or {}
+    plugin = str(inst.get("plugin", "")) or None
+    preset = str(inst.get("preset", "")) or None
+    verified = bool(inst.get("verified", False))
+    stamp = _format_stamp(
+        role=element.role,
+        plugin=plugin,
+        preset=preset,
+        verified=verified,
+        techniques=techniques,
+    )
+    for track in tracks:
+        _insert_stamp(track, stamp)
+
+
+def _stamp_edit_tracks(
+    out_mid: mido.MidiFile,
+    *,
+    plan: ArrangementPlan,
+    index: TechniqueIndex | None,
+) -> None:
+    """Carimba plugin/preset/role/verified/techniques em cada track de `plan.edits`.
+
+    Faz o mapa `edit.track` -> tracks do MIDI final apenas para as tracks
+    nomeadas em `plan.edits` — tracks nao declaradas ficam byte-identicas ao
+    source por definicao (ver AGENTS.md), e nao recebem carimbo.
+    """
+    if not plan.edits:
+        return
+    name_to_indices: dict[str, list[int]] = {}
+    for idx, tr in enumerate(out_mid.tracks):
+        name = track_name(tr)
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
+
+    for edit in plan.edits:
+        target_indices = name_to_indices.get(edit.track)
+        if not target_indices:
+            continue
+        family = _style_family_for_edit(edit.profile)
+        techniques: tuple[str, ...] = ()
+        if family is not None and plan.style is not None:
+            style = plan.style.get(family)
+            if style is not None and style.techniques:
+                if index is None:
+                    raise RenderError(
+                        "internal error: missing techniques index for stamp"
+                    )
+                techniques = tuple(
+                    _canonical_style_technique(index, family, tech.name)
+                    for tech in style.techniques
+                )
+        suggested = edit.suggested_instrument or {}
+        suggested_plugin = suggested.get("plugin") if suggested else None
+        suggested_preset = suggested.get("preset") if suggested else None
+        suggested_verified = bool(suggested.get("verified", False)) if suggested else False
+        stamp = _format_stamp(
+            role=edit.profile,
+            plugin=None,
+            preset=None,
+            verified=False,
+            techniques=techniques,
+            suggested_plugin=suggested_plugin,
+            suggested_preset=suggested_preset,
+            suggested_verified=suggested_verified,
+        )
+        for idx in target_indices:
+            _insert_stamp(out_mid.tracks[idx], stamp)
 
 
 # --- conversao note -> mido -------------------------------------------------
@@ -1265,6 +1424,23 @@ def render(
                 index=style_index,
             )
             warnings.extend(technique_warnings)
+            element_family = _style_family_for_role(e.role)
+            element_techniques: tuple[str, ...] = ()
+            if (
+                technique_applied
+                and element_family is not None
+                and plan.style is not None
+                and style_index is not None
+            ):
+                family_style = plan.style.get(element_family)
+                if family_style is not None:
+                    element_techniques = tuple(
+                        _canonical_style_technique(
+                            style_index, element_family, tech.name,
+                        )
+                        for tech in family_style.techniques
+                    )
+            _stamp_element_tracks(midi_tracks, e, techniques=element_techniques)
             out_mid.tracks.extend(midi_tracks)
             rendered_tracks.extend(
                 _rendered_tracks_from_midi_tracks(
@@ -1286,6 +1462,12 @@ def render(
             report_entry.note = msg
             warnings.append(f"{e.id}: {msg}")
         element_reports.append(report_entry)
+
+    # Carimba as tracks de `plan.edits` com role, tecnicas aplicadas e
+    # (quando declarada) sugestao de plugin/preset. Depois de `apply_edits` e
+    # do motor de tecnicas — assim o carimbo reflete o que o arranjador de
+    # fato fez naquela track.
+    _stamp_edit_tracks(out_mid, plan=plan, index=style_index)
 
     warnings.extend(check_tutti_uniqueness(plan))
 
