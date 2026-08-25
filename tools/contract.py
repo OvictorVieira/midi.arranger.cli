@@ -750,6 +750,7 @@ ANALYZE_TOOL = Tool(
                                     "reason": {"enum": [
                                         tuning_mod.DISCARD_LOW_NOTE_COUNT,
                                         tuning_mod.DISCARD_SPAN_TOO_WIDE,
+                                        tuning_mod.DISCARD_NON_STRINGED_PATCH,
                                     ]},
                                     "note_count": {"type": "integer", "minimum": 0},
                                     "span": {"type": "integer", "minimum": 0},

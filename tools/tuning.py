@@ -78,6 +78,13 @@ DISCARD_LOW_NOTE_COUNT = "low_note_count"
 DISCARD_SPAN_TOO_WIDE = "span_too_wide"
 """Motivo de descarte pelo teto da TRAVA 3."""
 
+DISCARD_NON_STRINGED_PATCH = "non_stringed_channel_patch"
+"""Motivo de descarte da TRAVA 1 por canal: quando a track passa pelo GM
+program porque outro canal tem patch de corda, os canais cujo `program_change`
+observado nao e de corda ficam de fora da inferencia — mesmo tendo notas
+suficientes. Patch nao-corda num canal com notas e evidencia direta de que
+aquele canal nao carrega corda solta."""
+
 NOT_STRINGED = "not_stringed"
 """Motivo de descarte no nivel da track (TRAVA 1): nenhuma das tres
 evidencias de instrumento de corda."""
@@ -459,17 +466,25 @@ class TrackTuningInference:
     name_patch_conflict: NamePatchConflict | None = None
 
 
-def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
-    """Programas GM (0-127) declarados em `program_change` na track, em ordem
-    de aparicao. Track sem `program_change` volta lista vazia — para essas,
-    a TRAVA 1 tem que se apoiar em nome ou declaracao explicita."""
-    programs: list[int] = []
+def _iter_track_programs(track: mido.MidiTrack) -> dict[int, list[int]]:
+    """Programas GM declarados em `program_change` agrupados por canal.
+
+    `program_change` no MIDI e SEMPRE por canal — o mesmo evento nao afeta
+    outros canais da mesma track. Cada canal 0-15 mantem a lista de programas
+    observados na ordem em que aparecem. Track sem `program_change` volta
+    dict vazio; nesse caso, TRAVA 1 tem que se apoiar em nome ou declaracao
+    explicita.
+
+    A agregacao por canal e o que permite a TRAVA 1 exigir que o patch de
+    corda governe um canal que REALMENTE tem notas — patch num canal vazio
+    nao autoriza inferencia sobre notas de outro canal."""
+    per_channel: dict[int, list[int]] = {}
     for msg in track:
         if msg.is_meta:
             continue
         if msg.type == "program_change":
-            programs.append(int(msg.program))
-    return programs
+            per_channel.setdefault(int(msg.channel), []).append(int(msg.program))
+    return per_channel
 
 
 def _matched_name_hint(track_name: str) -> str | None:
@@ -482,38 +497,68 @@ def _matched_name_hint(track_name: str) -> str | None:
 
 def _classify_stringed(
     track_name: str,
-    programs: Iterable[int],
+    programs_by_channel: dict[int, list[int]],
+    channels_with_notes: frozenset[int],
     declared_names: frozenset[str],
-) -> tuple[bool, str | None, str | None, NamePatchConflict | None]:
-    """TRAVA 1. Devolve `(is_stringed, source, discard_reason, conflict)`.
+) -> tuple[bool, str | None, str | None, NamePatchConflict | None, frozenset[int] | None]:
+    """TRAVA 1. Devolve
+    `(is_stringed, source, discard_reason, conflict, gm_channels)`.
 
     Precedencia: declaracao explicita > patch GM > nome da track. A ordem
     espelha a confianca da evidencia — declaracao vem do usuario, patch e
     metadado de exportacao, nome da track e o mais fraco (nomes podem ser
     apelidos de mixer).
 
-    Quando o nome sugere corda MAS a track tem `program_change` e nenhum
-    dos programas e de corda dedilhada, o patch VENCE: a track sai como
-    nao-corda com `discard_reason=NAME_PATCH_CONFLICT` e um
+    A evidencia por GM program so vale para canais que REALMENTE tem notas
+    na track: `program_change` num canal sem nota nao autoriza inferencia
+    sobre notas de outro canal (MIDI trata program change por canal). Para
+    TRAVA 1 disparar por GM, pelo menos um canal com notas precisa ter
+    patch de corda. Uma vez disparada, os canais que entram na inferencia
+    sao todos os que tem notas, EXCETO os que carregam um `program_change`
+    proprio explicitamente nao-corda — a convencao Songsterr/Guitar Pro e
+    emitir um unico `program_change` por track, e todos os canais herdam
+    esse contexto; so canal com patch proprio contradizendo a corda e
+    excluido. `gm_channels` devolve o conjunto autorizado; para declarado
+    ou nome, `gm_channels` e None, sinalizando "todos os canais entram".
+
+    Quando o nome sugere corda MAS os patches observados em canais com
+    notas nao contem nenhum de corda dedilhada, o patch VENCE: a track sai
+    como nao-corda com `discard_reason=NAME_PATCH_CONFLICT` e um
     `NamePatchConflict` registrando a palavra do nome e os patches em
-    conflito. Sem `program_change` na track, o nome ainda vale (fallback
-    `STRINGED_SOURCE_NAME`)."""
+    conflito (apenas os observados em canais com notas — patch em canal
+    vazio nao entra no conflito, porque nao esta contradizendo nota
+    nenhuma). Sem `program_change` em canal com notas, o nome ainda vale
+    (fallback `STRINGED_SOURCE_NAME`)."""
     if track_name in declared_names:
-        return True, STRINGED_SOURCE_DECLARED, None, None
-    program_list = list(programs)
-    for prog in program_list:
-        if prog in GM_STRINGED_PROGRAMS:
-            return True, STRINGED_SOURCE_GM_PROGRAM, None, None
+        return True, STRINGED_SOURCE_DECLARED, None, None, None
+    active_programs_by_channel = {
+        ch: progs for ch, progs in programs_by_channel.items()
+        if ch in channels_with_notes
+    }
+    stringed_channels = frozenset(
+        ch for ch, progs in active_programs_by_channel.items()
+        if any(p in GM_STRINGED_PROGRAMS for p in progs)
+    )
+    non_stringed_only_channels = frozenset(
+        ch for ch, progs in active_programs_by_channel.items()
+        if progs and not any(p in GM_STRINGED_PROGRAMS for p in progs)
+    )
+    if stringed_channels:
+        allowed = frozenset(channels_with_notes) - non_stringed_only_channels
+        return True, STRINGED_SOURCE_GM_PROGRAM, None, None, allowed
     hint = _matched_name_hint(track_name)
     if hint is not None:
-        if program_list:
+        active_programs = [
+            p for progs in active_programs_by_channel.values() for p in progs
+        ]
+        if active_programs:
             conflict = NamePatchConflict(
                 hint=hint,
-                programs=tuple(sorted(set(program_list))),
+                programs=tuple(sorted(set(active_programs))),
             )
-            return False, None, NAME_PATCH_CONFLICT, conflict
-        return True, STRINGED_SOURCE_NAME, None, None
-    return False, None, NOT_STRINGED, None
+            return False, None, NAME_PATCH_CONFLICT, conflict, None
+        return True, STRINGED_SOURCE_NAME, None, None, None
+    return False, None, NOT_STRINGED, None, None
 
 
 def _apply_channel_locks(
@@ -569,9 +614,15 @@ def tuning_inference(
             continue
 
         name = _track_name(track, idx)
-        programs = _iter_track_programs(track)
-        is_stringed, source, discard_reason, conflict = _classify_stringed(
-            name, programs, declared,
+        programs_by_channel = _iter_track_programs(track)
+        all_programs = [
+            p for progs in programs_by_channel.values() for p in progs
+        ]
+        channels_with_notes = frozenset(s.channel for s in all_stats)
+        is_stringed, source, discard_reason, conflict, gm_channels = (
+            _classify_stringed(
+                name, programs_by_channel, channels_with_notes, declared,
+            )
         )
 
         if not is_stringed:
@@ -580,7 +631,7 @@ def tuning_inference(
                 track_name=name,
                 is_stringed=False,
                 stringed_source=None,
-                gm_programs=tuple(sorted(set(programs))),
+                gm_programs=tuple(sorted(set(all_programs))),
                 candidate_channels=(),
                 discarded_channels=(),
                 discard_reason=discard_reason,
@@ -588,7 +639,24 @@ def tuning_inference(
             ))
             continue
 
-        candidates, discarded = _apply_channel_locks(all_stats)
+        if gm_channels is not None:
+            pre_discarded = tuple(
+                DiscardedChannel(
+                    channel=stat.channel,
+                    reason=DISCARD_NON_STRINGED_PATCH,
+                    note_count=stat.note_count,
+                    span=stat.span,
+                )
+                for stat in all_stats
+                if stat.channel not in gm_channels
+            )
+            candidate_stats = [s for s in all_stats if s.channel in gm_channels]
+        else:
+            pre_discarded = ()
+            candidate_stats = list(all_stats)
+
+        candidates, discarded = _apply_channel_locks(candidate_stats)
+        discarded = pre_discarded + discarded
 
         # US-003: ordenar candidatos pelo minimo (do grave para o agudo),
         # calcular intervalos e classificar.
@@ -626,7 +694,7 @@ def tuning_inference(
             track_name=name,
             is_stringed=True,
             stringed_source=source,
-            gm_programs=tuple(sorted(set(programs))),
+            gm_programs=tuple(sorted(set(all_programs))),
             candidate_channels=candidates,
             discarded_channels=discarded,
             discard_reason=None,
@@ -644,6 +712,7 @@ def tuning_inference(
 
 __all__ = [
     "DISCARD_LOW_NOTE_COUNT",
+    "DISCARD_NON_STRINGED_PATCH",
     "DISCARD_SPAN_TOO_WIDE",
     "GM_BASS_PROGRAMS",
     "GM_GUITAR_PROGRAMS",

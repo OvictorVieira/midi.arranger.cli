@@ -911,3 +911,102 @@ def test_analyze_exposes_name_patch_conflict_in_contract():
             "hint": "bass",
             "programs": [70],
         }
+
+
+# ---------------------------------------------------------------------------
+# US-002 (rodada 2) — GM program so vale para canais com notas.
+# ---------------------------------------------------------------------------
+
+
+def _write_midi_per_channel_programs(
+    path: str,
+    tracks: list[dict],
+) -> None:
+    """Escreve MIDI com `program_change` declarado POR CANAL.
+
+    Cada `tracks[i]` e um dict com:
+      - `name`: str
+      - `programs`: dict[int, int] (canal -> GM program)
+      - `notes`: list[(channel, pitch)]
+
+    Emite um `program_change` por par (canal, programa) — os canais sem
+    entrada em `programs` ficam sem `program_change` proprio."""
+    mid = mido.MidiFile(ticks_per_beat=480)
+    for spec in tracks:
+        t = mido.MidiTrack()
+        t.append(mido.MetaMessage("track_name", name=spec["name"], time=0))
+        for ch, prog in spec.get("programs", {}).items():
+            t.append(mido.Message(
+                "program_change", channel=int(ch), program=int(prog), time=0,
+            ))
+        for ch, pitch in spec["notes"]:
+            t.append(mido.Message("note_on", channel=ch, note=pitch, velocity=100, time=0))
+            t.append(mido.Message("note_off", channel=ch, note=pitch, velocity=0, time=120))
+        mid.tracks.append(t)
+    mid.save(path)
+
+
+def test_trava1_gm_patch_on_empty_channel_does_not_authorize_other_channels():
+    """Regressao do PRD: track `Woodwinds` com `program_change` GM 24 (guitarra)
+    no canal 15 SEM NOTAS, e notas nos canais 0-5, NAO e considerada de corda.
+    Patch em canal vazio nao autoriza inferencia sobre notas de outro canal."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "woodwinds.mid")
+        # Todas as notas em canais 0..5; program change so em 15 (vazio).
+        notes = (
+            _rep(0, 60, 10) + _rep(1, 62, 10) + _rep(2, 64, 10)
+            + _rep(3, 65, 10) + _rep(4, 67, 10) + _rep(5, 69, 10)
+        )
+        _write_midi_per_channel_programs(p, [{
+            "name": "Woodwinds",
+            "programs": {15: 24},
+            "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.stringed_source is None
+        assert ti.discard_reason == tuning.NOT_STRINGED
+        assert ti.candidate_channels == ()
+        # `gm_programs` continua listando o que foi observado no arquivo, mas
+        # a inferencia nao foi autorizada.
+        assert 24 in ti.gm_programs
+
+
+def test_trava1_gm_patch_on_same_channel_as_notes_authorizes_normally():
+    """Caso valido: patch de corda no MESMO canal das notas autoriza a
+    inferencia como sempre — o cenario Songsterr classico, um program_change
+    e todas as cordas herdam o contexto."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "songsterr.mid")
+        notes = _rep(0, 40, 10) + _rep(1, 45, 10) + _rep(2, 50, 10)
+        _write_midi_per_channel_programs(p, [{
+            "name": "Guitar",
+            "programs": {0: 30},
+            "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is True
+        assert ti.stringed_source == tuning.STRINGED_SOURCE_GM_PROGRAM
+        assert {c.channel for c in ti.candidate_channels} == {0, 1, 2}
+
+
+def test_trava1_mixed_patches_only_stringed_channels_enter_inference():
+    """Quando canais diferentes da mesma track tem patches diferentes, so os
+    canais com patch de corda entram na inferencia. Canal com patch nao-corda
+    (flauta, GM 73) aparece em `discarded_channels` com motivo
+    `non_stringed_channel_patch`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "mixed.mid")
+        notes = _rep(0, 40, 10) + _rep(1, 72, 10)
+        _write_midi_per_channel_programs(p, [{
+            "name": "Guitar+Flute",
+            "programs": {0: 30, 1: 73},
+            "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is True
+        assert ti.stringed_source == tuning.STRINGED_SOURCE_GM_PROGRAM
+        assert {c.channel for c in ti.candidate_channels} == {0}
+        discarded_by_channel = {d.channel: d for d in ti.discarded_channels}
+        assert 1 in discarded_by_channel
+        assert discarded_by_channel[1].reason == tuning.DISCARD_NON_STRINGED_PATCH
