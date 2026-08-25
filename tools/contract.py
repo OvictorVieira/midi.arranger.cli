@@ -557,6 +557,16 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     if ti.low_strings_top3_percentage is not None
                     else None
                 ),
+                "name_patch_conflict": (
+                    {
+                        "hint": ti.name_patch_conflict.hint,
+                        "programs": [
+                            int(p) for p in ti.name_patch_conflict.programs
+                        ],
+                    }
+                    if ti.name_patch_conflict is not None
+                    else None
+                ),
             }
             for ti in a.tuning_inference
         ],
@@ -718,7 +728,10 @@ ANALYZE_TOOL = Tool(
                         "discard_reason": {
                             "oneOf": [
                                 {"type": "null"},
-                                {"enum": [tuning_mod.NOT_STRINGED]},
+                                {"enum": [
+                                    tuning_mod.NOT_STRINGED,
+                                    tuning_mod.NAME_PATCH_CONFLICT,
+                                ]},
                             ],
                         },
                         "gm_programs": {
@@ -788,6 +801,27 @@ ANALYZE_TOOL = Tool(
                             "minimum": 0,
                             "maximum": 100,
                         },
+                        "name_patch_conflict": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "hint": {"type": "string", "minLength": 1},
+                                        "programs": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 127,
+                                            },
+                                        },
+                                    },
+                                    "required": ["hint", "programs"],
+                                    "additionalProperties": False,
+                                },
+                            ],
+                        },
                     },
                     "required": [
                         "track_index", "track_name", "is_stringed",
@@ -796,6 +830,7 @@ ANALYZE_TOOL = Tool(
                         "tuning_intervals", "tuning_class", "tuning_name",
                         "lowest_string_pitch", "confidence",
                         "string_concentrations", "low_strings_top3_percentage",
+                        "name_patch_conflict",
                     ],
                     "additionalProperties": False,
                 },

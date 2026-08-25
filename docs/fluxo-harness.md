@@ -66,11 +66,12 @@ flowchart TD
     style Die fill:#f8d7da,stroke:#dc3545,color:#000
 ```
 
-O harness procura apenas a sentinela literal `<promise>COMPLETE</promise>` na saída capturada da
-iteração recém-executada, mas só depois de conferir que `arrangement-brief.json` continuou igual ao
-hash aceito no início do `run`. Se o agente alterar ou remover o brief durante uma iteração, o
-harness para com erro: requisito novo exige rodar a fase de brief de novo. Encontrou a sentinela com
-o brief intacto, encerra com código 0. **Estourar as iterações é falha**, com código de saída
+O harness procura apenas a sentinela de conclusão na saída capturada da iteração recém-executada. Ela
+é formada por `<promise>` + `COMPLETE` + `</promise>`, mas só é aceita depois de conferir que
+`arrangement-brief.json` continuou igual ao hash aceito no início do `run`. Se o agente alterar ou
+remover o brief durante uma iteração, o harness para com erro: requisito novo exige rodar a fase de
+brief de novo. Encontrou a sentinela com o brief intacto, encerra com código 0.
+**Estourar as iterações é falha**, com código de saída
 diferente de zero e ponteiro para `progress.txt`. O harness nunca finge sucesso nem consulta
 `progress.txt` para decidir se acabou.
 Antes de chamar qualquer CLI, `run` exige `arrangement-brief.json`, cria `.midiarranger/` quando

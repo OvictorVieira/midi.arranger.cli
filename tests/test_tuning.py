@@ -765,3 +765,149 @@ def test_load_tuning_patterns_ignores_entries_with_less_than_two_pitches(monkeyp
 def test_is_prefix_of_any_returns_false_on_empty_observed():
     """`observed=()` nunca casa: sem intervalos, nao ha nada pra classificar."""
     assert tuning._is_prefix_of_any((), frozenset({(5, 5, 5, 4, 5)})) is False
+
+
+# ---------------------------------------------------------------------------
+# US-001 (rodada 2) — casamento por PALAVRA, nao por substring
+# ---------------------------------------------------------------------------
+
+
+_STRINGED_NAME_MATCHES = [
+    "Bass",
+    "Bass Guitar",
+    "Rhythm Guitar",
+    "Guitarra",
+    "Baixo",
+    "BASS",
+    "bass 2",
+]
+
+_STRINGED_NAME_NON_MATCHES = [
+    "Bassoon",
+    "Bassoons",
+    "Contrabassoon",
+    "Brass",
+    "Brass Section",
+]
+
+
+def test_name_hint_matches_stringed_names_by_word():
+    """Nomes de corda continuam casando por palavra (com fronteira)."""
+    for name in _STRINGED_NAME_MATCHES:
+        assert tuning._matched_name_hint(name) is not None, name
+
+
+def test_name_hint_does_not_match_bassoon_or_brass():
+    """`Bassoon`, `Bassoons`, `Contrabassoon`, `Brass`, `Brass Section` nao
+    casam — a fronteira de palavra impede que `bass` como substring
+    contamine a inferencia."""
+    for name in _STRINGED_NAME_NON_MATCHES:
+        assert tuning._matched_name_hint(name) is None, name
+
+
+def test_bassoon_track_is_not_treated_as_stringed_by_name():
+    """Regressao explicita: track chamada `Bassoon` NAO e considerada de
+    corda pelo nome. Sem `program_change`, cai como `not_stringed` — nao
+    ha conflito nome-versus-patch porque o nome tambem nao casou."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "bassoon.mid")
+        _write_midi_full(p, [{
+            "name": "Bassoon", "program": None,
+            "notes": _rep(0, 60, 12) + _rep(1, 62, 12),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.discard_reason == tuning.NOT_STRINGED
+        assert ti.name_patch_conflict is None
+
+
+def test_bassoon_with_bassoon_patch_reports_no_conflict_and_not_stringed():
+    """`Bassoon` com GM 70 (bassoon): nome nao casa, patch tambem nao —
+    resultado e `not_stringed` sem conflito, GM 70 aparece em `gm_programs`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "bassoon_patch.mid")
+        _write_midi_full(p, [{
+            "name": "Bassoon", "program": 70,
+            "notes": _rep(0, 60, 12) + _rep(1, 62, 12),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.discard_reason == tuning.NOT_STRINGED
+        assert ti.name_patch_conflict is None
+        assert 70 in ti.gm_programs
+
+
+def test_brass_with_brass_patch_reports_no_conflict_and_not_stringed():
+    """`Brass` com GM 61 (french horn / brass): nome nao casa, patch
+    tambem nao — resultado e `not_stringed` sem conflito."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "brass_patch.mid")
+        _write_midi_full(p, [{
+            "name": "Brass Section", "program": 61,
+            "notes": _rep(0, 60, 12) + _rep(1, 62, 12),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.discard_reason == tuning.NOT_STRINGED
+        assert ti.name_patch_conflict is None
+        assert 61 in ti.gm_programs
+
+
+def test_name_hints_stringed_but_patch_contradicts_gm_program_wins():
+    """Nome sugere corda (`Bass Solo` casa `bass` por palavra) mas o patch
+    da track e bassoon (GM 70). O patch VENCE: a track sai como nao-corda
+    com `discard_reason=NAME_PATCH_CONFLICT` e `name_patch_conflict`
+    registra os dois valores em disputa."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "bass_named_bassoon_patch.mid")
+        _write_midi_full(p, [{
+            "name": "Bass Solo", "program": 70,
+            "notes": _rep(0, 40, 12) + _rep(1, 45, 12),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.stringed_source is None
+        assert ti.discard_reason == tuning.NAME_PATCH_CONFLICT
+        assert ti.name_patch_conflict is not None
+        assert ti.name_patch_conflict.hint == "bass"
+        assert ti.name_patch_conflict.programs == (70,)
+        assert 70 in ti.gm_programs
+        assert ti.candidate_channels == ()
+
+
+def test_name_hints_without_program_change_still_uses_name():
+    """Sem `program_change` na track, nome hint continua valendo como
+    fallback (`STRINGED_SOURCE_NAME`) — nao ha patch para contradizer."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "guitar_no_patch.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": None,
+            "notes": _rep(0, 40, 12) + _rep(1, 45, 12),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is True
+        assert ti.stringed_source == tuning.STRINGED_SOURCE_NAME
+        assert ti.name_patch_conflict is None
+
+
+def test_analyze_exposes_name_patch_conflict_in_contract():
+    """A fachada `analyze` serializa `name_patch_conflict` no dict de
+    contrato — o relatorio expoe os dois valores."""
+    from tools import contract as contract_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "conflict_contract.mid")
+        _write_midi_full(p, [{
+            "name": "Bass Solo", "program": 70,
+            "notes": _rep(0, 40, 12),
+        }])
+        data, _ = contract_mod._analyze_impl({"midi_path": p})
+        # Localiza a track pelo nome — analyze usa a track_name preservada.
+        ti_dict = next(
+            t for t in data["tuning_inference"] if t["track_name"] == "Bass Solo"
+        )
+        assert ti_dict["discard_reason"] == tuning.NAME_PATCH_CONFLICT
+        assert ti_dict["name_patch_conflict"] == {
+            "hint": "bass",
+            "programs": [70],
+        }

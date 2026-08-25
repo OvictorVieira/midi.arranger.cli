@@ -24,6 +24,7 @@ Escopo:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -81,9 +82,24 @@ NOT_STRINGED = "not_stringed"
 """Motivo de descarte no nivel da track (TRAVA 1): nenhuma das tres
 evidencias de instrumento de corda."""
 
+NAME_PATCH_CONFLICT = "name_patch_conflict"
+"""Motivo de descarte no nivel da track: o nome sugere corda dedilhada
+mas o(s) `program_change` observado(s) na track sao patches nao-corda.
+O patch VENCE por ser metadado de exportacao — nome de track e apelido
+de mixer, o General MIDI e a declaracao do instrumento."""
+
 STRINGED_SOURCE_NAME = "track_name"
 STRINGED_SOURCE_GM_PROGRAM = "gm_program"
 STRINGED_SOURCE_DECLARED = "declared"
+
+_STRINGED_NAME_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(h) for h in _STRINGED_NAME_HINTS) + r")\b",
+    re.IGNORECASE,
+)
+"""Casamento por PALAVRA (com fronteira), case-insensitive. Evita que
+`Bassoon`, `Brass` ou `Contrabassoon` sejam confundidos com `bass` por
+substring solta — e o que fazia a inferencia sair errada em tracks de
+sopro."""
 
 # ---------------------------------------------------------------------------
 # US-003 — classificacao da afinacao
@@ -239,6 +255,21 @@ def channel_distribution(midi_path: str) -> list[TrackChannelDistribution]:
 
 
 @dataclass(frozen=True)
+class NamePatchConflict:
+    """Track em que o nome sugere corda mas o(s) patch(es) GM contradizem.
+
+    - `hint`: a palavra do nome que casou com um `_STRINGED_NAME_HINTS`
+      (ex.: `bass` para uma track chamada `Bass Solo` com patch de bassoon).
+    - `programs`: os `program_change` observados na track, em ordem
+      crescente. Nenhum deles esta em `GM_STRINGED_PROGRAMS` — se
+      estivesse, a track passaria pela evidencia mais forte (`gm_program`)
+      e nao haveria conflito.
+    """
+    hint: str
+    programs: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class DiscardedChannel:
     """Canal descartado pela inferencia de afinacao — motivo declarado.
 
@@ -381,8 +412,12 @@ class TrackTuningInference:
       NENHUM `DiscardedChannel` — o descarte da TRAVA 1 e da track inteira,
       exposto por `is_stringed=False` e `discard_reason='not_stringed'`.
     - `discard_reason`: None quando a track passa na TRAVA 1;
-      `NOT_STRINGED` quando nao passa. Explicita o "nao infere" para o
-      leitor do relatorio.
+      `NOT_STRINGED` quando nao passa; `NAME_PATCH_CONFLICT` quando o
+      nome sugere corda mas o patch GM contradiz. Explicita o "nao
+      infere" para o leitor do relatorio.
+    - `name_patch_conflict`: preenchido apenas quando `discard_reason ==
+      NAME_PATCH_CONFLICT`, com os dois valores em disputa (a palavra
+      do nome e os patches da track).
     - `tuning_intervals`: intervalos em semitons entre minimos de canais
       confiaveis, ordenados do grave para o agudo. Vazio quando nao ha
       candidato suficiente para dois minimos (< 2 canais).
@@ -421,6 +456,7 @@ class TrackTuningInference:
     confidence: str = TUNING_CONFIDENCE_UNKNOWN
     string_concentrations: tuple[StringNoteConcentration, ...] = ()
     low_strings_top3_percentage: float | None = None
+    name_patch_conflict: NamePatchConflict | None = None
 
 
 def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
@@ -436,32 +472,48 @@ def _iter_track_programs(track: mido.MidiTrack) -> list[int]:
     return programs
 
 
-def _name_hints_stringed(track_name: str) -> bool:
-    """Nome da track sugere instrumento de corda. Case-insensitive,
-    tolerante a portugues (`guitarra`, `baixo`) e ingles."""
-    lower = track_name.lower()
-    return any(hint in lower for hint in _STRINGED_NAME_HINTS)
+def _matched_name_hint(track_name: str) -> str | None:
+    """Palavra de `_STRINGED_NAME_HINTS` que casa por FRONTEIRA no nome da
+    track (case-insensitive), ou None. Fronteira e o que impede `Bassoon`
+    virar `bass` e um fagote virar baixo por acidente."""
+    match = _STRINGED_NAME_PATTERN.search(track_name)
+    return match.group(1).lower() if match else None
 
 
 def _classify_stringed(
     track_name: str,
     programs: Iterable[int],
     declared_names: frozenset[str],
-) -> tuple[bool, str | None]:
-    """TRAVA 1. Devolve (is_stringed, source_or_None).
+) -> tuple[bool, str | None, str | None, NamePatchConflict | None]:
+    """TRAVA 1. Devolve `(is_stringed, source, discard_reason, conflict)`.
 
     Precedencia: declaracao explicita > patch GM > nome da track. A ordem
     espelha a confianca da evidencia — declaracao vem do usuario, patch e
     metadado de exportacao, nome da track e o mais fraco (nomes podem ser
-    apelidos de mixer)."""
+    apelidos de mixer).
+
+    Quando o nome sugere corda MAS a track tem `program_change` e nenhum
+    dos programas e de corda dedilhada, o patch VENCE: a track sai como
+    nao-corda com `discard_reason=NAME_PATCH_CONFLICT` e um
+    `NamePatchConflict` registrando a palavra do nome e os patches em
+    conflito. Sem `program_change` na track, o nome ainda vale (fallback
+    `STRINGED_SOURCE_NAME`)."""
     if track_name in declared_names:
-        return True, STRINGED_SOURCE_DECLARED
-    for prog in programs:
+        return True, STRINGED_SOURCE_DECLARED, None, None
+    program_list = list(programs)
+    for prog in program_list:
         if prog in GM_STRINGED_PROGRAMS:
-            return True, STRINGED_SOURCE_GM_PROGRAM
-    if _name_hints_stringed(track_name):
-        return True, STRINGED_SOURCE_NAME
-    return False, None
+            return True, STRINGED_SOURCE_GM_PROGRAM, None, None
+    hint = _matched_name_hint(track_name)
+    if hint is not None:
+        if program_list:
+            conflict = NamePatchConflict(
+                hint=hint,
+                programs=tuple(sorted(set(program_list))),
+            )
+            return False, None, NAME_PATCH_CONFLICT, conflict
+        return True, STRINGED_SOURCE_NAME, None, None
+    return False, None, NOT_STRINGED, None
 
 
 def _apply_channel_locks(
@@ -518,7 +570,9 @@ def tuning_inference(
 
         name = _track_name(track, idx)
         programs = _iter_track_programs(track)
-        is_stringed, source = _classify_stringed(name, programs, declared)
+        is_stringed, source, discard_reason, conflict = _classify_stringed(
+            name, programs, declared,
+        )
 
         if not is_stringed:
             result.append(TrackTuningInference(
@@ -529,7 +583,8 @@ def tuning_inference(
                 gm_programs=tuple(sorted(set(programs))),
                 candidate_channels=(),
                 discarded_channels=(),
-                discard_reason=NOT_STRINGED,
+                discard_reason=discard_reason,
+                name_patch_conflict=conflict,
             ))
             continue
 
@@ -596,6 +651,7 @@ __all__ = [
     "MAX_STRING_SPAN_SEMITONES",
     "MIN_CANDIDATES_FOR_HIGH_CONFIDENCE",
     "MIN_NOTES_PER_CHANNEL_FOR_INFERENCE",
+    "NAME_PATCH_CONFLICT",
     "NOT_STRINGED",
     "STRINGED_SOURCE_DECLARED",
     "STRINGED_SOURCE_GM_PROGRAM",
@@ -608,6 +664,7 @@ __all__ = [
     "TUNING_CONFIDENCE_UNKNOWN",
     "ChannelStats",
     "DiscardedChannel",
+    "NamePatchConflict",
     "StringNoteConcentration",
     "TrackChannelDistribution",
     "TrackTuningInference",

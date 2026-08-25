@@ -143,8 +143,9 @@ Exemplo mínimo válido:
 
 ### Conclusão
 
-O agente emite `<promise>COMPLETE</promise>` no stdout quando o arranjo está pronto e validado. O
-harness procura essa sentinela e encerra. Sem ela, itera até o limite.
+O agente emite a sentinela de conclusão no stdout quando o arranjo está pronto e validado. Ela é
+formada por `<promise>` + `COMPLETE` + `</promise>`. O harness procura essa sentinela e encerra.
+Sem ela, itera até o limite.
 
 O `arrangement-plan.json` é a fonte de verdade da conclusão; `progress.txt` é só log.
 
