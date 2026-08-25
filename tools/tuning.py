@@ -146,6 +146,23 @@ MIN_CANDIDATES_FOR_HIGH_CONFIDENCE = 4
 Guitarra de 6 cordas com 4 delas exercitadas ja da amostra suficiente para
 firmar a assinatura de intervalos; abaixo disso, a inferencia sai `low`."""
 
+MIN_INTERVALS_FOR_CLASSIFICATION = 3
+"""Numero minimo de intervalos observados para classificar por prefixo. Dois
+intervalos como `[5, 5]` cabem tanto no inicio de uma afinacao padrao quanto
+nas cordas de cima de um drop (onde a mais grave foi discardada) — sem um
+prefixo maior nao da para desambiguar, e o detector devolve `unknown` em vez
+de chutar. A unica excecao e o prefixo com a assinatura de drop na base
+(interval `7` na posicao 0): esse valor nao aparece em afinacao padrao
+nenhuma, entao mesmo com dois intervalos ja classifica como drop. Ver
+`DROP_SIGNATURE_INTERVAL`."""
+
+DROP_SIGNATURE_INTERVAL = 7
+"""Primeiro intervalo (grave -> agudo) de toda afinacao drop conhecida:
+a corda mais grave desce um tom inteiro em relacao a padrao. Nenhuma
+afinacao padrao comeca com `7`, entao esse valor no inicio do prefixo e
+assinatura suficiente para classificar como drop sem exigir o
+`MIN_INTERVALS_FOR_CLASSIFICATION` completo."""
+
 _PITCH_CLASS_NAMES = (
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 )
@@ -347,16 +364,39 @@ def _is_prefix_of_any(
 
 
 def _classify_tuning(intervals: tuple[int, ...]) -> str:
-    """Devolve `drop`, `standard` ou `unknown`. Drop tem prioridade porque
-    a assinatura `7` na base e disjunta da assinatura `5` do padrao — nao
-    ha ambiguidade real, so consistencia de ordem."""
+    """Devolve `drop`, `standard` ou `unknown`.
+
+    Regras:
+      - Prefixo que casa com mais de UMA CLASSE (drop e standard ao mesmo
+        tempo) -> `unknown`: nao da para decidir sem chutar. Hoje as duas
+        classes sao disjuntas pelo primeiro intervalo (drop = 7, standard
+        = 5), mas a checagem existe como trava estrutural para o dia em que
+        o manual crescer.
+      - Prefixo curto (`< MIN_INTERVALS_FOR_CLASSIFICATION`) so classifica
+        quando carrega a assinatura de drop no inicio (`DROP_SIGNATURE_INTERVAL`).
+        Sem essa assinatura, `[5, 5]` sozinho cabe tanto no inicio de uma
+        afinacao padrao quanto nas cordas de cima de um drop com a mais
+        grave descartada — e ambiguo, entao devolve `unknown`.
+      - Com `MIN_INTERVALS_FOR_CLASSIFICATION` intervalos ou mais, o prefixo
+        que casa com uma unica classe classifica como aquela classe.
+    """
     if not intervals:
         return TUNING_CLASS_UNKNOWN
     drop_patterns, standard_patterns = _load_tuning_patterns()
-    if _is_prefix_of_any(intervals, drop_patterns):
-        return TUNING_CLASS_DROP
-    if _is_prefix_of_any(intervals, standard_patterns):
-        return TUNING_CLASS_STANDARD
+    matches_drop = _is_prefix_of_any(intervals, drop_patterns)
+    matches_standard = _is_prefix_of_any(intervals, standard_patterns)
+    if matches_drop and matches_standard:
+        return TUNING_CLASS_UNKNOWN
+    if matches_drop:
+        if intervals[0] == DROP_SIGNATURE_INTERVAL:
+            return TUNING_CLASS_DROP
+        if len(intervals) >= MIN_INTERVALS_FOR_CLASSIFICATION:
+            return TUNING_CLASS_DROP
+        return TUNING_CLASS_UNKNOWN
+    if matches_standard:
+        if len(intervals) >= MIN_INTERVALS_FOR_CLASSIFICATION:
+            return TUNING_CLASS_STANDARD
+        return TUNING_CLASS_UNKNOWN
     return TUNING_CLASS_UNKNOWN
 
 
@@ -364,11 +404,26 @@ def _pitch_class_name(midi: int) -> str:
     return _PITCH_CLASS_NAMES[midi % 12]
 
 
-def _classify_confidence(tuning_class: str, candidate_count: int) -> str:
-    """US-004. `unknown` sempre que a classe for `unknown`; `low` quando a
-    amostra de candidatos e magra; `high` quando atinge o limiar."""
+def _classify_confidence(
+    tuning_class: str,
+    candidate_count: int,
+    has_discards: bool = False,
+) -> str:
+    """US-004 + US-003 (rodada 2). `unknown` sempre que a classe for
+    `unknown`; caso contrario `high` quando ha amostra suficiente e
+    NENHUM canal foi descartado, `low` quando falta amostra OU quando
+    algum canal caiu em qualquer trava.
+
+    O descarte rebaixa a confianca porque a inferencia pode estar
+    incompleta: um dos canais descartados podia ser justamente a corda que
+    fecharia o padrao (ex.: DropD com a corda grave abaixo do limiar da
+    TRAVA 2 sobra `[5, 5, 4, 5]` — visualmente parece padrao, mas nao e).
+    Enquanto o descarte estiver sinalizado no relatorio, a confianca nunca
+    sobe para `high`."""
     if tuning_class == TUNING_CLASS_UNKNOWN:
         return TUNING_CONFIDENCE_UNKNOWN
+    if has_discards:
+        return TUNING_CONFIDENCE_LOW
     if candidate_count < MIN_CANDIDATES_FOR_HIGH_CONFIDENCE:
         return TUNING_CONFIDENCE_LOW
     return TUNING_CONFIDENCE_HIGH
@@ -447,6 +502,12 @@ class TrackTuningInference:
       mais graves em `string_concentrations`. `None` quando nao ha nenhuma
       corda candidata; caso contrario e a soma das primeiras `min(3, N)`
       entradas. E o resumo que responde "quanto do riff cai nas graves".
+    - `inference_incomplete`: True quando pelo menos um canal foi descartado
+      por qualquer motivo (`DISCARD_*`). Sinaliza que a assinatura de
+      intervalos observada pode nao ser a assinatura real da afinacao —
+      alguma corda ficou de fora. Enquanto essa flag estiver ligada, a
+      `confidence` nunca sobe para `high`. Sempre False para tracks que nao
+      passam na TRAVA 1 (nao ha candidato pra descartar).
     """
     track_index: int
     track_name: str
@@ -464,6 +525,7 @@ class TrackTuningInference:
     string_concentrations: tuple[StringNoteConcentration, ...] = ()
     low_strings_top3_percentage: float | None = None
     name_patch_conflict: NamePatchConflict | None = None
+    inference_incomplete: bool = False
 
 
 def _iter_track_programs(track: mido.MidiTrack) -> dict[int, list[int]]:
@@ -668,7 +730,11 @@ def tuning_inference(
         tuning_class = _classify_tuning(intervals)
         lowest_pitch = by_pitch[0].pitch_min if by_pitch else None
         tuning_name = _tuning_name(tuning_class, lowest_pitch)
-        confidence = _classify_confidence(tuning_class, len(candidates))
+        confidence = _classify_confidence(
+            tuning_class,
+            len(candidates),
+            has_discards=bool(discarded),
+        )
 
         # US-005 — concentracao por corda, na ordem grave -> agudo. Reusa
         # `by_pitch` porque essa e exatamente a ordem "corda 0 = mais grave"
@@ -705,6 +771,7 @@ def tuning_inference(
             confidence=confidence,
             string_concentrations=concentrations,
             low_strings_top3_percentage=top3,
+            inference_incomplete=bool(discarded),
         ))
 
     return result
@@ -714,11 +781,13 @@ __all__ = [
     "DISCARD_LOW_NOTE_COUNT",
     "DISCARD_NON_STRINGED_PATCH",
     "DISCARD_SPAN_TOO_WIDE",
+    "DROP_SIGNATURE_INTERVAL",
     "GM_BASS_PROGRAMS",
     "GM_GUITAR_PROGRAMS",
     "GM_STRINGED_PROGRAMS",
     "MAX_STRING_SPAN_SEMITONES",
     "MIN_CANDIDATES_FOR_HIGH_CONFIDENCE",
+    "MIN_INTERVALS_FOR_CLASSIFICATION",
     "MIN_NOTES_PER_CHANNEL_FOR_INFERENCE",
     "NAME_PATCH_CONFLICT",
     "NOT_STRINGED",

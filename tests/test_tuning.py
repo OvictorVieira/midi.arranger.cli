@@ -1010,3 +1010,166 @@ def test_trava1_mixed_patches_only_stringed_channels_enter_inference():
         discarded_by_channel = {d.channel: d for d in ti.discarded_channels}
         assert 1 in discarded_by_channel
         assert discarded_by_channel[1].reason == tuning.DISCARD_NON_STRINGED_PATCH
+
+
+# ---------------------------------------------------------------------------
+# US-003 (rodada 2) — prefixo ambiguo nao classifica; descarte rebaixa
+# confianca e sinaliza inference_incomplete.
+# ---------------------------------------------------------------------------
+
+
+def test_min_intervals_for_classification_is_a_named_constant():
+    """A trava do prefixo minimo mora numa constante nomeada, nao em numero
+    solto — mudar o limiar deve ser um lugar so."""
+    assert isinstance(tuning.MIN_INTERVALS_FOR_CLASSIFICATION, int)
+    assert tuning.MIN_INTERVALS_FOR_CLASSIFICATION >= 3
+    assert tuning.DROP_SIGNATURE_INTERVAL == 7
+
+
+def test_prefix_5_5_alone_does_not_classify_nor_name():
+    """Prefixo `[5, 5]` sem a assinatura de drop e ambiguo entre padrao e
+    as cordas de cima de um drop (com a mais grave descartada) — devolve
+    `unknown` em vez de chutar `Standard`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "prefix_55.mid")
+        # 2 canais candidatos: intervalos = [5]. Precisamos de 3 candidatos
+        # para gerar 2 intervalos [5, 5].
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([40, 45, 50]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.tuning_intervals == (5, 5)
+        assert ti.tuning_class == tuning.TUNING_CLASS_UNKNOWN
+        assert ti.tuning_name is None
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_UNKNOWN
+
+
+def test_prefix_7_5_classifies_drop_because_signature_is_disjoint():
+    """`[7, 5]` classifica drop mesmo abaixo do minimo geral: o `7` no
+    inicio nao aparece em afinacao padrao nenhuma, entao a assinatura
+    resolve a ambiguidade."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "prefix_75.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([38, 45, 50]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.tuning_intervals == (7, 5)
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert ti.tuning_name == "Drop D"
+
+
+def test_classify_tuning_returns_unknown_when_prefix_matches_multiple_classes(
+    monkeypatch,
+):
+    """Trava estrutural: prefixo que casa DROP e STANDARD ao mesmo tempo
+    devolve `unknown`, mesmo com length >= min. Hoje os padroes sao
+    disjuntos pelo primeiro intervalo (7 vs 5); esse teste garante que a
+    checagem nao regride no dia em que o manual crescer."""
+    monkeypatch.setattr(
+        tuning,
+        "_TUNING_PATTERNS_CACHE",
+        (frozenset({(5, 5, 5)}), frozenset({(5, 5, 5)})),
+    )
+    assert tuning._classify_tuning((5, 5, 5)) == tuning.TUNING_CLASS_UNKNOWN
+
+
+def test_dropd_with_lowest_string_below_threshold_does_not_name_standard_a():
+    """Cenario do review: guitarra em Drop D em que a corda grave D2 tem
+    poucas notas e cai por TRAVA 2; as demais cinco cordas passam. Os
+    intervalos restantes `[5, 5, 4, 5]` NAO batem com padrao nenhum, entao
+    a classe fica `unknown` e o detector NAO devolve `Standard A` (que
+    seria o nome derivado de A2 se a classificacao chutasse). A flag
+    `inference_incomplete` fica ligada e a confianca nunca sobe para
+    `high`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "dropd_missing_low.mid")
+        low = tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE - 1
+        ok = tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE
+        # Drop D: 38 45 50 55 59 64. Canal 0 (D2) com low notas cai; demais
+        # passam.
+        notes = (
+            _rep(0, 38, low)
+            + _rep(1, 45, ok) + _rep(2, 50, ok) + _rep(3, 55, ok)
+            + _rep(4, 59, ok) + _rep(5, 64, ok)
+        )
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30, "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is True
+        # Canal grave descartado por TRAVA 2.
+        discarded_by_channel = {d.channel: d for d in ti.discarded_channels}
+        assert 0 in discarded_by_channel
+        assert discarded_by_channel[0].reason == tuning.DISCARD_LOW_NOTE_COUNT
+        # Intervalos remanescentes nao batem com padrao — nem drop, nem standard.
+        assert ti.tuning_intervals == (5, 5, 4, 5)
+        assert ti.tuning_class == tuning.TUNING_CLASS_UNKNOWN
+        assert ti.tuning_name is None
+        # Descarte sinalizado; confianca nao sobe para high.
+        assert ti.inference_incomplete is True
+        assert ti.confidence != tuning.TUNING_CONFIDENCE_HIGH
+
+
+def test_discard_downgrades_high_confidence_to_low():
+    """Mesmo com padrao reconhecido e amostra suficiente para high, se algum
+    canal foi descartado a confianca cai para `low` — a assinatura pode ter
+    vindo incompleta."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_with_discard.mid")
+        low = tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE - 1
+        ok = tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE
+        # Drop D completo em 5 cordas graves + uma corda extra (canal 6) com
+        # poucas notas para forcar um descarte. Sobra 5 candidatos.
+        notes = (
+            _rep(0, 38, ok) + _rep(1, 45, ok) + _rep(2, 50, ok)
+            + _rep(3, 55, ok) + _rep(4, 59, ok)
+            + _rep(6, 76, low)
+        )
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30, "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.tuning_class == tuning.TUNING_CLASS_DROP
+        assert len(ti.candidate_channels) >= tuning.MIN_CANDIDATES_FOR_HIGH_CONFIDENCE
+        assert ti.discarded_channels != ()
+        assert ti.inference_incomplete is True
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_LOW
+
+
+def test_no_discards_full_pattern_stays_high_confidence():
+    """Contra-prova: sem descarte, `high` continua saindo quando o padrao
+    aparece e a amostra e suficiente — a nova regra so mexe no caso de
+    descarte."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "drop_full_no_discard.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30,
+            "notes": _six_channels([38, 45, 50, 55, 59, 64]),
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.discarded_channels == ()
+        assert ti.inference_incomplete is False
+        assert ti.confidence == tuning.TUNING_CONFIDENCE_HIGH
+
+
+def test_analyze_exposes_inference_incomplete_in_contract():
+    """A fachada `analyze` serializa `inference_incomplete` no dict de
+    contrato — o consumidor le a flag sem re-executar o detector."""
+    from tools import contract as contract_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "incomplete_contract.mid")
+        low = tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE - 1
+        ok = tuning.MIN_NOTES_PER_CHANNEL_FOR_INFERENCE
+        notes = _rep(0, 40, ok) + _rep(1, 45, low)
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": 30, "notes": notes,
+        }])
+        data, _ = contract_mod._analyze_impl({"midi_path": p})
+        ti_dict = next(
+            t for t in data["tuning_inference"] if t["track_name"] == "Guitar"
+        )
+        assert ti_dict["inference_incomplete"] is True

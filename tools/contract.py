@@ -567,6 +567,7 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                     if ti.name_patch_conflict is not None
                     else None
                 ),
+                "inference_incomplete": bool(ti.inference_incomplete),
             }
             for ti in a.tuning_inference
         ],
@@ -823,6 +824,7 @@ ANALYZE_TOOL = Tool(
                                 },
                             ],
                         },
+                        "inference_incomplete": {"type": "boolean"},
                     },
                     "required": [
                         "track_index", "track_name", "is_stringed",
@@ -831,7 +833,7 @@ ANALYZE_TOOL = Tool(
                         "tuning_intervals", "tuning_class", "tuning_name",
                         "lowest_string_pitch", "confidence",
                         "string_concentrations", "low_strings_top3_percentage",
-                        "name_patch_conflict",
+                        "name_patch_conflict", "inference_incomplete",
                     ],
                     "additionalProperties": False,
                 },
