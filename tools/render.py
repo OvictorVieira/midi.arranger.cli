@@ -36,7 +36,7 @@ import mido
 import pretty_midi
 
 from .analyze import Analysis, analyze
-from .edits import EditReport, apply_edits, collect_track_names
+from .edits import EditReport, apply_edits, collect_track_names, track_name
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
@@ -67,6 +67,7 @@ from .plan import (
     STYLE_FAMILIES,
     ArrangementPlan,
     Element,
+    FamilyStyle,
     PlanSection,
     load,
     normalize_style_defaults,
@@ -293,9 +294,28 @@ def _style_technique_seed(
     family: str,
     canonical: str,
     tool_target: str | None,
+    *,
+    edit_track: str | None = None,
 ) -> int:
-    payload = f"{plan_seed}|style|{family}|{canonical}|{tool_target or ''}".encode()
+    parts = [str(plan_seed), "style", family, canonical, tool_target or ""]
+    if edit_track is not None:
+        parts.extend(["edit", edit_track])
+    payload = "|".join(parts).encode()
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+
+# Mapa profile -> familia de style, exposto para o motor de edits. `generic`
+# nao tem familia e nao recebe tecnica de estilo (por design; documentado em
+# AGENTS.md).
+_EDIT_PROFILE_STYLE_FAMILIES = {
+    "bass": "bass",
+    "drums": "drums",
+    "keys": "keys",
+}
+
+
+def _style_family_for_edit(profile: str) -> str | None:
+    return _EDIT_PROFILE_STYLE_FAMILIES.get(profile)
 
 
 def _tool_target_for_element(element: Element) -> str | None:
@@ -385,6 +405,61 @@ def _tempo_track_from_pretty_midi(pm: pretty_midi.PrettyMIDI) -> mido.MidiTrack:
     return track
 
 
+def _run_style_pipeline(
+    current: mido.MidiFile,
+    *,
+    plan: ArrangementPlan,
+    family: str,
+    style: FamilyStyle,
+    tool_target: str | None,
+    index: TechniqueIndex,
+    edit_track: str | None = None,
+) -> tuple[mido.MidiFile, list[str]]:
+    """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
+
+    Comum aos dois caminhos que aplicam estilo: tracks recem-renderizadas por
+    elemento e tracks do MIDI de origem nomeadas em `plan.edits`. Warnings
+    ganham prefixo com o nome da track quando o alvo e uma edit, para o
+    relatorio identificar de qual track de origem partiu o aviso.
+    """
+
+    warnings: list[str] = []
+    warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
+    for technique in style.techniques:
+        canonical = _canonical_style_technique(index, family, technique.name)
+        try:
+            applied: TechniqueApplyResult = apply_technique_with_warnings(
+                canonical,
+                current,
+                seed=_style_technique_seed(
+                    plan.seed, family, canonical, tool_target,
+                    edit_track=edit_track,
+                ),
+                parameters=_style_technique_parameters(
+                    style.parameters,
+                    technique.density,
+                ),
+                tool=tool_target,
+                index=index,
+            )
+        except (
+            TechniqueContractError,
+            TechniquePhysicalError,
+            TechniqueRecipeError,
+            UnknownTechniqueError,
+        ) as exc:
+            context = f" (edit {edit_track!r})" if edit_track is not None else ""
+            raise RenderError(
+                f"style.{family}.techniques{context}: {exc}"
+            ) from None
+        current = applied.result if isinstance(applied.result, mido.MidiFile) else current
+        warnings.extend(
+            f"{warning_prefix}{_format_engine_warning(w)}"
+            for w in applied.warnings
+        )
+    return current, warnings
+
+
 def _apply_style_techniques_to_tracks(
     tracks: list[mido.MidiTrack],
     *,
@@ -397,9 +472,9 @@ def _apply_style_techniques_to_tracks(
 ) -> tuple[list[mido.MidiTrack], list[str], bool]:
     """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
 
-    As tracks do MIDI de origem nao entram aqui. Isso preserva a regra de que
-    source so muda quando declarado em `plan.edits`, enquanto o material novo
-    passa pelo mesmo despacho e pelos mesmos contratos do motor.
+    As tracks do MIDI de origem nao entram aqui — quando uma edit aponta para
+    uma track existente, o caminho e `_apply_style_techniques_to_edit_tracks`,
+    que roda depois de `apply_edits` e antes do render por elemento.
     """
 
     if family is None or not tracks or not plan.style:
@@ -415,31 +490,82 @@ def _apply_style_techniques_to_tracks(
         ticks_per_beat=ticks_per_beat,
         midi_type=midi_type,
     )
-    warnings: list[str] = []
-    for technique in style.techniques:
-        canonical = _canonical_style_technique(index, family, technique.name)
-        try:
-            applied: TechniqueApplyResult = apply_technique_with_warnings(
-                canonical,
-                current,
-                seed=_style_technique_seed(plan.seed, family, canonical, tool_target),
-                parameters=_style_technique_parameters(
-                    style.parameters,
-                    technique.density,
-                ),
-                tool=tool_target,
-                index=index,
-            )
-        except (
-            TechniqueContractError,
-            TechniquePhysicalError,
-            TechniqueRecipeError,
-            UnknownTechniqueError,
-        ) as exc:
-            raise RenderError(f"style.{family}.techniques: {exc}") from None
-        current = applied.result if isinstance(applied.result, mido.MidiFile) else current
-        warnings.extend(_format_engine_warning(w) for w in applied.warnings)
+    current, warnings = _run_style_pipeline(
+        current,
+        plan=plan,
+        family=family,
+        style=style,
+        tool_target=tool_target,
+        index=index,
+    )
     return list(current.tracks), warnings, True
+
+
+def _apply_style_techniques_to_edit_tracks(
+    out_mid: mido.MidiFile,
+    *,
+    plan: ArrangementPlan,
+    index: TechniqueIndex | None,
+) -> list[str]:
+    """Aplica `style.<family>` sobre as tracks da origem nomeadas em `plan.edits`.
+
+    Ordem inviolavel: `apply_edits` (humanizacao por profile) ja rodou; agora
+    o motor de tecnicas atua sobre as mesmas tracks. Como toda nota vinda da
+    origem e ESTRUTURAL por definicao, o contrato do nivel `technique` garante
+    que o motor so acrescente ornamento; o nivel `humanize` pode mexer em
+    velocity/timing/duracao das mesmas notas estruturais. Track nao nomeada em
+    `plan.edits` continua saindo byte-identica: nao aparece aqui.
+
+    Profile `generic` nao tem familia e nao recebe tecnica; isso e por design,
+    nao erro. Familia sem `style` declarado (nem defaults) ou sem `techniques`
+    tambem sai sem tocar na track.
+    """
+
+    if not plan.edits or not plan.style:
+        return []
+
+    name_to_indices: dict[str, list[int]] = {}
+    for idx, tr in enumerate(out_mid.tracks):
+        name = track_name(tr)
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
+
+    warnings: list[str] = []
+    for edit in plan.edits:
+        family = _style_family_for_edit(edit.profile)
+        if family is None:
+            continue
+        style = plan.style.get(family)
+        if style is None or not style.techniques:
+            continue
+        target_indices = name_to_indices.get(edit.track)
+        if not target_indices:
+            continue
+        if index is None:
+            raise RenderError(
+                "internal error: missing techniques index for style render"
+            )
+        target_tracks = [out_mid.tracks[i] for i in target_indices]
+        working = _tracks_as_midi(
+            target_tracks,
+            ticks_per_beat=out_mid.ticks_per_beat,
+            midi_type=out_mid.type,
+        )
+        working, edit_warnings = _run_style_pipeline(
+            working,
+            plan=plan,
+            family=family,
+            style=style,
+            tool_target=None,
+            index=index,
+            edit_track=edit.track,
+        )
+        warnings.extend(edit_warnings)
+        for slot, new_track in zip(
+            target_indices, working.tracks, strict=True,
+        ):
+            out_mid.tracks[slot] = new_track
+    return warnings
 
 
 # --- conversao note -> mido -------------------------------------------------
@@ -1093,6 +1219,15 @@ def render(
         build_techniques_index()
         if plan.style and any(style.techniques for style in plan.style.values())
         else None
+    )
+    # Ordem: primeiro `apply_edits` (humanizacao por profile), depois o motor
+    # de tecnicas nas mesmas tracks da origem. Assim as tecnicas de estilo
+    # alcancam a bateria real do usuario — sem esse passo, `style.<familia>`
+    # so afeta elemento gerado, e o produto nao entrega o que promete.
+    warnings.extend(
+        _apply_style_techniques_to_edit_tracks(
+            out_mid, plan=plan, index=style_index,
+        )
     )
     for e in plan.elements:
         warnings.extend(_unsupported_pattern_warnings(e))
