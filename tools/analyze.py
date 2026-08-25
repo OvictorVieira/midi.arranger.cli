@@ -23,7 +23,7 @@ from .primitives import KICKS, SNARES
 from .primitives import bars_from as _bars_from
 from .primitives import chord_root as _chord_root
 from .primitives import key_root as _key_root
-from .tuning import TrackChannelDistribution, TrackTuningInference
+from .tuning import TrackChannelDistribution, TrackTuningInference, fallback_track_name
 from .tuning import channel_distribution as _channel_distribution
 from .tuning import tuning_inference as _tuning_inference
 
@@ -96,12 +96,13 @@ def bar_number(bar: BarAnalysis | None) -> int:
 
 
 def _track_name(inst: pretty_midi.Instrument, idx: int) -> str:
-    """Nome estavel para uma track — cai em 'Track {idx}' quando o arquivo
-    nao tem nome."""
+    """Nome estavel para uma track — reusa `fallback_track_name` de
+    `tools.tuning` para nao divergir do texto que a inferencia de afinacao
+    reporta na mesma posicao."""
     name = (inst.name or "").strip()
     if name:
         return name
-    return f"Track {idx}"
+    return fallback_track_name(idx)
 
 
 def _is_guitar_track(inst: pretty_midi.Instrument) -> bool:

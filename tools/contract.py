@@ -472,7 +472,11 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     tracks_out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for i, inst in enumerate(pm.instruments):
-        name = inst.name.strip() if inst.name and inst.name.strip() else f"track_{i}"
+        # Fallback vem de `analysis.track_names`, que usa
+        # `tuning.fallback_track_name`: mesmo texto exibido em
+        # `tuning_inference[i].track_name`, para o usuario declarar em
+        # `declared_stringed_tracks` exatamente o que ve no relatorio.
+        name = a.track_names[i]
         # Preserva duplicatas de nome com sufixo estavel — indice de origem.
         if name in seen:
             name = f"{name}#{i}"

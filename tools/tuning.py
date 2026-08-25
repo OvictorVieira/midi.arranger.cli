@@ -203,16 +203,42 @@ class TrackChannelDistribution:
     channels: tuple[ChannelStats, ...]
 
 
-def _track_name(track: mido.MidiTrack, index: int) -> str:
-    """Nome estavel para uma SMF track. Cai em `Track {index}` quando o
-    arquivo nao declarou meta `track_name` ou o valor veio vazio."""
+def fallback_track_name(index: int) -> str:
+    """Fallback estavel de nome de track sem meta `track_name`.
+
+    Formato unico usado pela fachada `analyze` e pela inferencia de afinacao —
+    para o usuario declarar em `declared_stringed_tracks` exatamente o mesmo
+    texto que ve no relatorio. Convive com nomes reais preservados; so entra
+    quando o MIDI nao trouxe (ou trouxe vazio) o meta `track_name`.
+
+    `index` e a POSICAO na lista filtrada de tracks-com-notas, nao o indice
+    bruto do SMF. Isso mantem `tracks[i].name` e `tuning_inference[i].track_name`
+    alinhados mesmo em Format 1, em que `mido` enxerga o tempo track vazio na
+    posicao 0 e `pretty_midi` nao."""
+    return f"Track {index}"
+
+
+def _track_name(track: mido.MidiTrack, position: int) -> str:
+    """Nome estavel para uma SMF track. Preserva o meta `track_name` quando
+    presente; cai em `fallback_track_name(position)` quando ausente ou vazio.
+
+    `position` e a posicao na lista de tracks-com-notas, nao o indice bruto do
+    SMF — ver docstring de `fallback_track_name` para o motivo."""
     for msg in track:
         if msg.is_meta and msg.type == "track_name":
             name = (msg.name or "").strip()
             if name:
                 return name
             break
-    return f"Track {index}"
+    return fallback_track_name(position)
+
+
+def _normalize_declared_name(name: str) -> str:
+    """Normaliza nome declarado em `declared_stringed_tracks` para casamento
+    tolerante: `strip` nas pontas e `casefold` para caixa. O usuario declara
+    o texto que ve no relatorio; um espaco extra ou caixa trocada nao pode
+    quebrar o casamento e derrubar a inferencia inteira."""
+    return name.strip().casefold()
 
 
 def _iter_note_ons(track: mido.MidiTrack):
@@ -265,15 +291,17 @@ def channel_distribution(midi_path: str) -> list[TrackChannelDistribution]:
     mid = mido.MidiFile(midi_path)
 
     result: list[TrackChannelDistribution] = []
+    position = 0
     for idx, track in enumerate(mid.tracks):
         stats = _channel_stats_from_track(track)
         if not stats:
             continue
         result.append(TrackChannelDistribution(
             track_index=idx,
-            track_name=_track_name(track, idx),
+            track_name=_track_name(track, position),
             channels=tuple(stats),
         ))
+        position += 1
 
     return result
 
@@ -591,7 +619,7 @@ def _classify_stringed(
     vazio nao entra no conflito, porque nao esta contradizendo nota
     nenhuma). Sem `program_change` em canal com notas, o nome ainda vale
     (fallback `STRINGED_SOURCE_NAME`)."""
-    if track_name in declared_names:
+    if _normalize_declared_name(track_name) in declared_names:
         return True, STRINGED_SOURCE_DECLARED, None, None, None
     active_programs_by_channel = {
         ch: progs for ch, progs in programs_by_channel.items()
@@ -666,16 +694,20 @@ def tuning_inference(
 
     Tracks sem notas nao entram no resultado — espelha `channel_distribution`.
     """
-    declared = frozenset(declared_stringed_tracks or ())
+    declared = frozenset(
+        _normalize_declared_name(n) for n in (declared_stringed_tracks or ())
+    )
     mid = mido.MidiFile(midi_path)
 
     result: list[TrackTuningInference] = []
+    position = 0
     for idx, track in enumerate(mid.tracks):
         all_stats = _channel_stats_from_track(track)
         if not all_stats:
             continue
 
-        name = _track_name(track, idx)
+        name = _track_name(track, position)
+        position += 1
         programs_by_channel = _iter_track_programs(track)
         all_programs = [
             p for progs in programs_by_channel.values() for p in progs
@@ -808,5 +840,6 @@ __all__ = [
     "TrackTuningInference",
     "TuningKnowledgeError",
     "channel_distribution",
+    "fallback_track_name",
     "tuning_inference",
 ]

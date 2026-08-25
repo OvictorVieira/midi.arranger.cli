@@ -1173,3 +1173,105 @@ def test_analyze_exposes_inference_incomplete_in_contract():
             t for t in data["tuning_inference"] if t["track_name"] == "Guitar"
         )
         assert ti_dict["inference_incomplete"] is True
+
+
+# ---------------------------------------------------------------------------
+# US-004 — nome unico entre dominio e fachada
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_track_name_is_shared_helper():
+    """`fallback_track_name` e o UNICO lugar que decide o texto de fallback
+    para track sem meta `track_name`. Analyze/tuning/contract devem chamar
+    esse helper — a garantia estrutural para a regressao seguinte."""
+    assert tuning.fallback_track_name(0) == "Track 0"
+    assert tuning.fallback_track_name(5) == "Track 5"
+
+
+def test_analyze_and_tuning_report_same_fallback_name_without_meta():
+    """MIDI sem meta `track_name`: `analyze.tracks[i].name` bate com
+    `analyze.tuning_inference[i].track_name` — o usuario declara o nome do
+    relatorio e a inferencia casa."""
+    from tools import contract as contract_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "no_meta.mid")
+        # Sem chave `name` -> nao emite meta track_name. Notas todas no
+        # mesmo canal para que `pretty_midi` produza um unico instrument
+        # (ele fatia por (channel, program)) — o teste mede alinhamento
+        # de nome, nao a fusao de canais.
+        _write_midi_full(p, [{
+            "program": 30, "notes": _rep(0, 40, 12),
+        }])
+        data, _ = contract_mod._analyze_impl({"midi_path": p})
+        assert len(data["tracks"]) == 1
+        assert len(data["tuning_inference"]) == 1
+        assert data["tracks"][0]["name"] == data["tuning_inference"][0]["track_name"]
+        assert data["tracks"][0]["name"] == "Track 0"
+
+
+def test_declared_stringed_track_matches_reported_fallback_name():
+    """Declarar em `declared_stringed_tracks` o mesmo texto que `analyze`
+    reporta em `tracks[i].name` CASA e autoriza a inferencia — o cenario
+    inteiro so faz sentido se o casamento fechar."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "declared_fallback.mid")
+        # Sem meta `track_name`, sem GM stringed, mas notas suficientes.
+        _write_midi_full(p, [{
+            "program": None, "notes": _rep(0, 40, 12) + _rep(1, 45, 12),
+        }])
+        reported = tuning.fallback_track_name(0)
+        out = tuning.tuning_inference(p, declared_stringed_tracks=[reported])
+        assert len(out) == 1
+        ti = out[0]
+        assert ti.track_name == reported
+        assert ti.is_stringed is True
+        assert ti.stringed_source == tuning.STRINGED_SOURCE_DECLARED
+
+
+def test_declared_stringed_track_matches_case_insensitive():
+    """Casamento de nome declarado ignora caixa — `guitar` casa `Guitar`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "case_decl.mid")
+        _write_midi_full(p, [{
+            "name": "Guitar", "program": None, "notes": _rep(0, 40, 12),
+        }])
+        out = tuning.tuning_inference(p, declared_stringed_tracks=["guitar"])
+        assert out[0].stringed_source == tuning.STRINGED_SOURCE_DECLARED
+
+
+def test_declared_stringed_track_matches_ignoring_whitespace_edges():
+    """Casamento de nome declarado ignora espacos nas pontas — o usuario
+    pode colar do relatorio com um espaco a mais e nao perder o casamento."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "ws_decl.mid")
+        _write_midi_full(p, [{
+            "name": "Bass", "program": None, "notes": _rep(0, 40, 12),
+        }])
+        out = tuning.tuning_inference(p, declared_stringed_tracks=["  Bass  "])
+        assert out[0].stringed_source == tuning.STRINGED_SOURCE_DECLARED
+
+
+def test_fallback_uses_position_not_raw_mido_index():
+    """A posicao na lista filtrada de tracks-com-notas guia o fallback, nao o
+    indice bruto do SMF. Format 1 com tempo track sem notas na posicao 0 do
+    `mido.tracks` continua reportando `Track 0` para a primeira track com
+    notas — o mesmo texto que a fachada `analyze` reporta em `tracks[0].name`.
+    """
+    mid = mido.MidiFile(ticks_per_beat=480)
+    # Tempo track sem notas (idx=0 em mido, nao aparece em pretty_midi).
+    tempo_tr = mido.MidiTrack()
+    tempo_tr.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+    mid.tracks.append(tempo_tr)
+    # Track com notas, sem meta track_name.
+    tr = mido.MidiTrack()
+    tr.append(mido.Message("note_on", channel=0, note=40, velocity=100, time=0))
+    tr.append(mido.Message("note_off", channel=0, note=40, velocity=0, time=120))
+    mid.tracks.append(tr)
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "fmt1_no_name.mid")
+        mid.save(p)
+        dist = tuning.channel_distribution(p)
+        assert len(dist) == 1
+        assert dist[0].track_name == "Track 0"
+        assert dist[0].track_index == 1  # posicao bruta no SMF preservada
