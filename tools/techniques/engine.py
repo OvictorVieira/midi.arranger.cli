@@ -701,37 +701,66 @@ def _drop_reapplied_continuous_events(
             _remove_track_messages(track, remove_indices)
 
 
-def _indexed_notes(
-    track_index: int,
-    track: mido.MidiTrack,
-) -> tuple[_IndexedNote, ...]:
-    pending: dict[tuple[int, int], list[tuple[int, int]]] = {}
-    collected: list[tuple[_NoteIdentity, int, int]] = []
+def _iter_note_pairs(track: mido.MidiTrack):
+    """Pareia `note_on`/`note_off` da mesma `(channel, pitch)` em FIFO.
+
+    Emite `(channel, pitch, start_tick, end_tick, velocity, note_on_index,
+    note_off_index)`. `note_on` com velocity 0 conta como `note_off`. Mesmo
+    pareamento que `mido` grava na reconstrucao — nao troque por dict simples.
+    """
+    pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
     tick = 0
     for msg_index, msg in enumerate(track):
         tick += msg.time
         if msg.is_meta:
             continue
         if msg.type == "note_on" and msg.velocity > 0:
-            pending.setdefault((msg.channel, msg.note), []).append((tick, msg_index))
+            pending.setdefault((msg.channel, msg.note), []).append(
+                (tick, msg.velocity, msg_index),
+            )
         elif msg.type == "note_off" or (
             msg.type == "note_on" and msg.velocity == 0
         ):
             stack = pending.get((msg.channel, msg.note))
             if not stack:
                 continue
-            start_tick, note_on_index = stack.pop(0)
-            collected.append((
-                _NoteIdentity(
-                    track_index=track_index,
-                    channel=msg.channel,
-                    pitch=msg.note,
-                    start_tick=start_tick,
-                    end_tick=tick,
-                ),
+            start_tick, velocity, note_on_index = stack.pop(0)
+            yield (
+                msg.channel,
+                msg.note,
+                start_tick,
+                tick,
+                velocity,
                 note_on_index,
                 msg_index,
-            ))
+            )
+
+
+def _indexed_notes(
+    track_index: int,
+    track: mido.MidiTrack,
+) -> tuple[_IndexedNote, ...]:
+    collected: list[tuple[_NoteIdentity, int, int]] = []
+    for (
+        channel,
+        pitch,
+        start_tick,
+        end_tick,
+        _velocity,
+        note_on_index,
+        note_off_index,
+    ) in _iter_note_pairs(track):
+        collected.append((
+            _NoteIdentity(
+                track_index=track_index,
+                channel=channel,
+                pitch=pitch,
+                start_tick=start_tick,
+                end_tick=end_tick,
+            ),
+            note_on_index,
+            note_off_index,
+        ))
 
     seen: dict[_NoteIdentity, int] = {}
     indexed: list[_IndexedNote] = []
@@ -1131,34 +1160,25 @@ def _apply_drums_ghost_notes(
     density = context.parameters.get("density")
 
     def read_notes(track_index, track):
-        tick = 0
-        pending = {}
-        out = []
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append((
-                    tick,
-                    msg.velocity,
-                ))
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, velocity = stack.pop(0)
-                out.append({
-                    "track_index": track_index,
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": start_tick,
-                    "end": tick,
-                    "velocity": velocity,
-                })
-        return out
+        return [
+            {
+                "track_index": track_index,
+                "channel": channel,
+                "pitch": pitch,
+                "start": start_tick,
+                "end": end_tick,
+                "velocity": velocity,
+            }
+            for (
+                channel,
+                pitch,
+                start_tick,
+                end_tick,
+                velocity,
+                _note_on_index,
+                _note_off_index,
+            ) in _iter_note_pairs(track)
+        ]
 
     def simultaneous_count_at(existing, channel, tick):
         return sum(

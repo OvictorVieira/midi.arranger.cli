@@ -117,12 +117,19 @@ frases, melodias, motivos ou sequências musicais são erro. Quando um parâmetr
 citada e o manual declara `range`, valor fora da faixa é erro, nunca clamp silencioso.
 
 No render, `style.<familia>.techniques[]` é aplicado pelo motor determinístico de
-`tools/techniques/engine.py` nas tracks que o próprio render acabou de gerar para aquela família.
-As tracks copiadas do MIDI de origem não entram nesse alvo; elas só mudam quando declaradas em
-`plan.edits`. O motor tem dois níveis com contratos centrais: `humanize` pode alterar timing,
-velocity e duração sem mudar contagem, pitches ou ordem de notas; `technique` pode acrescentar
-ornamentos, CC e pitch bend, mas preserva pitch e posição das notas estruturais. Nota estrutural é o
-material de entrada ou de gerador; nota ornamental é a nota adicionada pela técnica.
+`tools/techniques/engine.py` em dois alvos: (a) tracks recém-geradas para aquela família e (b)
+tracks copiadas do MIDI de origem que estão nomeadas em `plan.edits`, mapeando `profile` para
+família (`bass`→`bass`, `drums`→`drums`, `keys`→`keys`). `profile: generic` não tem família e não
+recebe técnica; é documentado, não é erro. Track de origem que não está em `plan.edits` continua
+saindo nota a nota idêntica. Sobre a track editada, toda nota vinda do MIDI de origem é estrutural
+por definição — o nível `technique` só pode acrescentar ornamento sobre ela. Ordem inviolável do
+pipeline: primeiro `apply_edits` (humanização por profile), depois o motor de técnicas de estilo
+sobre as tracks editadas, depois o render por elemento (que também roda o motor sobre as tracks que
+acabou de gerar), e por último os carimbos de plugin/preset. O motor tem dois níveis com contratos
+centrais: `humanize` pode alterar timing, velocity e duração sem mudar contagem, pitches ou ordem
+de notas; `technique` pode acrescentar ornamentos, CC e pitch bend, mas preserva pitch e posição
+das notas estruturais. Nota estrutural é o material de entrada ou de gerador; nota ornamental é a
+nota adicionada pela técnica.
 
 A idempotência também fica no despacho central: ao reaplicar uma técnica, ornamentos com a mesma
 assinatura de track/canal/pitch/início/fim já presentes são descartados antes da validação do

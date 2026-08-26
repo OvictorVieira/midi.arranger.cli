@@ -79,8 +79,26 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `plan.validate()` continua read-only e a fachada `plan.validate` expõe a cópia em `normalized_plan`.
 - `tools.render.render()` normaliza defaults de `style` em memória antes de avisos/validadores;
   `confidence: low` e `confidence: default` viram warning de render, nunca erro.
-- `tools.render.render()` aplica `style.<familia>.techniques[]` só nas tracks recém-renderizadas da
-  família correspondente; tracks copiadas do MIDI de origem continuam mudando apenas por `plan.edits`.
+- `tools.render.render()` aplica `style.<familia>.techniques[]` em dois alvos: (a) tracks
+  recém-renderizadas da família correspondente e (b) tracks copiadas do MIDI de origem que estão
+  nomeadas em `plan.edits`, mapeando `profile` para família (`bass`→`bass`, `drums`→`drums`,
+  `keys`→`keys`); `profile: generic` não tem família e não recebe técnica. Track de origem não
+  declarada em `plan.edits` continua saindo nota a nota idêntica.
+- Ordem inviolável no pipeline de `tools.render.render()`: primeiro `apply_edits` (humanização por
+  profile), depois `_apply_style_techniques_to_edit_tracks` (motor de técnicas sobre as tracks da
+  origem editadas), depois o render por elemento com o motor de técnicas de estilo no loop, e por
+  último os carimbos (`_stamp_element_tracks` inline no loop, `_stamp_edit_tracks` numa passada
+  única no fim).
+- Toda nota vinda do MIDI de origem é estrutural por definição — sobre ela o nível `technique` só
+  pode acrescentar ornamento; nunca substitui pitch, posição ou duração da nota estrutural.
+- Toda track de saída tocada pelo arranjador — elemento gerado ou track de `plan.edits` — carrega
+  carimbo em `meta 0x01 text` no tick 0, com `role`, `plugin`, `preset`, `verified`, `techniques`
+  aplicadas e, quando declarada, `suggested_plugin`/`suggested_preset`/`suggested_verified`. O
+  formato é `midi-arranger v1|chave=valor|...`, ASCII puro, com `|` proibido nos valores. Track de
+  origem não declarada em `plan.edits` NÃO recebe carimbo — sai byte-idêntica.
+- NUNCA acrescentar exclusão a `tests/test_palette_integration.py::test_all_target_roles_are_covered`
+  para o teste passar. A única exclusão permitida é `choir` (compartilha gerador com strings). Role
+  que não gera de verdade sai de `_ROLE_RENDERERS`, não vira exceção do teste.
 - `plan.brief_ref.sha256` deve ser calculado com `tools.brief_ref.brief_sha256()`; é o SHA-256 dos
   bytes exatos do `arrangement-brief.json`, mesmo formato de `.midiarranger/brief.sha256`.
 - Todo `plan.elements[]` deve carregar `rationale` string não vazia após `strip()`; fixtures e
