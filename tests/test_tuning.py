@@ -299,10 +299,13 @@ def test_stringed_source_precedence_declared_over_program_over_name():
 
 
 def test_gm_program_ranges_cover_guitar_and_bass():
-    """Vocabulario GM de corda dedilhada: 24-31 (guitarra) + 32-39 (baixo)."""
+    """Vocabulario GM de corda dedilhada: 24-31 (guitarra) + 32-37 (baixo).
+
+    38/39 (`Synth Bass 1/2`) ficam de fora: sintetizador nao tem corda.
+    """
     assert frozenset(range(24, 32)) == tuning.GM_GUITAR_PROGRAMS
-    assert frozenset(range(32, 40)) == tuning.GM_BASS_PROGRAMS
-    assert frozenset(range(24, 40)) == tuning.GM_STRINGED_PROGRAMS
+    assert frozenset(range(32, 38)) == tuning.GM_BASS_PROGRAMS
+    assert frozenset(range(24, 38)) == tuning.GM_STRINGED_PROGRAMS
 
 
 def test_analyze_exposes_tuning_inference():
@@ -1400,3 +1403,131 @@ def test_guitar_underscore_one_is_stringed_track():
         assert ti.is_stringed is True
         assert ti.stringed_source == tuning.STRINGED_SOURCE_NAME
         assert ti.discard_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Achados do review conjunto com o Codex no PR #49.
+# ---------------------------------------------------------------------------
+
+
+def _write_track(
+    path: str,
+    name: str,
+    events: list[tuple],
+) -> None:
+    """Escreve um MIDI de UMA track a partir de eventos crus.
+
+    Cada evento e `("pc", channel, program)` ou `("note", channel, pitch)`.
+    A ordem da lista e a ordem temporal — e isso que permite testar patch
+    trocado ANTES das notas, que e o caso do achado 1.
+    """
+    mid = mido.MidiFile(ticks_per_beat=480)
+    t = mido.MidiTrack()
+    t.append(mido.MetaMessage("track_name", name=name, time=0))
+    for ev in events:
+        if ev[0] == "pc":
+            t.append(mido.Message(
+                "program_change", channel=ev[1], program=ev[2], time=0,
+            ))
+        else:
+            t.append(mido.Message(
+                "note_on", channel=ev[1], note=ev[2], velocity=100, time=0,
+            ))
+            t.append(mido.Message(
+                "note_off", channel=ev[1], note=ev[2], velocity=0, time=120,
+            ))
+    mid.tracks.append(t)
+    mid.save(path)
+
+
+def test_patch_trocado_antes_das_notas_nao_conta_como_corda():
+    """Achado 1: `any()` sobre a lista historica inventava afinacao.
+
+    Canal 0 declara guitarra (GM 30) e DEPOIS flauta (GM 73), tudo antes da
+    primeira nota. Quem toca as notas e a flauta; a track nao pode sair como
+    corda so porque o patch de guitarra passou por ali.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "swap.mid")
+        events: list[tuple] = [("pc", 0, 30), ("pc", 0, 73)]
+        for ch, base in ((0, 60), (1, 65), (2, 70), (3, 75)):
+            events += [("note", ch, base + n) for n in range(8)]
+        _write_track(p, "Lead", events)
+
+        inf = tuning.tuning_inference(p)
+        assert len(inf) == 1
+        assert inf[0].is_stringed is False
+        assert inf[0].tuning_name is None
+        # o relato de `gm_programs` continua mostrando os DOIS patches —
+        # esconder evidencia nao e o objetivo, ignora-la na decisao e.
+        assert inf[0].gm_programs == (30, 73)
+
+
+def test_patch_de_corda_vigente_nas_notas_continua_valendo():
+    """Contraprova do achado 1: patch de corda que REGE as notas ainda vale."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "gtr.mid")
+        events: list[tuple] = [("pc", 0, 73), ("pc", 0, 30)]
+        for ch, base in ((0, 40), (1, 45), (2, 50), (3, 55), (4, 59), (5, 64)):
+            events += [("note", ch, base + n) for n in range(8)]
+        _write_track(p, "Lead", events)
+
+        inf = tuning.tuning_inference(p)
+        assert inf[0].is_stringed is True
+        assert inf[0].stringed_source == tuning.STRINGED_SOURCE_GM_PROGRAM
+
+
+def test_synth_bass_gm_38_nao_e_instrumento_de_corda():
+    """Achado 2: GM 38/39 (`Synth Bass`) nao tem corda, logo nao tem afinacao.
+
+    Deixar 38/39 em `GM_BASS_PROGRAMS` contradizia `_BASS_DISQUALIFIERS`,
+    que ja tira `Bass Synth` do casamento por nome.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "synthbass.mid")
+        events: list[tuple] = [("pc", 0, 38)]
+        for ch, base in ((0, 40), (1, 45), (2, 50), (3, 55), (4, 59), (5, 64)):
+            events += [("note", ch, base + n) for n in range(8)]
+        _write_track(p, "Bass Synth", events)
+
+        inf = tuning.tuning_inference(p)
+        assert inf[0].is_stringed is False
+        assert inf[0].tuning_name is None
+
+
+def test_gm_bass_programs_excluem_synth_bass():
+    """38/39 sao `Synth Bass 1/2`; 32-37 sao os baixos de corda."""
+    assert 38 not in tuning.GM_BASS_PROGRAMS
+    assert 39 not in tuning.GM_BASS_PROGRAMS
+    assert frozenset(range(32, 38)) == tuning.GM_BASS_PROGRAMS
+    assert 37 in tuning.GM_BASS_PROGRAMS  # Slap Bass 2, corda de verdade
+
+
+def test_declaracao_que_nao_casa_com_track_nenhuma_e_reportada():
+    """Achado 3: declaracao orfa era no-op silencioso.
+
+    `analyze.tracks[]` e indexado por `Instrument` do pretty_midi (quebrado
+    por canal); `tuning_inference[]` e por SMF track. Uma track sem nome com
+    notas em tres canais aparece como `Track 0/1/2` num lado e `Track 0` no
+    outro — declarar `Track 1` nao casa com nada.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "flat.mid")
+        mid = mido.MidiFile(ticks_per_beat=480)
+        t = mido.MidiTrack()
+        for ch, base in ((0, 40), (1, 45), (2, 50)):
+            for n in range(8):
+                t.append(mido.Message(
+                    "note_on", channel=ch, note=base + n, velocity=100, time=0,
+                ))
+                t.append(mido.Message(
+                    "note_off", channel=ch, note=base + n, velocity=0, time=120,
+                ))
+        mid.tracks.append(t)
+        mid.save(p)
+
+        inf = tuning.tuning_inference(p, declared_stringed_tracks=["Track 1"])
+        assert [i.track_name for i in inf] == ["Track 0"]
+        assert tuning.unmatched_declared_tracks(inf, ["Track 1"]) == ("Track 1",)
+        # a que casa nao entra na lista de orfas
+        assert tuning.unmatched_declared_tracks(inf, ["Track 0"]) == ()

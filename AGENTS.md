@@ -74,6 +74,21 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   (`_BASS_DISQUALIFIERS`: clarinet, trombone, flute, drum, sax/saxophone, tuba, oboe, bassoon,
   choir, voice, synth) tira a track de corda: `Bass Clarinet`, `Bass_Drum`, `bass-flute`,
   `Bass Synth` NÃO casam. `Bass`, `Bass Guitar`, `Electric Bass`, `bass 2` continuam casando.
+- Patch GM só conta como evidência de corda quando **rege nota**: a classificação usa
+  `_governing_programs_by_channel` (patch vigente no `note_on`), nunca a lista histórica de
+  `program_change`. Canal que declara guitarra e depois flauta antes da primeira nota toca flauta.
+  Canal regido por patch de corda **e** de não-corda é ambíguo e fica fora da inferência.
+  `gm_programs` na saída continua relatando todos os patches observados — o relato é completo,
+  a decisão é que é restrita.
+- `GM_BASS_PROGRAMS` é 32-37, **não** 32-39: GM 38/39 (`Synth Bass 1/2`) são sintetizador, não têm
+  corda e portanto não têm afinação a inferir. Manter 38/39 contradiria `_BASS_DISQUALIFIERS`,
+  que já tira `Bass Synth` do casamento por nome.
+- `analyze.tracks[i]` e `analyze.tuning_inference[i]` **não compartilham índice**: `tracks[]` é
+  indexado por `Instrument` do pretty_midi (quebrado por canal/programa) e `tuning_inference[]` por
+  SMF track física lida com `mido`. Uma SMF track sem nome com notas em três canais vira três
+  entradas de um lado e uma do outro. Por isso `declared_stringed_tracks` casa por NOME, e nome
+  declarado que não bate com track nenhuma emite `W_DECLARED_TRACK_NOT_FOUND` — declaração órfã
+  nunca pode ser no-op silencioso.
 
 ## Qualidade
 

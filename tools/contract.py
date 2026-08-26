@@ -472,10 +472,15 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     tracks_out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for i, inst in enumerate(pm.instruments):
-        # Fallback vem de `analysis.track_names`, que usa
-        # `tuning.fallback_track_name`: mesmo texto exibido em
-        # `tuning_inference[i].track_name`, para o usuario declarar em
-        # `declared_stringed_tracks` exatamente o que ve no relatorio.
+        # ATENCAO: `tracks[i]` e `tuning_inference[i]` NAO sao o mesmo indice.
+        # Aqui a base e `pm.instruments`, que o pretty_midi quebra por
+        # (channel, program); em `tuning_inference` a base e a SMF track
+        # fisica lida com `mido`. Uma SMF track sem nome com notas nos canais
+        # 0/1/2 vira tres entradas aqui (`Track 0/1/2`) e UMA la (`Track 0`).
+        # Track com `track_name` meta casa nos dois lados pelo nome, que e o
+        # que `declared_stringed_tracks` usa; para track sem nome, so o
+        # fallback da SMF track casa. Declaracao que nao casa com nada vira
+        # warning `W_DECLARED_TRACK_NOT_FOUND` abaixo, nunca no-op silencioso.
         name = a.track_names[i]
         # Preserva duplicatas de nome com sufixo estavel — indice de origem.
         if name in seen:
@@ -578,6 +583,20 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     }
 
     warnings: list[dict[str, Any]] = []
+    orphan_declared = tuning_mod.unmatched_declared_tracks(
+        a.tuning_inference, declared_stringed,
+    )
+    if orphan_declared:
+        warnings.append({
+            "code": "W_DECLARED_TRACK_NOT_FOUND",
+            "message": (
+                f"{list(orphan_declared)!r} nao casou com track nenhuma do MIDI; "
+                "a declaracao foi ignorada e essas tracks seguem pela inferencia "
+                "normal (podendo sair `unknown`). Use exatamente o texto de "
+                "`tuning_inference[].track_name`."
+            ),
+            "path": "declared_stringed_tracks",
+        })
     inferred = [s.label for s in secs if s.source == "inferred"]
     if inferred:
         warnings.append({

@@ -61,10 +61,15 @@ casas. Canal com span acima disso nao e uma corda so."""
 # overdriven, distortion, harmonics).
 GM_GUITAR_PROGRAMS = frozenset(range(24, 32))
 
-# Faixa 32-39: baixo (acustico, eletrico dedo, eletrico palheta, fretless,
-# slap 1, slap 2, synth 1, synth 2). Todos sao instrumentos de corda com a
-# mesma convencao "um canal por corda" no export Guitar Pro / Songsterr.
-GM_BASS_PROGRAMS = frozenset(range(32, 40))
+# Faixa 32-37: baixo de corda (acustico, eletrico dedo, eletrico palheta,
+# fretless, slap 1, slap 2). Mesma convencao "um canal por corda" no export
+# Guitar Pro / Songsterr.
+#
+# GM 38/39 (`Synth Bass 1/2`) ficam DE FORA de proposito: sintetizador nao
+# tem corda, entao nao tem afinacao de corda para inferir. Manter 38/39 aqui
+# contradiria `_BASS_DISQUALIFIERS`, que ja tira `Bass Synth` do casamento
+# por nome — o patch nao pode autorizar o que o nome proibe.
+GM_BASS_PROGRAMS = frozenset(range(32, 38))
 
 GM_STRINGED_PROGRAMS = GM_GUITAR_PROGRAMS | GM_BASS_PROGRAMS
 """Uniao dos programas GM tratados como corda dedilhada para efeito da
@@ -588,7 +593,10 @@ def _iter_track_programs(track: mido.MidiTrack) -> dict[int, list[int]]:
 
     A agregacao por canal e o que permite a TRAVA 1 exigir que o patch de
     corda governe um canal que REALMENTE tem notas — patch num canal vazio
-    nao autoriza inferencia sobre notas de outro canal."""
+    nao autoriza inferencia sobre notas de outro canal.
+
+    Esta funcao e so para RELATO (`gm_programs` na saida). A classificacao
+    usa `_governing_programs_by_channel`, que respeita a ordem temporal."""
     per_channel: dict[int, list[int]] = {}
     for msg in track:
         if msg.is_meta:
@@ -596,6 +604,43 @@ def _iter_track_programs(track: mido.MidiTrack) -> dict[int, list[int]]:
         if msg.type == "program_change":
             per_channel.setdefault(int(msg.channel), []).append(int(msg.program))
     return per_channel
+
+
+def _governing_programs_by_channel(
+    track: mido.MidiTrack,
+) -> dict[int, list[int]]:
+    """Programas GM que REGEM pelo menos uma nota, por canal.
+
+    `program_change` vale do ponto em que aparece ate o proximo do mesmo
+    canal — quem determina o timbre de uma nota e o patch vigente no
+    `note_on`, nao qualquer patch que a track tenha declarado em algum
+    momento. Um canal com `program_change 30` (guitarra) seguido de
+    `program_change 73` (flauta) ANTES de qualquer nota toca flauta; olhar a
+    lista historica com `any()` classificaria a track como corda e inventaria
+    afinacao.
+
+    Nota antes de qualquer `program_change` no canal nao tem patch declarado
+    e nao contribui programa nenhum — o canal cai no fallback por nome.
+    Programa declarado depois da ultima nota do canal tambem nao entra: nao
+    rege nota alguma."""
+    current: dict[int, int] = {}
+    governing: dict[int, list[int]] = {}
+    for msg in track:
+        if msg.is_meta:
+            continue
+        channel = int(getattr(msg, "channel", -1))
+        if channel < 0:
+            continue
+        if msg.type == "program_change":
+            current[channel] = int(msg.program)
+        elif msg.type == "note_on" and msg.velocity > 0:
+            program = current.get(channel)
+            if program is None:
+                continue
+            seen = governing.setdefault(channel, [])
+            if program not in seen:
+                seen.append(program)
+    return governing
 
 
 def _tokenize_track_name(track_name: str) -> list[str]:
@@ -664,7 +709,13 @@ def _classify_stringed(
     conflito (apenas os observados em canais com notas — patch em canal
     vazio nao entra no conflito, porque nao esta contradizendo nota
     nenhuma). Sem `program_change` em canal com notas, o nome ainda vale
-    (fallback `STRINGED_SOURCE_NAME`)."""
+    (fallback `STRINGED_SOURCE_NAME`).
+
+    `programs_by_channel` aqui e o mapa de programas que REGEM nota
+    (`_governing_programs_by_channel`), nao a lista historica: patch trocado
+    antes da primeira nota do canal nao vale como evidencia de corda. Canal
+    regido por um patch de corda E um de nao-corda e ambiguo e fica de fora
+    da inferencia — nao da para dizer qual afinacao descreve as notas."""
     if _normalize_declared_name(track_name) in declared_names:
         return True, STRINGED_SOURCE_DECLARED, None, None, None
     active_programs_by_channel = {
@@ -673,11 +724,11 @@ def _classify_stringed(
     }
     stringed_channels = frozenset(
         ch for ch, progs in active_programs_by_channel.items()
-        if any(p in GM_STRINGED_PROGRAMS for p in progs)
+        if progs and all(p in GM_STRINGED_PROGRAMS for p in progs)
     )
     non_stringed_only_channels = frozenset(
         ch for ch, progs in active_programs_by_channel.items()
-        if progs and not any(p in GM_STRINGED_PROGRAMS for p in progs)
+        if progs and not all(p in GM_STRINGED_PROGRAMS for p in progs)
     )
     if stringed_channels:
         allowed = frozenset(channels_with_notes) - non_stringed_only_channels
@@ -754,14 +805,17 @@ def tuning_inference(
 
         name = _track_name(track, position)
         position += 1
-        programs_by_channel = _iter_track_programs(track)
+        # `gm_programs` na saida relata TUDO que a track declarou; a
+        # classificacao usa so o que rege nota. Ver
+        # `_governing_programs_by_channel`.
         all_programs = [
-            p for progs in programs_by_channel.values() for p in progs
+            p for progs in _iter_track_programs(track).values() for p in progs
         ]
+        governing_by_channel = _governing_programs_by_channel(track)
         channels_with_notes = frozenset(s.channel for s in all_stats)
         is_stringed, source, discard_reason, conflict, gm_channels = (
             _classify_stringed(
-                name, programs_by_channel, channels_with_notes, declared,
+                name, governing_by_channel, channels_with_notes, declared,
             )
         )
 
@@ -855,6 +909,31 @@ def tuning_inference(
     return result
 
 
+def unmatched_declared_tracks(
+    inferences: Iterable[TrackTuningInference],
+    declared_stringed_tracks: Iterable[str] | None,
+) -> tuple[str, ...]:
+    """Nomes de `declared_stringed_tracks` que nao casaram com track nenhuma.
+
+    A declaracao explicita e a TRAVA 1 de maior precedencia, mas ela casa por
+    NOME. Nome errado — ou nome lido de `analyze.tracks[]`, que e indexado por
+    `Instrument` do pretty_midi e nao por SMF track — nao casa com nada e a
+    declaracao vira no-op silencioso: o usuario acha que forcou a track para
+    corda e a saida continua `unknown`. Quem chama deve virar isso em warning
+    visivel.
+
+    Preserva a grafia original do usuario na saida, para o aviso citar
+    exatamente o que ele digitou.
+    """
+    known = {
+        _normalize_declared_name(inf.track_name) for inf in inferences
+    }
+    return tuple(
+        str(raw) for raw in (declared_stringed_tracks or ())
+        if _normalize_declared_name(str(raw)) not in known
+    )
+
+
 __all__ = [
     "DISCARD_LOW_NOTE_COUNT",
     "DISCARD_NON_STRINGED_PATCH",
@@ -888,4 +967,5 @@ __all__ = [
     "channel_distribution",
     "fallback_track_name",
     "tuning_inference",
+    "unmatched_declared_tracks",
 ]
