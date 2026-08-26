@@ -1087,6 +1087,74 @@ def test_drums_ghost_notes_survives_irregular_structural_durations():
     assert structural <= after
 
 
+def test_drums_ghost_notes_reaches_metal_density_on_realistic_backbeats():
+    """Regressao US-008: sem `density` explicita, o motor ornamentava a levada
+    inteira com apenas duas ghosts (o alvo global `min(2, size)` capava o set
+    inteiro em duas). Com bateria realista de 16 compassos e backbeats de
+    verdade, a densidade tem que ser compativel com metal — nao duas — e as
+    quatro regras de posicao continuam valendo, e nenhuma nota estrutural
+    muda de pitch, posicao ou duracao."""
+
+    source = _midi_realistic_metal_drums(bars=16)
+    accented = apply_technique("drums.accent_hierarchy", source, seed=21)
+
+    result = apply_technique("drums.ghost_notes", accented, seed=21)
+
+    ghosts = _new_note_tuples(accented, result)
+    assert len(ghosts) >= 16, (
+        "sobre 16 compassos com backbeats reais, densidade metal tem que "
+        f"passar de uma ghost por compasso; veio {len(ghosts)}"
+    )
+    assert all(pitch == 38 for _, _, pitch, _, _, _ in ghosts)
+    assert all(20 <= vel <= 45 for _, _, _, _, _, vel in ghosts)
+
+    structural_before = {
+        (track, channel, pitch, start, end)
+        for track, channel, pitch, start, end, _ in _note_tuples(accented)
+    }
+    structural_after = {
+        (track, channel, pitch, start, end)
+        for track, channel, pitch, start, end, _ in _note_tuples(result)
+    }
+    assert structural_before <= structural_after, (
+        "toda nota estrutural tem que sobreviver byte a byte"
+    )
+
+    ticks_per_beat = source.ticks_per_beat
+    sixteenth = ticks_per_beat // 4
+    ghost_starts = sorted({start for _, _, _, start, _, _ in ghosts})
+    ghost_set = set(ghost_starts)
+
+    accented_snares = [
+        (start, end)
+        for _, ch, pitch, start, end, vel in _note_tuples(accented)
+        if ch == 9 and pitch == 38 and vel > 45
+    ]
+    backbeat_ticks = sorted({start for start, _ in accented_snares})
+    for tick in backbeat_ticks:
+        assert tick - sixteenth not in ghost_set, (
+            "regra 1: 16a imediatamente antes do backbeat nao pode virar ghost"
+        )
+
+    for start in ghost_starts:
+        assert not (
+            start + sixteenth in ghost_set
+            and start + 2 * sixteenth in ghost_set
+        ), "regra 4: nao pode haver tres 16as consecutivas de ghost"
+
+    intervals = list(zip(backbeat_ticks, backbeat_ticks[1:], strict=False))
+    for current, following in intervals:
+        window = [s for s in ghost_starts if current < s < following]
+        assert len(window) <= 2, (
+            f"regra 3: no maximo duas ghosts por intervalo entre backbeats "
+            f"({current}->{following}); veio {len(window)}"
+        )
+        if current + sixteenth in ghost_set and current + 2 * sixteenth in ghost_set:
+            raise AssertionError(
+                "regra 2: nao pode haver par consecutivo logo depois do backbeat"
+            )
+
+
 def test_apply_uses_requested_tool_recipe_without_warning():
     registry = TechniqueRegistry()
 

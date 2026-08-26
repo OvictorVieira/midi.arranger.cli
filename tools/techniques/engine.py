@@ -1197,7 +1197,11 @@ def _apply_drums_ghost_notes(
             return 0
         if isinstance(density, (int, float)):
             return max(1, min(size, int(round(size * float(density)))))
-        return min(2, size)
+        # Sem `density` explicita, aponte para o teto do manual (2 ghosts por
+        # intervalo entre backbeats) e deixe as regras de posicao — nao um cap
+        # global — decidir quem entra. Um cap global de 2 aqui zera a densidade
+        # sobre uma levada inteira: 158 compassos so ganhariam duas ghosts.
+        return size
 
     def violates_position_rules(candidate, selected, interval_counts):
         tick = candidate["tick"]
