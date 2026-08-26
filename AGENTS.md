@@ -68,6 +68,12 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   descartado. Prefixo ambíguo (menos que `MIN_INTERVALS_FOR_CLASSIFICATION`, ou casando DROP e
   STANDARD ao mesmo tempo) resulta em `unknown` sem `tuning_name`; qualquer descarte de canal
   força `confidence != high` e `inference_incomplete=true`.
+- Nome de track em `tools/tuning.py` casa por PALAVRA (não substring), tratando `_`, `-` e `.`
+  como separador além de whitespace — DAW sanitiza espaço no export (`Guitar_1`, `bass-gtr`,
+  `Guitar.L` casam). Qualificador de sopro, percussão, voz ou synth logo depois de `bass`
+  (`_BASS_DISQUALIFIERS`: clarinet, trombone, flute, drum, sax/saxophone, tuba, oboe, bassoon,
+  choir, voice, synth) tira a track de corda: `Bass Clarinet`, `Bass_Drum`, `bass-flute`,
+  `Bass Synth` NÃO casam. `Bass`, `Bass Guitar`, `Electric Bass`, `bass 2` continuam casando.
 
 ## Qualidade
 
