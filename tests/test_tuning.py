@@ -1275,3 +1275,128 @@ def test_fallback_uses_position_not_raw_mido_index():
         assert len(dist) == 1
         assert dist[0].track_name == "Track 0"
         assert dist[0].track_index == 1  # posicao bruta no SMF preservada
+
+
+# ---------------------------------------------------------------------------
+# US-001 (rodada 3) — `bass` como palavra so vale para corda quando NAO vem
+# seguido de qualificador de sopro/percussao/voz/synth.
+# ---------------------------------------------------------------------------
+
+
+_BASS_QUALIFIER_MATCHES = [
+    # `bass` sozinho ou com qualificador de corda/baixo — continua casando.
+    "Bass",
+    "Bass Guitar",
+    "Bass Gtr",
+    "Electric Bass",
+    "Baixo",
+    "bass 2",
+]
+
+_BASS_QUALIFIER_NON_MATCHES = [
+    # `bass` seguido de qualificador NAO-corda — nao casa.
+    "Bass Clarinet",
+    "Bass Trombone",
+    "Bass Flute",
+    "Bass Drum",
+    "Bass Sax",
+    "Bass Saxophone",
+    "Bass Tuba",
+    "Bass Oboe",
+    "Bass Bassoon",
+    "Bass Choir",
+    "Bass Voice",
+    "Bass Synth",
+    # E os que ja caiam por palavra continuam fora.
+    "Bassoon",
+    "Brass",
+    "Contrabassoon",
+]
+
+
+def test_bass_qualifier_matches_stringed_names():
+    """`bass` sozinho ou junto de qualificador de corda continua casando."""
+    for name in _BASS_QUALIFIER_MATCHES:
+        assert tuning._matched_name_hint(name) is not None, name
+
+
+def test_bass_qualifier_disqualifies_wind_percussion_voice_and_synth():
+    """`bass` + clarinet/trombone/flute/drum/sax/saxophone/tuba/oboe/
+    bassoon/choir/voice/synth NAO casa: e sopro, percussao, voz ou synth,
+    nao corda."""
+    for name in _BASS_QUALIFIER_NON_MATCHES:
+        assert tuning._matched_name_hint(name) is None, name
+
+
+def test_bass_clarinet_track_with_six_channels_is_not_stringed():
+    """Regressao do review: `Bass Clarinet` sem `program_change`, seis
+    canais com 8 notas cada e minimos [40,45,50,55,59,64] — hoje saia
+    como `Standard E` com `confidence=high`. Passa a nao-corda."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "bass_clarinet.mid")
+        mins = [40, 45, 50, 55, 59, 64]
+        notes: list[tuple[int, int]] = []
+        for ch, base in enumerate(mins):
+            notes += _rep(ch, base, 8)
+        _write_midi_full(p, [{
+            "name": "Bass Clarinet", "program": None, "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is False
+        assert ti.stringed_source is None
+        assert ti.discard_reason == tuning.NOT_STRINGED
+        assert ti.tuning_name is None
+        assert ti.candidate_channels == ()
+
+
+# ---------------------------------------------------------------------------
+# US-002 (rodada 3) — separadores `_`, `-`, `.` alem de whitespace.
+# ---------------------------------------------------------------------------
+
+
+_SEPARATOR_MATCHES = [
+    "Guitar_1",
+    "Rhythm_Guitar",
+    "bass-gtr",
+    "Guitar.L",
+    "GUITAR_2",
+]
+
+_SEPARATOR_NON_MATCHES = [
+    # Regra de qualificador da US-001 vale tambem com esses separadores.
+    "Bass_Clarinet",
+    "bass-flute",
+    "Bass.Drum",
+    "bass_synth",
+]
+
+
+def test_separator_variants_match_stringed_names():
+    """Nome sanitizado por DAW (`_`, `-`, `.` no lugar do espaco) casa."""
+    for name in _SEPARATOR_MATCHES:
+        assert tuning._matched_name_hint(name) is not None, name
+
+
+def test_separator_variants_still_apply_bass_qualifier_rule():
+    """Regra de qualificador vale com qualquer separador aceito."""
+    for name in _SEPARATOR_NON_MATCHES:
+        assert tuning._matched_name_hint(name) is None, name
+
+
+def test_guitar_underscore_one_is_stringed_track():
+    """Regressao do review: `Guitar_1` com seis canais estilo Guitar Pro
+    e minimos [40,45,50,55,59,64] hoje saia como `not_stringed`; passa
+    a corda pelo nome (`STRINGED_SOURCE_NAME`)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "guitar_underscore.mid")
+        mins = [40, 45, 50, 55, 59, 64]
+        notes: list[tuple[int, int]] = []
+        for ch, base in enumerate(mins):
+            notes += _rep(ch, base, 8)
+        _write_midi_full(p, [{
+            "name": "Guitar_1", "program": None, "notes": notes,
+        }])
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is True
+        assert ti.stringed_source == tuning.STRINGED_SOURCE_NAME
+        assert ti.discard_reason is None

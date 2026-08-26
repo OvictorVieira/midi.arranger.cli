@@ -72,6 +72,36 @@ TRAVA 1. Sopros, teclados, drums e strings orquestrais ficam de fora."""
 
 _STRINGED_NAME_HINTS = ("guitar", "bass", "guitarra", "baixo")
 
+# Palavras que, vindo logo DEPOIS de `bass` como proxima palavra do nome,
+# tiram a track de corda. Convencao: `bass` sozinho ou junto de um
+# qualificador de corda/baixo (`Bass Guitar`, `bass 2`, `Electric Bass`)
+# e corda; `bass` seguido de instrumento de sopro (clarinet, trombone,
+# flute, sax/saxophone, tuba, oboe, bassoon), percussao (drum), voz
+# (choir, voice) ou sintetizador (synth) NAO e — `Bass Clarinet` e
+# clarone, `Bass Drum` e bumbo, `Bass Synth` e sintetizador com timbre
+# grave. Sem essa lista, o casamento por palavra ainda deixava passar
+# `Bass Clarinet` como corda porque `bass` bate como palavra completa.
+_BASS_DISQUALIFIERS = frozenset({
+    "clarinet",
+    "trombone",
+    "flute",
+    "drum",
+    "sax",
+    "saxophone",
+    "tuba",
+    "oboe",
+    "bassoon",
+    "choir",
+    "voice",
+    "synth",
+})
+
+# Separadores tratados como fronteira de palavra em nomes de track.
+# DAW sanitiza espacos trocando por `_`, `-` ou `.` no export (Guitar Pro,
+# Songsterr, Reaper); sem tratar esses caracteres, `Guitar_1` nunca
+# casaria porque `\b` do regex considera `_` como caractere de palavra.
+_NAME_TOKEN_SPLIT = re.compile(r"[\s_\-.]+")
+
 DISCARD_LOW_NOTE_COUNT = "low_note_count"
 """Motivo de descarte pelo limiar da TRAVA 2."""
 
@@ -98,15 +128,6 @@ de mixer, o General MIDI e a declaracao do instrumento."""
 STRINGED_SOURCE_NAME = "track_name"
 STRINGED_SOURCE_GM_PROGRAM = "gm_program"
 STRINGED_SOURCE_DECLARED = "declared"
-
-_STRINGED_NAME_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(h) for h in _STRINGED_NAME_HINTS) + r")\b",
-    re.IGNORECASE,
-)
-"""Casamento por PALAVRA (com fronteira), case-insensitive. Evita que
-`Bassoon`, `Brass` ou `Contrabassoon` sejam confundidos com `bass` por
-substring solta — e o que fazia a inferencia sair errada em tracks de
-sopro."""
 
 # ---------------------------------------------------------------------------
 # US-003 — classificacao da afinacao
@@ -577,12 +598,37 @@ def _iter_track_programs(track: mido.MidiTrack) -> dict[int, list[int]]:
     return per_channel
 
 
+def _tokenize_track_name(track_name: str) -> list[str]:
+    """Tokeniza nome de track em palavras minusculas, tratando `_`, `-` e
+    `.` como separador alem de whitespace. Ver `_NAME_TOKEN_SPLIT` para a
+    razao (DAW sanitiza espaco por esses caracteres)."""
+    return [tok.lower() for tok in _NAME_TOKEN_SPLIT.split(track_name) if tok]
+
+
 def _matched_name_hint(track_name: str) -> str | None:
-    """Palavra de `_STRINGED_NAME_HINTS` que casa por FRONTEIRA no nome da
-    track (case-insensitive), ou None. Fronteira e o que impede `Bassoon`
-    virar `bass` e um fagote virar baixo por acidente."""
-    match = _STRINGED_NAME_PATTERN.search(track_name)
-    return match.group(1).lower() if match else None
+    """Palavra de `_STRINGED_NAME_HINTS` que casa por PALAVRA no nome da
+    track (case-insensitive), ou None.
+
+    Fronteira de palavra e o que impede `Bassoon`, `Brass` ou
+    `Contrabassoon` virarem `bass` por substring solta; os separadores
+    aceitos incluem whitespace, `_`, `-` e `.` (DAW troca espaco por
+    esses no export).
+
+    `bass` seguido imediatamente de qualificador de sopro, percussao,
+    voz ou synth (`_BASS_DISQUALIFIERS`) NAO casa: `Bass Clarinet` e
+    clarone, `Bass Drum` e bumbo, `Bass Synth` e sintetizador. Outros
+    hints (`guitar`, `guitarra`, `baixo`) casam direto — nao ha
+    ambiguidade equivalente para eles."""
+    tokens = _tokenize_track_name(track_name)
+    for i, tok in enumerate(tokens):
+        if tok not in _STRINGED_NAME_HINTS:
+            continue
+        if tok == "bass":
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            if nxt in _BASS_DISQUALIFIERS:
+                continue
+        return tok
+    return None
 
 
 def _classify_stringed(
