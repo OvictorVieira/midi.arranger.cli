@@ -249,6 +249,13 @@ em `tools/tuning.py`; o motivo de cada canal descartado aparece no relatório, n
    MIDI (`GM_GUITAR_PROGRAMS=24..31`, `GM_BASS_PROGRAMS=32..39`), ou por declaração explícita do
    usuário via input `declared_stringed_tracks` de `analyze`. Precedência: declaração > patch > nome.
    Sem nenhuma das três evidências, `is_stringed=false`, `discard_reason=not_stringed` e não infere.
+   O casamento por nome usa fronteira de palavra (`\b`), nunca substring solta: `Bassoon` e `Brass`
+   não passam por conterem `bass`/`brass` dentro de outra palavra. Quando o nome sugere corda mas o
+   patch General MIDI contradiz, o patch vence e o conflito aparece no relatório em
+   `name_patch_conflict`. O patch General MIDI só autoriza os canais que **têm notas** na track:
+   `program_change` num canal vazio não licencia inferência sobre notas de outro canal. Quando
+   canais diferentes carregam patches diferentes, só os canais com patch de corda entram na
+   inferência; os demais aparecem em `discarded_channels` com motivo `non_stringed_channel_patch`.
 2. **TRAVA 2 — contagem mínima por canal.** Só entra na inferência canal com
    `note_count >= MIN_NOTES_PER_CHANNEL_FOR_INFERENCE` (=8). Canal com meia dúzia de notas tem
    mínimo que é nota casada, não corda solta. Descarte aparece como `low_note_count`.
@@ -258,8 +265,11 @@ em `tools/tuning.py`; o motivo de cada canal descartado aparece no relatório, n
 
 A tabela de afinações vem do manual `guitar.drop_tuning` em `knowledge/tecnicas/`, lida pelo índice
 de técnicas e convertida em intervalos entre cordas adjacentes — **não hardcodada**. Classificação
-é por prefix-match: 3 cordas graves com intervalos `[7,5]` já classificam como drop, porque o riff
-pode não usar as agudas. O `7` na base é a assinatura do drop.
+é por prefix-match, mas exige um mínimo de intervalos declarado em `MIN_INTERVALS_FOR_CLASSIFICATION`
+(=3) — dois intervalos soltos são ambíguos e não nomeiam. Exceção estrutural: a assinatura
+`DROP_SIGNATURE_INTERVAL=7` na base já classifica drop a partir de 2 intervalos, porque `7` não
+aparece em afinação padrão. Prefixo que casa DROP **e** STANDARD ao mesmo tempo resulta em
+`unknown` sem nome — a ambiguidade é travada por construção.
 
 ### Vocabulário de confiança
 
@@ -275,6 +285,11 @@ Regra estrutural: **afinação `unknown` nunca vem com nome**. `_tuning_name` re
 `tuning_class == unknown` e `_classify_confidence` retorna `unknown` no mesmo predicado — a
 conjunção garante que o par `(tuning_name != null, confidence == unknown)` é impossível por
 construção, não por convenção do chamador.
+
+Segunda regra estrutural: **descarte de canal rebaixa confiança**. `_classify_confidence` recebe
+`has_discards` e nunca devolve `high` quando qualquer canal foi descartado, mesmo com contagem
+suficiente de candidatos. O relatório expõe `inference_incomplete=true` no mesmo caso, para o
+consumidor auditar sem re-executar o detector.
 
 O relatório sempre expõe `candidate_channels` e `discarded_channels` com quantidade e motivo —
 o consumidor pode auditar por que uma track ficou `unknown` sem re-executar o detector.

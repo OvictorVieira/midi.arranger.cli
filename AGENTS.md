@@ -64,6 +64,10 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `discard_reason=not_stringed` e não classifica. Afinação `unknown` **nunca** vem acompanhada de
   `tuning_name` — a regra é garantida estruturalmente por `_tuning_name`/`_classify_confidence` em
   `tools/tuning.py` e não deve ser contornada no consumidor.
+- Afinação só é nomeada quando os intervalos são inequívocos e nenhum canal relevante foi
+  descartado. Prefixo ambíguo (menos que `MIN_INTERVALS_FOR_CLASSIFICATION`, ou casando DROP e
+  STANDARD ao mesmo tempo) resulta em `unknown` sem `tuning_name`; qualquer descarte de canal
+  força `confidence != high` e `inference_incomplete=true`.
 
 ## Qualidade
 
