@@ -1001,6 +1001,7 @@ def _apply_drums_accent_hierarchy(
     hard_ceiling = int(params["hard_ceiling"].value)
     ranges = {
         "accent": range_for("accent"),
+        "primary": range_for("primary"),
         "normal": range_for("normal"),
         "soft": range_for("soft"),
         "ghost": range_for("ghost"),
@@ -1014,6 +1015,12 @@ def _apply_drums_accent_hierarchy(
     if ticks_per_beat <= 0:
         return mid
 
+    # MIDI real chega humanizado: onset raramente cai em `tick == 0` do beat.
+    # Quantizamos ao 16-avo mais proximo e classificamos pela posicao metrica
+    # dele — sem tolerancia, snare backbeat a 5 ticks do beat cai como ghost e
+    # a hierarquia inteira desaba (mediana caixa 32 sobre a levada real).
+    sixteenth = max(1, ticks_per_beat // 4)
+
     def layer_for(note: int, tick: int) -> str:
         # General MIDI / SD3 core map from knowledge/tecnicas/tecnicas_bateria_midi.md.
         kicks = {35, 36}
@@ -1024,24 +1031,27 @@ def _apply_drums_accent_hierarchy(
         }
         crashes = {49, 52, 55, 57, 59}
 
-        beat_tick = tick % ticks_per_beat
-        on_beat = beat_tick == 0
-        beat_in_bar = (tick // ticks_per_beat) % 4
-        backbeat = on_beat and beat_in_bar in {1, 3}
+        nearest_16th = round(tick / sixteenth)
+        subdivision = nearest_16th % 4
+        on_beat = subdivision == 0
 
         if note in crashes:
             return "accent"
         if note in snares:
-            return "accent" if backbeat else "ghost"
-        if note in kicks or note in hi_hats:
+            return "accent" if on_beat else "ghost"
+        if note in kicks:
+            return "primary" if on_beat else "normal"
+        if note in hi_hats:
             return "normal" if on_beat else "soft"
         return "normal" if on_beat else "soft"
 
     def velocity_for(current: int, layer: str) -> int:
-        lo, hi = ranges[layer]
-        if current <= hard_ceiling and lo <= current <= hi:
+        # Chapada (>hard_ceiling) sempre entra na camada alvo; valores abaixo do
+        # teto sao considerados intencionais e ficam intactos, para nao apagar
+        # uma track ja humanizada.
+        if current <= hard_ceiling:
             return current
-        return max(1, min(current, targets[layer]))
+        return max(1, targets[layer])
 
     for track in mid.tracks:
         tick = 0

@@ -713,6 +713,7 @@ def test_drums_accent_hierarchy_redistributes_flat_127_velocity():
     assert 127 not in after_velocities
     assert set(after_velocities) == {
         targets["accent"],
+        targets["primary"],
         targets["normal"],
         targets["soft"],
         targets["ghost"],
@@ -737,6 +738,93 @@ def test_drums_accent_hierarchy_preserves_coherent_velocity_below_ceiling():
     result = apply_technique("drums.accent_hierarchy", source, seed=1)
 
     assert _note_tuples(result) == before
+
+
+def _midi_realistic_metal_drums(bars: int = 16) -> mido.MidiFile:
+    """Levada de metal chapada em 127 com humanizacao de onset (+/-8 ticks)
+    parecida com o MIDI real de producao. Simula: kick em beats 1 e 3, snare
+    backbeat em 2 e 4, hi-hat em contratempo (offbeats 8), crash na chegada
+    de secao (a cada 8 compassos). Nenhum onset cai em `tick % ticks_per_beat
+    == 0` — se a tecnica exigir alinhamento perfeito, tudo desaba."""
+
+    ticks_per_beat = 480
+    jitter_seq = (2, -3, 5, -1, 4, -6, 7, -2, 3, -4, 6, -5, 1, -7, 8, -8)
+    jitter_iter = iter(jitter_seq * 40)
+    def next_jitter() -> int:
+        try:
+            return next(jitter_iter)
+        except StopIteration:  # pragma: no cover - defensive
+            return 0
+
+    notes: list[tuple[int, int, int, int]] = []
+    gate = 96
+    for bar in range(bars):
+        bar_tick = bar * ticks_per_beat * 4
+        for beat_index in range(4):
+            beat_tick = bar_tick + beat_index * ticks_per_beat
+            if beat_index in (0, 2):
+                start = beat_tick + next_jitter()
+                notes.append((start, start + gate, 36, 127))
+            if beat_index in (1, 3):
+                start = beat_tick + next_jitter()
+                notes.append((start, start + gate, 38, 127))
+            hat_start = beat_tick + ticks_per_beat // 2 + next_jitter()
+            notes.append((hat_start, hat_start + gate, 42, 127))
+        if bar % 8 == 0:
+            crash_start = bar_tick + next_jitter()
+            notes.append((crash_start, crash_start + 240, 49, 127))
+    notes.sort(key=lambda item: item[0])
+    return _midi_with_notes("Drums", 9, notes)
+
+
+def test_drums_accent_hierarchy_gives_snare_the_accent_on_realistic_midi():
+    """Regressao US-007: mediana POR PECA precisa cair na faixa correta do
+    manual quando aplicado sobre bateria com humanizacao de onset — o bug
+    original punha a caixa em ghost (mediana 32) porque `tick % beat == 0`
+    falhava. A mediana global tambem tem que ficar acima de suave."""
+
+    from statistics import median
+
+    source = _midi_realistic_metal_drums(bars=16)
+    result = apply_technique("drums.accent_hierarchy", source, seed=1)
+
+    events = _note_tuples(result)
+    velocities_by_pitch: dict[int, list[int]] = {}
+    for _tr, _ch, pitch, _s, _e, vel in events:
+        velocities_by_pitch.setdefault(pitch, []).append(vel)
+
+    snare_v = velocities_by_pitch.get(38, [])
+    kick_v = velocities_by_pitch.get(36, [])
+    hat_v = velocities_by_pitch.get(42, [])
+    crash_v = velocities_by_pitch.get(49, [])
+    assert snare_v and kick_v and hat_v and crash_v
+
+    snare_median = median(snare_v)
+    kick_median = median(kick_v)
+    hat_median = median(hat_v)
+    crash_median = median(crash_v)
+
+    assert 105 <= snare_median <= 120, (
+        f"caixa backbeat tem que cair no acento (105-120), veio {snare_median}"
+    )
+    assert 100 <= kick_median <= 115, (
+        f"bumbo em tempo forte tem que cair no primario (100-115), veio {kick_median}"
+    )
+    assert 55 <= hat_median <= 79, (
+        f"chimbal contratempo tem que ficar em suave (55-79), veio {hat_median}"
+    )
+    assert 105 <= crash_median <= 120, (
+        f"crash de chegada tem que cair no acento (105-120), veio {crash_median}"
+    )
+
+    all_v = [vel for vels in velocities_by_pitch.values() for vel in vels]
+    assert mean(all_v) > 79, (
+        f"media geral tem que ficar acima da faixa suave; veio {mean(all_v):.1f}"
+    )
+    assert max(all_v) <= 115, "hard_ceiling do manual e 115"
+    assert min(snare_v) > max(hat_v), (
+        "caixa (acento) nao pode empatar ou perder para chimbal contratempo"
+    )
 
 
 def test_drums_ghost_notes_adds_candidates_between_backbeats_only():
@@ -1794,6 +1882,7 @@ def _accent_hierarchy_targets() -> dict[str, int]:
     hard_ceiling = target("hard_ceiling")
     return {
         "accent": min(target("accent"), hard_ceiling),
+        "primary": min(target("primary"), hard_ceiling),
         "normal": min(target("normal"), hard_ceiling),
         "soft": min(target("soft"), hard_ceiling),
         "ghost": min(target("ghost"), hard_ceiling),
