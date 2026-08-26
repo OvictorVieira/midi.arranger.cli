@@ -961,6 +961,44 @@ def test_drums_ghost_notes_skips_physically_impossible_third_hand():
     assert 720 not in {note[3] for note in _new_note_tuples(source, result)}
 
 
+def test_drums_ghost_notes_survives_irregular_structural_durations():
+    """Regressao US-006: duracoes irregulares (curtissimas, ultrapassando o
+    proximo tempo, sobrepostas na mesma altura) nao podem quebrar o contrato
+    do nivel technique. accent_hierarchy + ghost_notes tem que rodar juntas
+    sem levantar TechniqueContractError e preservar a duracao de toda nota
+    estrutural, byte a byte."""
+
+    source = _midi_with_notes(
+        "Drums",
+        9,
+        [
+            (0, 47, 36, 100),        # kick nota curtissima
+            (480, 1500, 38, 108),    # backbeat 1: sustenta alem do backbeat 2
+            (720, 900, 38, 90),      # snare sobreposta na mesma altura
+            (1440, 1560, 38, 108),   # backbeat 2 regular
+        ],
+    )
+
+    accented = apply_technique("drums.accent_hierarchy", source, seed=13)
+    structural = {
+        (track, channel, pitch, start, end)
+        for track, channel, pitch, start, end, _ in _note_tuples(accented)
+    }
+
+    result = apply_technique(
+        "drums.ghost_notes",
+        accented,
+        seed=13,
+        parameters={"density": 1.0},
+    )
+
+    after = {
+        (track, channel, pitch, start, end)
+        for track, channel, pitch, start, end, _ in _note_tuples(result)
+    }
+    assert structural <= after
+
+
 def test_apply_uses_requested_tool_recipe_without_warning():
     registry = TechniqueRegistry()
 

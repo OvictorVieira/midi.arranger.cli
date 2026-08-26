@@ -1166,6 +1166,22 @@ def _apply_drums_ghost_notes(
             for note in existing
         )
 
+    def overlaps_same_pitch(existing, channel, pitch, start_tick, end_tick):
+        # FIFO pairing entre note_on/note_off do MIDI e agnostica a "ornamento":
+        # inserir uma ghost cuja janela cruze com uma nota estrutural na mesma
+        # (channel, pitch) reembaralha o pareamento e muda a duracao da nota
+        # estrutural — o que viola o contrato do nivel technique. Identidade
+        # exata e ignorada para preservar idempotencia (o ornamento anterior
+        # apenas se reconstroi no mesmo lugar).
+        for note in existing:
+            if note["channel"] != channel or note["pitch"] != pitch:
+                continue
+            if note["start"] == start_tick and note["end"] == end_tick:
+                continue
+            if note["start"] < end_tick and note["end"] > start_tick:
+                return True
+        return False
+
     def target_count(size):
         if size <= 0:
             return 0
@@ -1262,12 +1278,13 @@ def _apply_drums_ghost_notes(
                 if tick != following - sixteenth:
                     channel = 9
                     pitch = int(notes[len(candidates) % len(notes)])
-                    if note_exists(
-                        existing,
-                        channel,
-                        pitch,
-                        tick,
-                    ) or simultaneous_count_at(existing, channel, tick) < 2:
+                    end_tick = tick + gate
+                    if not overlaps_same_pitch(
+                        existing, channel, pitch, tick, end_tick
+                    ) and (
+                        note_exists(existing, channel, pitch, tick)
+                        or simultaneous_count_at(existing, channel, tick) < 2
+                    ):
                         candidates.append({
                             "tick": tick,
                             "interval_start": current,
