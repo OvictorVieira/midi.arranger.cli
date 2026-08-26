@@ -2278,3 +2278,92 @@ def _midi_with_two_notes(
     ))
     mid.tracks.extend([meta, track])
     return mid
+
+
+# ---------------------------------------------------------------------------
+# Achados do review conjunto com o Codex no PR #48.
+# ---------------------------------------------------------------------------
+
+
+def _midi_four_backbeats() -> mido.MidiFile:
+    """Caixa alta em quatro backbeats — o minimo para haver intervalo."""
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    prev = 0
+    for tick in (480, 1440, 2400, 3360):
+        track.append(mido.Message(
+            "note_on", note=38, velocity=100, channel=9, time=tick - prev,
+        ))
+        track.append(mido.Message(
+            "note_off", note=38, velocity=0, channel=9, time=60,
+        ))
+        prev = tick + 60
+    mid.tracks.append(track)
+    return mid
+
+
+def _note_on_count(mid: mido.MidiFile) -> int:
+    return sum(
+        1 for m in mid.tracks[0] if m.type == "note_on" and m.velocity > 0
+    )
+
+
+def test_ghost_notes_density_zero_nao_acrescenta_nota():
+    """`density=0.0` desliga a tecnica.
+
+    O loop de selecao acrescentava a candidata e SO ENTAO checava o teto,
+    entao `wanted == 0` ainda deixava uma ghost passar. Densidade zero que
+    escreve nota torna o parametro mentiroso.
+    """
+    source = _midi_four_backbeats()
+    out = apply_technique(
+        "drums.ghost_notes", _midi_four_backbeats(), seed=1, tool="generic",
+        parameters={"density": 0.0},
+    )
+    assert _note_on_count(out) == _note_on_count(source)
+
+
+def test_ghost_notes_density_cresce_de_forma_monotonica():
+    """Densidade maior nunca produz menos ghost que densidade menor."""
+    counts = []
+    for density in (0.0, 0.25, 0.5, 1.0):
+        out = apply_technique(
+            "drums.ghost_notes", _midi_four_backbeats(), seed=1,
+            tool="generic", parameters={"density": density},
+        )
+        counts.append(_note_on_count(out))
+    assert counts == sorted(counts)
+    assert counts[0] < counts[-1]
+
+
+def test_ghost_notes_respeita_velocity_declarada_no_plano():
+    """`style.<familia>.parameters.velocity` COMANDA a velocity da ghost.
+
+    Antes, a receita do manual vencia e o parametro do plano era aceito pelo
+    schema, validado contra a faixa do manual e depois ignorado na aplicacao.
+    """
+    out = apply_technique(
+        "drums.ghost_notes", _midi_four_backbeats(), seed=1, tool="generic",
+        parameters={"velocity": [30, 30]},
+    )
+    ghosts = [
+        m.velocity for m in out.tracks[0]
+        if m.type == "note_on" and 0 < m.velocity < 50
+    ]
+    assert ghosts, "a fixture precisa gerar ghost para o teste valer"
+    assert all(v == 30 for v in ghosts)
+
+
+def test_ghost_notes_sem_velocity_no_plano_usa_a_faixa_do_manual():
+    """Contraprova: sem parametro no plano, a receita do manual continua valendo."""
+    out = apply_technique(
+        "drums.ghost_notes", _midi_four_backbeats(), seed=1, tool="generic",
+    )
+    ghosts = [
+        m.velocity for m in out.tracks[0]
+        if m.type == "note_on" and 0 < m.velocity < 50
+    ]
+    assert ghosts
+    assert all(20 <= v <= 45 for v in ghosts)
+    assert len(set(ghosts)) > 1, "faixa do manual varia, nao e valor fixo"

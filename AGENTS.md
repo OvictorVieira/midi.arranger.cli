@@ -99,6 +99,14 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - NUNCA acrescentar exclusão a `tests/test_palette_integration.py::test_all_target_roles_are_covered`
   para o teste passar. A única exclusão permitida é `choir` (compartilha gerador com strings). Role
   que não gera de verdade sai de `_ROLE_RENDERERS`, não vira exceção do teste.
+- Parâmetro declarado em `style.<família>.parameters` tem que **comandar** o resultado. Precedência:
+  `parameters` do plano > receita da tool no manual > `range` do parâmetro no manual. Parâmetro
+  aceito pelo schema, validado contra a faixa do manual e depois ignorado na aplicação é parâmetro
+  mentiroso — mesma categoria de `_identity_apply`. Ao escrever técnica nova, leia `context.parameters`
+  antes de cair na receita.
+- Parâmetro de intensidade zerado (`density=0.0` e equivalentes) significa **desligar a técnica**,
+  não "mínimo de um". Em loop de seleção, cheque o teto ANTES de acrescentar o candidato: checar
+  depois deixa `wanted == 0` passar sempre por um elemento.
 - `plan.brief_ref.sha256` deve ser calculado com `tools.brief_ref.brief_sha256()`; é o SHA-256 dos
   bytes exatos do `arrangement-brief.json`, mesmo formato de `.midiarranger/brief.sha256`.
 - Todo `plan.elements[]` deve carregar `rationale` string não vazia após `strip()`; fixtures e

@@ -1128,7 +1128,15 @@ def _apply_drums_ghost_notes(
             f"tecnica {context.canonical!r} precisa declarar notes na receita"
         )
 
-    velocity_range = recipe.get("velocity")
+    # Precedencia: `style.<familia>.parameters` do plano > receita da tool no
+    # manual > `range` do parametro no manual. O que o plano declara tem que
+    # COMANDAR o resultado; parametro aceito pelo schema, validado contra a
+    # faixa do manual e depois ignorado na aplicacao e parametro mentiroso.
+    # A faixa do plano ja foi validada contra o manual em `plan.validate` —
+    # valor fora da faixa e erro la, nunca clamp silencioso aqui.
+    velocity_range = context.parameters.get("velocity")
+    if velocity_range is None:
+        velocity_range = recipe.get("velocity")
     if velocity_range is None:
         params = {param.name: param for param in technique.parameters}
         velocity_param = params.get("velocity")
@@ -1216,7 +1224,16 @@ def _apply_drums_ghost_notes(
         if size <= 0:
             return 0
         if isinstance(density, (int, float)):
-            return max(1, min(size, int(round(size * float(density)))))
+            requested = float(density)
+            # `density=0.0` significa ZERO ghost. Um `max(1, ...)` aqui fazia
+            # densidade zero ainda acrescentar uma nota, o que torna o
+            # parametro mentiroso: o plano pede para desligar a tecnica e ela
+            # continua escrevendo no MIDI. Piso de 1 so vale para densidade
+            # positiva que arredonda para baixo — ai o pedido foi "pouco",
+            # nao "nenhum".
+            if requested <= 0.0:
+                return 0
+            return max(1, min(size, int(round(size * requested))))
         # Sem `density` explicita, aponte para o teto do manual (2 ghosts por
         # intervalo entre backbeats) e deixe as regras de posicao — nao um cap
         # global — decidir quem entra. Um cap global de 2 aqui zera a densidade
@@ -1253,13 +1270,17 @@ def _apply_drums_ghost_notes(
         interval_counts = {}
         wanted = target_count(len(shuffled))
         for candidate in shuffled:
+            # Teto checado ANTES de acrescentar. Checar depois deixava
+            # `wanted == 0` passar sempre por uma nota: a primeira candidata
+            # entrava e so entao o loop parava, entao `density=0.0` ainda
+            # escrevia uma ghost no MIDI.
+            if len(selected) >= wanted:
+                break
             if violates_position_rules(candidate, selected, interval_counts):
                 continue
             selected.append(candidate)
             interval_start = candidate["interval_start"]
             interval_counts[interval_start] = interval_counts.get(interval_start, 0) + 1
-            if len(selected) >= wanted:
-                break
         return sorted(selected, key=lambda item: item["tick"])
 
     def insert_note(track, channel, pitch, velocity, start_tick, end_tick):
