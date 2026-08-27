@@ -5,7 +5,6 @@ from __future__ import annotations
 import inspect
 from io import BytesIO
 from pathlib import Path
-from statistics import mean, pstdev
 
 import mido
 import pytest
@@ -178,7 +177,7 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert SUPPORTED_TECHNIQUES == ("drums.accent_hierarchy", "drums.ghost_notes")
+    assert SUPPORTED_TECHNIQUES == ("drums.ghost_notes",)
 
 
 def test_global_dispatch_rejects_documented_but_unimplemented_technique():
@@ -187,7 +186,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError) as exc:
         apply_technique("drums.flam", payload, seed=1)
 
-    assert exc.value.available == ("drums.accent_hierarchy", "drums.ghost_notes")
+    assert exc.value.available == ("drums.ghost_notes",)
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
@@ -682,64 +681,6 @@ def test_technique_context_derives_local_rng_from_seed_and_name():
     )
 
 
-def test_drums_accent_hierarchy_redistributes_flat_127_velocity():
-    source = _midi_with_notes("Drums", 9, [
-        (0, 120, 36, 127),
-        (0, 120, 42, 127),
-        (240, 360, 42, 127),
-        (360, 420, 38, 127),
-        (480, 600, 38, 127),
-        (480, 600, 42, 127),
-        (720, 840, 42, 127),
-        (960, 1080, 36, 127),
-        (960, 1080, 42, 127),
-        (1200, 1320, 42, 127),
-        (1440, 1560, 38, 127),
-        (1440, 1560, 42, 127),
-        (1440, 1560, 49, 127),
-    ])
-    before = _note_tuples(source)
-    before_velocities = [note[5] for note in before]
-    targets = _accent_hierarchy_targets()
-
-    result = apply_technique("drums.accent_hierarchy", source, seed=1)
-    after = _note_tuples(result)
-    after_velocities = [note[5] for note in after]
-
-    assert len(after) == len(before)
-    assert sorted(note[2] for note in after) == sorted(note[2] for note in before)
-    assert mean(after_velocities) < mean(before_velocities)
-    assert pstdev(after_velocities) > pstdev(before_velocities)
-    assert 127 not in after_velocities
-    assert set(after_velocities) == {
-        targets["accent"],
-        targets["primary"],
-        targets["normal"],
-        targets["soft"],
-        targets["ghost"],
-    }
-
-    velocities_by_tick_pitch = {
-        (start, pitch): velocity
-        for _, _, pitch, start, _, velocity in after
-    }
-    assert velocities_by_tick_pitch[(480, 38)] > velocities_by_tick_pitch[(720, 42)]
-
-
-def test_drums_accent_hierarchy_preserves_coherent_velocity_below_ceiling():
-    source = _midi_with_notes("Drums", 9, [
-        (0, 120, 36, 92),
-        (240, 360, 42, 65),
-        (360, 420, 38, 35),
-        (480, 600, 38, 110),
-    ])
-    before = _note_tuples(source)
-
-    result = apply_technique("drums.accent_hierarchy", source, seed=1)
-
-    assert _note_tuples(result) == before
-
-
 def _midi_realistic_metal_drums(bars: int = 16) -> mido.MidiFile:
     """Levada de metal chapada em 127 com humanizacao de onset (+/-8 ticks)
     parecida com o MIDI real de producao. Simula: kick em beats 1 e 3, snare
@@ -775,56 +716,6 @@ def _midi_realistic_metal_drums(bars: int = 16) -> mido.MidiFile:
             notes.append((crash_start, crash_start + 240, 49, 127))
     notes.sort(key=lambda item: item[0])
     return _midi_with_notes("Drums", 9, notes)
-
-
-def test_drums_accent_hierarchy_gives_snare_the_accent_on_realistic_midi():
-    """Regressao US-007: mediana POR PECA precisa cair na faixa correta do
-    manual quando aplicado sobre bateria com humanizacao de onset — o bug
-    original punha a caixa em ghost (mediana 32) porque `tick % beat == 0`
-    falhava. A mediana global tambem tem que ficar acima de suave."""
-
-    from statistics import median
-
-    source = _midi_realistic_metal_drums(bars=16)
-    result = apply_technique("drums.accent_hierarchy", source, seed=1)
-
-    events = _note_tuples(result)
-    velocities_by_pitch: dict[int, list[int]] = {}
-    for _tr, _ch, pitch, _s, _e, vel in events:
-        velocities_by_pitch.setdefault(pitch, []).append(vel)
-
-    snare_v = velocities_by_pitch.get(38, [])
-    kick_v = velocities_by_pitch.get(36, [])
-    hat_v = velocities_by_pitch.get(42, [])
-    crash_v = velocities_by_pitch.get(49, [])
-    assert snare_v and kick_v and hat_v and crash_v
-
-    snare_median = median(snare_v)
-    kick_median = median(kick_v)
-    hat_median = median(hat_v)
-    crash_median = median(crash_v)
-
-    assert 105 <= snare_median <= 120, (
-        f"caixa backbeat tem que cair no acento (105-120), veio {snare_median}"
-    )
-    assert 100 <= kick_median <= 115, (
-        f"bumbo em tempo forte tem que cair no primario (100-115), veio {kick_median}"
-    )
-    assert 55 <= hat_median <= 79, (
-        f"chimbal contratempo tem que ficar em suave (55-79), veio {hat_median}"
-    )
-    assert 105 <= crash_median <= 120, (
-        f"crash de chegada tem que cair no acento (105-120), veio {crash_median}"
-    )
-
-    all_v = [vel for vels in velocities_by_pitch.values() for vel in vels]
-    assert mean(all_v) > 79, (
-        f"media geral tem que ficar acima da faixa suave; veio {mean(all_v):.1f}"
-    )
-    assert max(all_v) <= 115, "hard_ceiling do manual e 115"
-    assert min(snare_v) > max(hat_v), (
-        "caixa (acento) nao pode empatar ou perder para chimbal contratempo"
-    )
 
 
 def test_drums_ghost_notes_adds_candidates_between_backbeats_only():
@@ -1052,9 +943,9 @@ def test_drums_ghost_notes_skips_physically_impossible_third_hand():
 def test_drums_ghost_notes_survives_irregular_structural_durations():
     """Regressao US-006: duracoes irregulares (curtissimas, ultrapassando o
     proximo tempo, sobrepostas na mesma altura) nao podem quebrar o contrato
-    do nivel technique. accent_hierarchy + ghost_notes tem que rodar juntas
-    sem levantar TechniqueContractError e preservar a duracao de toda nota
-    estrutural, byte a byte."""
+    do nivel technique. `ghost_notes` tem que rodar sem levantar
+    TechniqueContractError e preservar a duracao de toda nota estrutural,
+    byte a byte."""
 
     source = _midi_with_notes(
         "Drums",
@@ -1067,15 +958,14 @@ def test_drums_ghost_notes_survives_irregular_structural_durations():
         ],
     )
 
-    accented = apply_technique("drums.accent_hierarchy", source, seed=13)
     structural = {
         (track, channel, pitch, start, end)
-        for track, channel, pitch, start, end, _ in _note_tuples(accented)
+        for track, channel, pitch, start, end, _ in _note_tuples(source)
     }
 
     result = apply_technique(
         "drums.ghost_notes",
-        accented,
+        source,
         seed=13,
         parameters={"density": 1.0},
     )
@@ -1096,11 +986,10 @@ def test_drums_ghost_notes_reaches_metal_density_on_realistic_backbeats():
     muda de pitch, posicao ou duracao."""
 
     source = _midi_realistic_metal_drums(bars=16)
-    accented = apply_technique("drums.accent_hierarchy", source, seed=21)
 
-    result = apply_technique("drums.ghost_notes", accented, seed=21)
+    result = apply_technique("drums.ghost_notes", source, seed=21)
 
-    ghosts = _new_note_tuples(accented, result)
+    ghosts = _new_note_tuples(source, result)
     assert len(ghosts) >= 16, (
         "sobre 16 compassos com backbeats reais, densidade metal tem que "
         f"passar de uma ghost por compasso; veio {len(ghosts)}"
@@ -1110,7 +999,7 @@ def test_drums_ghost_notes_reaches_metal_density_on_realistic_backbeats():
 
     structural_before = {
         (track, channel, pitch, start, end)
-        for track, channel, pitch, start, end, _ in _note_tuples(accented)
+        for track, channel, pitch, start, end, _ in _note_tuples(source)
     }
     structural_after = {
         (track, channel, pitch, start, end)
@@ -1125,12 +1014,12 @@ def test_drums_ghost_notes_reaches_metal_density_on_realistic_backbeats():
     ghost_starts = sorted({start for _, _, _, start, _, _ in ghosts})
     ghost_set = set(ghost_starts)
 
-    accented_snares = [
+    source_snares = [
         (start, end)
-        for _, ch, pitch, start, end, vel in _note_tuples(accented)
+        for _, ch, pitch, start, end, vel in _note_tuples(source)
         if ch == 9 and pitch == 38 and vel > 45
     ]
-    backbeat_ticks = sorted({start for start, _ in accented_snares})
+    backbeat_ticks = sorted({start for start, _ in source_snares})
     for tick in backbeat_ticks:
         assert tick - sixteenth not in ghost_set, (
             "regra 1: 16a imediatamente antes do backbeat nao pode virar ghost"
@@ -1934,29 +1823,6 @@ def _technique_index(
     ))
 
 
-def _accent_hierarchy_targets() -> dict[str, int]:
-    technique = build_index(MANUALS_DIR).get("drums.accent_hierarchy")
-    assert technique is not None
-    params = {param.name: param for param in technique.parameters}
-
-    def target(name: str) -> int:
-        param = params[name]
-        if param.value is not None:
-            return int(param.value)
-        assert param.range is not None
-        lo, hi = param.range
-        return int(round((lo + hi) / 2))
-
-    hard_ceiling = target("hard_ceiling")
-    return {
-        "accent": min(target("accent"), hard_ceiling),
-        "primary": min(target("primary"), hard_ceiling),
-        "normal": min(target("normal"), hard_ceiling),
-        "soft": min(target("soft"), hard_ceiling),
-        "ghost": min(target("ghost"), hard_ceiling),
-    }
-
-
 def _midi_with_ghost_note_window(
     *,
     extra_notes: list[tuple[int, int, int, int]] | None = None,
@@ -2367,3 +2233,180 @@ def test_ghost_notes_sem_velocity_no_plano_usa_a_faixa_do_manual():
     assert ghosts
     assert all(20 <= v <= 45 for v in ghosts)
     assert len(set(ghosts)) > 1, "faixa do manual varia, nao e valor fixo"
+
+
+def _midi_two_grooves_with_break() -> mido.MidiFile:
+    """Duas levadas separadas por quatro compassos de silencio.
+
+    Reproduz a forma real de DEIXE IR: a musica para, fica um vao, e volta.
+    O ultimo backbeat antes do vao e o primeiro depois sao consecutivos na
+    lista de backbeats, mas nao formam intervalo de groove nenhum.
+    """
+    tpb = 480
+    mid = mido.MidiFile(ticks_per_beat=tpb)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    ticks = []
+    # levada 1: backbeats em 2 e 4 de quatro compassos
+    for compasso in range(4):
+        for beat in (1, 3):
+            ticks.append(compasso * 4 * tpb + beat * tpb)
+    # quatro compassos de silencio, depois levada 2
+    offset = 8 * 4 * tpb
+    for compasso in range(4):
+        for beat in (1, 3):
+            ticks.append(offset + compasso * 4 * tpb + beat * tpb)
+    prev = 0
+    for tick in ticks:
+        track.append(mido.Message(
+            "note_on", note=38, velocity=100, channel=9, time=tick - prev,
+        ))
+        track.append(mido.Message(
+            "note_off", note=38, velocity=0, channel=9, time=60,
+        ))
+        prev = tick + 60
+    mid.tracks.append(track)
+    return mid, ticks, tpb
+
+
+def test_ghost_notes_nao_semeia_no_vao_entre_levadas():
+    """Nenhuma ghost pode cair no silencio entre duas levadas.
+
+    `zip(backbeats, backbeats[1:])` emparelhava o ultimo backbeat antes do
+    break com o primeiro depois dele, e o loop varria semicolcheias por cima
+    do vao inteiro. Em DEIXE IR isso semeava caixa com a nota estrutural mais
+    proxima a 18 tempos de distancia.
+    """
+    source, structural_ticks, tpb = _midi_two_grooves_with_break()
+    out = apply_technique(
+        "drums.ghost_notes", source, seed=7, tool="generic",
+    )
+
+    structural = set(structural_ticks)
+    added = []
+    tick = 0
+    for msg in out.tracks[0]:
+        tick += msg.time
+        if msg.type == "note_on" and msg.velocity > 0 and tick not in structural:
+            added.append(tick)
+
+    assert added, "a fixture precisa gerar ghost nas levadas para o teste valer"
+    gap_start = max(t for t in structural_ticks if t < 8 * 4 * tpb)
+    gap_end = min(t for t in structural_ticks if t >= 8 * 4 * tpb)
+    no_vao = [t for t in added if gap_start < t < gap_end]
+    assert no_vao == [], f"ghosts semeadas no silencio: {no_vao}"
+
+
+def test_ghost_notes_toda_ghost_fica_perto_de_nota_estrutural():
+    """Toda ghost tem vizinho estrutural a no maximo um tempo de distancia.
+
+    Ghost note e ornamento de levada; ghost isolada no vazio nao existe em
+    performance real. Mede sobre a bateria real do corpus, nao sobre fixture
+    sintetica — fixture regular nao tem break e esconde o bug.
+    """
+    import bisect
+
+    source = mido.MidiFile("tests/fixtures/corpus_drums/DEIXE IR.mid")
+    beat = source.ticks_per_beat
+
+    def drum_onsets(mid):
+        out = []
+        for tr in mid.tracks:
+            tick = 0
+            for msg in tr:
+                tick += msg.time
+                if (
+                    msg.type == "note_on"
+                    and msg.velocity > 0
+                    and getattr(msg, "channel", -1) == 9
+                ):
+                    out.append((tick, msg.note))
+        return out
+
+    base = drum_onsets(source)
+    base_set = set(base)
+    base_ticks = sorted({t for t, _ in base})
+
+    out = apply_technique(
+        "drums.ghost_notes",
+        mido.MidiFile("tests/fixtures/corpus_drums/DEIXE IR.mid"),
+        seed=7,
+        tool="superior_drummer",
+        parameters={"density": 0.10},
+    )
+    added = [item for item in drum_onsets(out) if item not in base_set]
+    assert added, "a fixture real precisa gerar ghost para o teste valer"
+
+    orfas = []
+    for tick, _pitch in added:
+        i = bisect.bisect_left(base_ticks, tick)
+        antes = tick - base_ticks[i - 1] if i > 0 else 10**9
+        depois = base_ticks[i] - tick if i < len(base_ticks) else 10**9
+        if min(antes, depois) > beat:
+            orfas.append(tick)
+    assert orfas == [], f"ghosts isoladas no vazio: {orfas}"
+
+
+def test_accent_hierarchy_esta_documentada_mas_fora_do_motor():
+    """`drums.accent_hierarchy` sai do motor enquanto a issue #50 nao fecha.
+
+    A tecnica destruia virada: sobre `DEIXE IR.mid` rebaixava 63 das 65
+    caixas em contratempo de velocity >= 110 para <= 45, e a mediana dos toms
+    de 127 para 67. Decidia a camada so pela posicao metrica, sem nocao de
+    virada — e o limiar de virada e lacuna declarada no manual.
+
+    Este teste trava as duas pontas: a tecnica continua no MANUAL (nao
+    apagamos conhecimento) e continua FORA do motor (nao aplicamos o defeito).
+    Re-registrar sem fechar a #50 quebra aqui.
+    """
+    from tools.techniques import SUPPORTED_TECHNIQUES, build_index
+
+    assert build_index().get("drums.accent_hierarchy") is not None, (
+        "a tecnica tem que continuar documentada no manual"
+    )
+    assert "drums.accent_hierarchy" not in SUPPORTED_TECHNIQUES, (
+        "nao re-registrar enquanto a issue #50 nao fechar"
+    )
+
+
+def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito():
+    """Declarar a tecnica parada tem que dar erro, nunca no-op silencioso.
+
+    Tecnica documentada que o motor aceita e ignora e o vicio que esta base
+    ja rejeitou duas vezes (`_identity_apply` e o gerador de bateria de
+    andaime). O usuario precisa saber que pediu algo que nao vai acontecer.
+    """
+    from tools.plan import (
+        ArrangementPlan,
+        BriefRef,
+        FamilyStyle,
+        PlanValidationError,
+        SourceMidi,
+        StyleTechnique,
+        validate,
+    )
+
+    plan = ArrangementPlan(
+        version=1,
+        seed=1,
+        source_midi=SourceMidi(path="/tmp/x.mid", sha256="0" * 64),
+        route="cinematica_emocional",
+        sections=[],
+        elements=[],
+    )
+    plan.brief_ref = BriefRef(path="brief.json", sha256="0" * 64)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            parameters={},
+        ),
+    }
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+    assert "not implemented by the engine" in exc.value.message

@@ -143,7 +143,7 @@ def test_stamp_edit_tracks_skips_edit_with_no_matching_track():
         "drums": FamilyStyle(
             reference="X", researched_at="2026-08-26",
             sources=["https://example.test/x"], confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         ),
     }
@@ -167,7 +167,7 @@ def test_apply_style_techniques_to_edit_tracks_skips_missing_target():
         "drums": FamilyStyle(
             reference="X", researched_at="2026-08-26",
             sources=["https://example.test/x"], confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         ),
     }
@@ -177,21 +177,6 @@ def test_apply_style_techniques_to_edit_tracks_skips_missing_target():
     mid.tracks.append(real)
     warnings = _apply_style_techniques_to_edit_tracks(mid, plan=plan, index=None)
     assert warnings == []
-
-
-def test_accent_hierarchy_rejects_unknown_canonical():
-    from tools.techniques.engine import (
-        TechniqueContext,
-        _apply_drums_accent_hierarchy,
-    )
-
-    mid = mido.MidiFile(ticks_per_beat=480)
-    mid.tracks.append(mido.MidiTrack())
-    ctx = TechniqueContext(
-        seed=1, canonical="drums.does_not_exist", tool="generic",
-    )
-    with pytest.raises(ValueError, match="nao existe no indice"):
-        _apply_drums_accent_hierarchy(mid, context=ctx)
 
 
 def test_ghost_notes_rejects_unknown_canonical():
@@ -258,23 +243,9 @@ def test_iter_note_pairs_skips_orphan_note_off():
 def test_get_technique_returns_registered_entry():
     from tools.techniques.engine import get_technique
 
-    entry = get_technique("drums.accent_hierarchy")
+    entry = get_technique("drums.ghost_notes")
     assert entry is not None
-    assert entry.canonical == "drums.accent_hierarchy"
-
-
-def test_accent_hierarchy_short_circuits_zero_ticks_per_beat():
-    from tools.techniques.engine import apply_technique
-
-    mid = mido.MidiFile(ticks_per_beat=1)
-    mid.ticks_per_beat = 0
-    track = mido.MidiTrack()
-    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
-    mid.tracks.append(track)
-    out = apply_technique(
-        "drums.accent_hierarchy", mid, seed=1, tool="generic",
-    )
-    assert out.ticks_per_beat == 0
+    assert entry.canonical == "drums.ghost_notes"
 
 
 def test_ghost_notes_short_circuits_zero_ticks_per_beat():
@@ -289,29 +260,6 @@ def test_ghost_notes_short_circuits_zero_ticks_per_beat():
         "drums.ghost_notes", mid, seed=1, tool="generic",
     )
     assert out.ticks_per_beat == 0
-
-
-def test_accent_hierarchy_layer_for_default_case_covers_tom():
-    """Toms (nota 50) nao caem em kicks/snares/hi_hats/crashes — camada default."""
-    from tools.techniques.engine import apply_technique
-
-    mid = mido.MidiFile(ticks_per_beat=480)
-    track = mido.MidiTrack()
-    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
-    # nota 50 (High Tom) NAO esta em kicks/snares/hi_hats/crashes — cai no default
-    # off-beat (16-avo 1) -> "soft"
-    track.append(mido.Message("note_on", note=50, velocity=127, channel=9, time=120))
-    track.append(mido.Message("note_off", note=50, velocity=0, channel=9, time=120))
-    mid.tracks.append(track)
-    out = apply_technique(
-        "drums.accent_hierarchy", mid, seed=1, tool="generic",
-    )
-    velocities = [
-        m.velocity for m in out.tracks[0]
-        if m.type == "note_on" and m.velocity > 0
-    ]
-    # 127 chapado clampeado para faixa "soft" (55-79)
-    assert velocities and all(55 <= v <= 79 for v in velocities)
 
 
 def test_style_technique_density_survives_roundtrip():
@@ -337,7 +285,7 @@ def _drums_style_plan_with_edit(track_name_value: str):
         "drums": FamilyStyle(
             reference="X", researched_at="2026-08-26",
             sources=["https://example.test/x"], confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         ),
     }

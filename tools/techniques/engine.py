@@ -999,105 +999,6 @@ def _returns_first_argument_unchanged(func: TechniqueApply) -> bool:
     )
 
 
-@register_technique("drums.accent_hierarchy", "humanize")
-def _apply_drums_accent_hierarchy(
-    mid: mido.MidiFile,
-    *,
-    context: TechniqueContext,
-) -> mido.MidiFile:
-    from .index import build_index
-
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-    params = {param.name: param for param in technique.parameters}
-
-    def range_for(name: str) -> tuple[int, int]:
-        param = params[name]
-        if param.range is None:
-            raise ValueError(
-                f"tecnica {context.canonical!r} nao declara range para {name!r}"
-            )
-        lo, hi = param.range
-        return int(lo), int(hi)
-
-    def target(range_: tuple[int, int]) -> int:
-        lo, hi = range_
-        return int(round((lo + hi) / 2))
-
-    hard_ceiling = int(params["hard_ceiling"].value)
-    ranges = {
-        "accent": range_for("accent"),
-        "primary": range_for("primary"),
-        "normal": range_for("normal"),
-        "soft": range_for("soft"),
-        "ghost": range_for("ghost"),
-    }
-    targets = {
-        name: min(target(range_), hard_ceiling)
-        for name, range_ in ranges.items()
-    }
-
-    ticks_per_beat = mid.ticks_per_beat
-    if ticks_per_beat <= 0:
-        return mid
-
-    # MIDI real chega humanizado: onset raramente cai em `tick == 0` do beat.
-    # Quantizamos ao 16-avo mais proximo e classificamos pela posicao metrica
-    # dele — sem tolerancia, snare backbeat a 5 ticks do beat cai como ghost e
-    # a hierarquia inteira desaba (mediana caixa 32 sobre a levada real).
-    sixteenth = max(1, ticks_per_beat // 4)
-
-    def layer_for(note: int, tick: int) -> str:
-        # General MIDI / SD3 core map from knowledge/tecnicas/tecnicas_bateria_midi.md.
-        kicks = {35, 36}
-        snares = {37, 38, 40}
-        hi_hats = {
-            10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26, 42,
-            44, 46, 60, 61, 62, 63, 64,
-        }
-        crashes = {49, 52, 55, 57, 59}
-
-        nearest_16th = round(tick / sixteenth)
-        subdivision = nearest_16th % 4
-        on_beat = subdivision == 0
-
-        if note in crashes:
-            return "accent"
-        if note in snares:
-            return "accent" if on_beat else "ghost"
-        if note in kicks:
-            return "primary" if on_beat else "normal"
-        if note in hi_hats:
-            return "normal" if on_beat else "soft"
-        return "normal" if on_beat else "soft"
-
-    def velocity_for(current: int, layer: str) -> int:
-        # Chapada (>hard_ceiling) sempre entra na camada alvo; valores abaixo do
-        # teto sao considerados intencionais e ficam intactos, para nao apagar
-        # uma track ja humanizada.
-        if current <= hard_ceiling:
-            return current
-        return max(1, targets[layer])
-
-    for track in mid.tracks:
-        tick = 0
-        for msg in track:
-            tick += msg.time
-            if (
-                msg.is_meta
-                or msg.type != "note_on"
-                or msg.velocity <= 0
-                or msg.channel != 9
-            ):
-                continue
-            layer = layer_for(msg.note, tick)
-            msg.velocity = velocity_for(msg.velocity, layer)
-    return mid
-
-
 @register_technique("drums.ghost_notes", "technique")
 def _apply_drums_ghost_notes(
     mid: mido.MidiFile,
@@ -1163,6 +1064,14 @@ def _apply_drums_ghost_notes(
         return mid
     sixteenth = max(1, ticks_per_beat // 4)
     gate = max(1, sixteenth // 2)
+    # Ghost note mora DENTRO de uma levada, entre dois backbeats que de fato
+    # se seguem. Backbeats consecutivos separados por mais que um compasso
+    # (4 tempos em 4/4, o que ja cobre meio-tempo com caixa so no 3) nao sao
+    # um intervalo de groove: sao a borda de um break. Emparelhar por cima
+    # do break faz o loop varrer semicolcheias por cima do silencio e semear
+    # ghost no vazio — foi o que apareceu nos compassos 53-54 de DEIXE IR,
+    # com a nota estrutural mais proxima a 18 tempos de distancia.
+    max_groove_interval = ticks_per_beat * 4
     rng = context.rng("positions")
     velocity_rng = context.rng("velocity")
     density = context.parameters.get("density")
@@ -1328,6 +1237,8 @@ def _apply_drums_ghost_notes(
 
         candidates = []
         for current, following in zip(backbeats, backbeats[1:], strict=False):
+            if following - current > max_groove_interval:
+                continue
             tick = current + sixteenth
             while tick < following:
                 if tick != following - sixteenth:

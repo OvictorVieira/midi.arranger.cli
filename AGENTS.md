@@ -104,6 +104,14 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   aceito pelo schema, validado contra a faixa do manual e depois ignorado na aplicação é parâmetro
   mentiroso — mesma categoria de `_identity_apply`. Ao escrever técnica nova, leia `context.parameters`
   antes de cair na receita.
+- Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
+  plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
+  silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
+  bateria de andaime). Hoje está nessa situação `drums.accent_hierarchy` (issue #50).
+- Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
+  no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
+  63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por
+  trecho** contra a origem — média e desvio globais já mascararam essa inversão nesta base.
 - Parâmetro de intensidade zerado (`density=0.0` e equivalentes) significa **desligar a técnica**,
   não "mínimo de um". Em loop de seleção, cheque o teto ANTES de acrescentar o candidato: checar
   depois deixa `wanted == 0` passar sempre por um elemento.

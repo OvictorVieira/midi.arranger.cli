@@ -153,37 +153,11 @@ def _track_messages(mid_path: Path, name: str) -> list[str]:
     return []
 
 
-def test_accent_hierarchy_redistributes_velocity_on_source_track(tmp_path):
-    src = _build_flat_drum_source(tmp_path)
-    plan = _plan_with_drum_edit(
-        src, profile="drums", techniques=["drums.accent_hierarchy"],
-    )
-    out = tmp_path / "out.mid"
-    render(plan, out)
-
-    out_notes = _drum_note_events(out)
-    src_notes = _drum_note_events(src)
-    assert len(out_notes) == len(src_notes), (
-        "accent_hierarchy e humanize: nao pode acrescentar nem remover nota"
-    )
-    velocities = [vel for *_, vel in out_notes]
-    assert max(velocities) < 127, "127 chapado tem que sair"
-    assert max(velocities) <= 115, "hard_ceiling do manual e 115"
-    kicks = [vel for _s, _e, pitch, vel in out_notes if pitch == 36]
-    snares = [vel for _s, _e, pitch, vel in out_notes if pitch == 38]
-    assert kicks and snares
-    # accent_hierarchy: snare em backbeat vira acento (105-120, alvo 112),
-    # kick em beat 1/3 fica na camada normal (80-100).
-    assert min(snares) > max(kicks), (
-        "snare backbeat tem que ficar acima do kick on-beat"
-    )
-
-
 def test_ghost_notes_adds_ornaments_between_backbeats_on_source_track(tmp_path):
     src = _build_flat_drum_source(tmp_path)
     plan = _plan_with_drum_edit(
         src, profile="drums",
-        techniques=["drums.accent_hierarchy", "drums.ghost_notes"],
+        techniques=["drums.ghost_notes"],
     )
     out = tmp_path / "out.mid"
     render(plan, out)
@@ -204,7 +178,7 @@ def test_neighbor_track_stays_byte_identical_when_drums_gets_style(tmp_path):
     src = _build_flat_drum_source(tmp_path)
     plan = _plan_with_drum_edit(
         src, profile="drums",
-        techniques=["drums.accent_hierarchy", "drums.ghost_notes"],
+        techniques=["drums.ghost_notes"],
     )
     out = tmp_path / "out.mid"
     render(plan, out)
@@ -222,7 +196,7 @@ def test_generic_profile_does_not_receive_style_technique(tmp_path):
 
     src = _build_flat_drum_source(tmp_path)
     plan = _plan_with_drum_edit(
-        src, profile="generic", techniques=["drums.accent_hierarchy"],
+        src, profile="generic", techniques=["drums.ghost_notes"],
     )
     out = tmp_path / "out.mid"
     render(plan, out)
@@ -237,11 +211,11 @@ def test_style_on_edits_is_deterministic_byte_for_byte(tmp_path):
     src = _build_flat_drum_source(tmp_path)
     plan_a = _plan_with_drum_edit(
         src, profile="drums",
-        techniques=["drums.accent_hierarchy", "drums.ghost_notes"],
+        techniques=["drums.ghost_notes"],
     )
     plan_b = _plan_with_drum_edit(
         src, profile="drums",
-        techniques=["drums.accent_hierarchy", "drums.ghost_notes"],
+        techniques=["drums.ghost_notes"],
     )
     out_a = tmp_path / "a.mid"
     out_b = tmp_path / "b.mid"

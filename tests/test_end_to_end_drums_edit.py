@@ -115,7 +115,6 @@ def _plan_with_full_drum_pipeline(src: Path) -> ArrangementPlan:
                 sources=["https://example.test/drums"],
                 confidence="high",
                 techniques=[
-                    StyleTechnique(name="drums.accent_hierarchy"),
                     StyleTechnique(name="drums.ghost_notes"),
                 ],
                 parameters={},
@@ -189,10 +188,20 @@ def test_end_to_end_edits_drums_with_real_registry(tmp_path):
 
     velocities = [vel for *_, vel in out_events]
     assert velocities, "esperava eventos de bateria na saida"
-    assert max(velocities) < 127, "nenhuma nota pode sair em 127 chapado"
-    assert max(velocities) <= 115, (
-        "hard_ceiling do manual e 115 — accent_hierarchy tem que respeitar"
-    )
+    # `ghost_notes` e nivel technique: so ACRESCENTA. A dinamica que o usuario
+    # escreveu na origem sai intacta, inclusive os 127 — rebaixar velocity de
+    # nota estrutural e o defeito que tirou `drums.accent_hierarchy` do motor
+    # (issue #50). O unico piso e o da faixa ghost, que vale para o ornamento.
+    src_velocity = {
+        (start, end, pitch): vel for start, end, pitch, vel in src_events
+    }
+    for start, end, pitch, vel in out_events:
+        key = (start, end, pitch)
+        if key in src_velocity:
+            assert vel == src_velocity[key], (
+                f"velocity estrutural em {key} mudou de "
+                f"{src_velocity[key]} para {vel}"
+            )
     assert min(velocities) >= 20, (
         "faixa ghost do manual comeca em 20 — nada pode cair abaixo"
     )

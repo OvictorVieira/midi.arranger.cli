@@ -430,6 +430,24 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
 
 ### 7.1 Hierarquia de acento
 
+> **NÃO IMPLEMENTADA NO MOTOR — ver issue #50.** A técnica continua documentada aqui porque o
+> conhecimento está certo; o que estava errado era a implementação. Ela decidia a camada **só pela
+> posição métrica**, sem nenhuma noção de virada, então dentro de uma virada — onde quase toda nota
+> é contratempo — rebaixava tudo. Medido sobre `tests/fixtures/corpus_drums/DEIXE IR.mid`: 63 das 65
+> caixas em contratempo com velocity de origem ≥ 110 saíam ≤ 45, e a mediana dos toms caía de 127
+> para 67. A hierarquia invertia a intenção: quem escreve 127 não está escrevendo ghost note.
+>
+> Note que a tabela de camadas da §2.2 já distingue **"acento de virada"** (105–120) de **"tom de
+> preenchimento"** (55–79). O motor nunca implementou a primeira e jogava todo tom na segunda —
+> era leitura errada deste manual, não falta de informação.
+>
+> Reimplementar exige separar contexto de groove de contexto de virada, e o limiar quantitativo de
+> virada é **lacuna declarada** na §11. Qualquer limiar adotado entra como `CONVENÇÃO`, com
+> justificativa, nunca como número solto no dispatch.
+>
+> Enquanto isso, plano que declare `drums.accent_hierarchy` recebe `PlanValidationError` explícito.
+> Não vira no-op silencioso.
+
 ```technique
 {
   "name": "accent_hierarchy",

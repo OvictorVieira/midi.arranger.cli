@@ -170,7 +170,7 @@ carimbo é ASCII puro (o meta-evento SMF de texto não carrega encoding) e usa
 `|` como separador entre `chave=valor`:
 
 ```
-midi-arranger v1|role=drums|plugin=Superior Drummer|preset=Metal Kit|verified=true|techniques=[drums.accent_hierarchy,drums.ghost_notes]
+midi-arranger v1|role=drums|plugin=Superior Drummer|preset=Metal Kit|verified=true|techniques=[drums.ghost_notes]
 ```
 
 Campos, sempre nessa ordem quando presentes:

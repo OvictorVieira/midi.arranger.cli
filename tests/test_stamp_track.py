@@ -150,7 +150,6 @@ def test_edit_track_stamp_includes_applied_techniques(tmp_path):
             reference="Drummer", researched_at="2026-08-24",
             sources=["https://example.test/drums"], confidence="high",
             techniques=[
-                StyleTechnique(name="drums.accent_hierarchy"),
                 StyleTechnique(name="drums.ghost_notes"),
             ],
             parameters={},
@@ -164,7 +163,7 @@ def test_edit_track_stamp_includes_applied_techniques(tmp_path):
     stamp = texts[0]
     assert stamp.startswith(STAMP_PREFIX)
     assert "role=drums" in stamp
-    assert "techniques=[drums.accent_hierarchy,drums.ghost_notes]" in stamp
+    assert "techniques=[drums.ghost_notes]" in stamp
     # sem sugestao: nao aparece
     assert "suggested_plugin" not in stamp
 
@@ -251,7 +250,7 @@ def test_untouched_source_track_receives_no_stamp(tmp_path):
         "drums": FamilyStyle(
             reference="Drummer", researched_at="2026-08-24",
             sources=["https://example.test/drums"], confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         ),
     }
@@ -291,7 +290,7 @@ def test_stamp_is_deterministic_byte_for_byte(tmp_path):
             "drums": FamilyStyle(
                 reference="Drummer", researched_at="2026-08-24",
                 sources=["https://example.test/drums"], confidence="high",
-                techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+                techniques=[StyleTechnique(name="drums.ghost_notes")],
                 parameters={},
             ),
         }

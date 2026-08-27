@@ -373,7 +373,7 @@ def test_plan_validate_rejects_documented_but_unimplemented_style_technique():
     err = env["data"]["errors"][0]
     assert err["path"] == "style.keys.techniques[0].name"
     assert "not implemented by the engine" in err["message"]
-    assert "drums.accent_hierarchy" in err["message"]
+    assert "drums.ghost_notes" in err["message"]
 
 
 def test_plan_validate_rejects_style_technique_from_other_family():

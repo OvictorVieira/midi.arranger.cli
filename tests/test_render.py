@@ -458,7 +458,7 @@ def test_render_accepts_plan_validated_with_supported_style_technique(tmp_path):
             researched_at="2026-08-24",
             sources=["https://example.test/drums"],
             confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         ),
     }

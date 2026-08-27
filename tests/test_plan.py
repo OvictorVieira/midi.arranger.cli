@@ -327,7 +327,7 @@ def test_validate_accepts_canonical_style_technique_name():
             researched_at="2026-08-24",
             sources=["https://example.test/drums"],
             confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         )
     }
@@ -353,7 +353,6 @@ def test_validate_rejects_documented_but_unimplemented_style_technique():
     assert exc.value.path == "style.keys.techniques[0].name"
     assert "exists in techniques index" in exc.value.message
     assert "not implemented by the engine" in exc.value.message
-    assert "drums.accent_hierarchy" in exc.value.message
     assert "drums.ghost_notes" in exc.value.message
 
 
@@ -604,7 +603,7 @@ def test_validate_accepts_style_parameter_without_manual_range():
             researched_at="2026-08-24",
             sources=["https://example.test/drums"],
             confidence="medium",
-            techniques=[StyleTechnique(name="accent_hierarchy")],
+            techniques=[StyleTechnique(name="ghost_notes")],
             parameters={"hard_ceiling": 999},
         )
     }
