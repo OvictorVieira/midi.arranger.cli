@@ -1889,6 +1889,218 @@ def _apply_drums_articulation_diff(
     return mid
 
 
+@register_technique(
+    "drums.cymbal_choke",
+    "technique",
+    allow_structural_duration_change=True,
+)
+def _apply_drums_cymbal_choke(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        available = sorted(technique.tools.keys())
+        raise ValueError(
+            f"tecnica {context.canonical!r} exige ferramenta-alvo; "
+            f"receitas disponiveis: {available!r}"
+        )
+
+    def notes_for(name):
+        values = recipe.get(name)
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(note, int) for note in values)
+        ):
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} "
+                "como lista de MIDI ints"
+            )
+        return tuple(int(note) for note in values)
+
+    target_notes = notes_for("target_notes")
+    choke_notes = notes_for("notes")
+
+    def positive_float(name):
+        value = recipe.get(name)
+        if not isinstance(value, (int, float)) or float(value) <= 0:
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} "
+                "como numero positivo na receita"
+            )
+        return float(value)
+
+    choke_after_beats = positive_float("choke_after_beats")
+    short_ceiling_beats = positive_float("short_ceiling_beats")
+
+    density = context.parameters.get("density")
+    if isinstance(density, (int, float)) and float(density) <= 0.0:
+        return mid
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    choke_after_ticks = max(1, int(round(ticks_per_beat * choke_after_beats)))
+    short_ceiling_ticks = max(1, int(round(ticks_per_beat * short_ceiling_beats)))
+    choke_gate_ticks = max(1, min(choke_after_ticks, ticks_per_beat // 16))
+
+    def note_pairs(track):
+        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append((
+                    tick,
+                    msg.velocity,
+                    msg_index,
+                ))
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity, note_on_index = stack.pop(0)
+                yield {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": start_tick,
+                    "end": tick,
+                    "duration": tick - start_tick,
+                    "velocity": velocity,
+                    "note_on_index": note_on_index,
+                    "note_off_index": msg_index,
+                }
+
+    def target_count(size):
+        if size <= 0:
+            return 0
+        if isinstance(density, (int, float)):
+            requested = float(density)
+            if requested <= 0.0:
+                return 0
+            return max(1, min(size, int(round(size * requested))))
+        return size
+
+    def select_targets(candidates):
+        wanted = target_count(len(candidates))
+        if wanted == 0:
+            return []
+        shuffled = list(candidates)
+        context.rng("targets").shuffle(shuffled)
+        return sorted(shuffled[:wanted], key=lambda item: (
+            item["track_index"],
+            item["start"],
+            item["pitch"],
+        ))
+
+    def rebuild_track(track, end_by_index, chokes):
+        absolute = []
+        tick = 0
+        order = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            absolute_tick = end_by_index.get(msg_index, tick)
+            absolute.append((absolute_tick, order, msg))
+            order += 1
+
+        for choke in chokes:
+            absolute.append((
+                choke["start"],
+                order,
+                _mido.Message(
+                    "note_on",
+                    channel=choke["channel"],
+                    note=choke["pitch"],
+                    velocity=choke["velocity"],
+                ),
+            ))
+            order += 1
+            absolute.append((
+                choke["end"],
+                order,
+                _mido.Message(
+                    "note_off",
+                    channel=choke["channel"],
+                    note=choke["pitch"],
+                    velocity=0,
+                ),
+            ))
+            order += 1
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _order, msg in sorted(
+            absolute,
+            key=lambda item: (item[0], item[1]),
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    candidates = []
+    target_note_set = set(target_notes)
+    for track_index, track in enumerate(mid.tracks):
+        for note in note_pairs(track):
+            if (
+                note["channel"] != 9
+                or note["pitch"] not in target_note_set
+                or note["duration"] <= short_ceiling_ticks
+            ):
+                continue
+            choke_start = note["start"] + choke_after_ticks
+            if choke_start >= note["end"]:
+                continue
+            candidates.append({
+                "track_index": track_index,
+                "channel": int(note["channel"]),
+                "pitch": int(note["pitch"]),
+                "start": int(note["start"]),
+                "choke_start": int(choke_start),
+                "choke_end": int(choke_start + choke_gate_ticks),
+                "velocity": max(1, min(126, int(note["velocity"]))),
+                "note_off_index": int(note["note_off_index"]),
+            })
+
+    by_track: dict[int, list[dict[str, int]]] = {}
+    for candidate in select_targets(candidates):
+        by_track.setdefault(candidate["track_index"], []).append(candidate)
+
+    for track_index, track_candidates in by_track.items():
+        end_by_index = {
+            candidate["note_off_index"]: candidate["choke_start"]
+            for candidate in track_candidates
+        }
+        chokes = [
+            {
+                "channel": candidate["channel"],
+                "pitch": choke_notes[position % len(choke_notes)],
+                "velocity": candidate["velocity"],
+                "start": candidate["choke_start"],
+                "end": candidate["choke_end"],
+            }
+            for position, candidate in enumerate(track_candidates)
+        ]
+        rebuild_track(mid.tracks[track_index], end_by_index, chokes)
+
+    return mid
+
+
 @register_technique("drums.microtiming", "humanize")
 def _apply_drums_microtiming(
     mid: mido.MidiFile,

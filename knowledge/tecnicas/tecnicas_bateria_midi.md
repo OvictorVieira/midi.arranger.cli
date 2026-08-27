@@ -598,8 +598,20 @@ tutoriais dá número.
   "description": "AD2 tem notas de choke dedicadas (hi-hat NAO tem choke). SD3 tem tres rotas: nota Mute Hit, Note Off, ou aftertouch. Cuidado no SD3: se Mute Tail Trigger estiver em Note Off, o comprimento da nota do prato passa a ter significado musical.",
   "parameters": [],
   "tools": {
-    "addictive_drums": {"notes": [63, 78, 80, 82, 87, 90, 92, 94], "note": "hi-hat nao tem choke"},
-    "superior_drummer": {"notes": [50, 54, 56, 58, 83, 94, 95, 106, 107, 118], "note": "Mute Hit dedicado; ou Note Off; ou aftertouch"}
+    "addictive_drums": {
+      "target_notes": [60, 77, 79, 81, 89, 91, 93],
+      "notes": [63, 78, 80, 82, 87, 90, 92, 94],
+      "choke_after_beats": 0.5,
+      "short_ceiling_beats": 0.25,
+      "note": "hi-hat nao tem choke; duracao curta sem choke e convencao operacional para nao matar prato ja abafado"
+    },
+    "superior_drummer": {
+      "target_notes": [49, 52, 55, 57, 59],
+      "notes": [50, 54, 56, 58, 83, 94, 95, 106, 107, 118],
+      "choke_after_beats": 0.5,
+      "short_ceiling_beats": 0.25,
+      "note": "Mute Hit dedicado; ou Note Off; ou aftertouch. Duracao curta sem choke e convencao operacional para nao matar prato ja abafado"
+    }
   }
 }
 ```

@@ -181,6 +181,7 @@ def test_supported_techniques_is_derived_from_the_registry():
     assert SUPPORTED_TECHNIQUES == (
         "drums.accented_roll",
         "drums.articulation_diff",
+        "drums.cymbal_choke",
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
@@ -196,6 +197,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     assert exc.value.available == (
         "drums.accented_roll",
         "drums.articulation_diff",
+        "drums.cymbal_choke",
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
@@ -427,10 +429,14 @@ def test_humanize_contract_rejects_note_on_order_changes():
 
 
 def test_registered_techniques_preserve_structural_notes_by_default():
+    index = build_index(MANUALS_DIR)
     for tech in registered_techniques():
         if tech.level != "technique":
             continue
         if tech.allow_structural_pitch_change:
+            continue
+        manual_technique = index.get(tech.canonical)
+        if manual_technique is not None and "generic" not in manual_technique.tools:
             continue
 
         source = _midi_with_two_notes()
@@ -1655,6 +1661,125 @@ def test_drums_articulation_diff_is_seed_deterministic_byte_for_byte():
     )
 
     assert _midi_bytes(same_a) == _midi_bytes(same_b)
+
+
+def test_drums_cymbal_choke_shortens_long_cymbal_and_adds_declared_choke_note():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 960, 49, 112),
+        (960, 1020, 38, 108),
+    ])
+
+    result = apply_technique(
+        "drums.cymbal_choke",
+        source,
+        seed=66,
+        tool="superior_drummer",
+    )
+
+    notes = _note_tuples(result)
+    assert (1, 9, 49, 0, 240, 112) in notes
+    assert (1, 9, 50, 240, 270, 112) in notes
+    assert (1, 9, 38, 960, 1020, 108) in notes
+
+
+def test_drums_cymbal_choke_uses_addictive_drums_recipe_notes():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 960, 77, 100),
+        (960, 1920, 79, 104),
+    ])
+
+    result = apply_technique_with_warnings(
+        "drums.cymbal_choke",
+        source,
+        seed=67,
+        tool="addictive_drums",
+        index=_technique_index(
+            "drums.cymbal_choke",
+            {
+                "addictive_drums": {
+                    "target_notes": [77, 79],
+                    "notes": [78, 80],
+                    "choke_after_beats": 0.25,
+                    "short_ceiling_beats": 0.5,
+                },
+            },
+        ),
+    )
+
+    assert result.warnings == ()
+    assert (1, 9, 77, 0, 120, 100) in _note_tuples(result.result)
+    assert (1, 9, 78, 120, 150, 100) in _note_tuples(result.result)
+    assert (1, 9, 79, 960, 1080, 104) in _note_tuples(result.result)
+    assert (1, 9, 80, 1080, 1110, 104) in _note_tuples(result.result)
+
+
+def test_drums_cymbal_choke_rejects_tool_without_recipe_before_apply():
+    source = _midi_with_notes("Drums", 9, [(0, 960, 49, 112)])
+
+    with pytest.raises(TechniqueRecipeError, match="nem fallback generic"):
+        apply_technique_with_warnings(
+            "drums.cymbal_choke",
+            source,
+            seed=68,
+            tool="generic",
+            index=_technique_index(
+                "drums.cymbal_choke",
+                {
+                    "superior_drummer": {
+                        "target_notes": [49],
+                        "notes": [50],
+                        "choke_after_beats": 0.5,
+                        "short_ceiling_beats": 0.25,
+                    },
+                },
+            ),
+        )
+
+
+def test_drums_cymbal_choke_does_not_touch_short_cymbal():
+    source = _midi_with_notes("Drums", 9, [(0, 120, 49, 112)])
+
+    result = apply_technique(
+        "drums.cymbal_choke",
+        source,
+        seed=69,
+        tool="superior_drummer",
+    )
+
+    assert _midi_bytes(result) == _midi_bytes(source)
+
+
+def test_drums_cymbal_choke_is_idempotent_and_seed_deterministic():
+    source_a = _midi_with_notes("Drums", 9, [
+        (0, 960, 49, 112),
+        (960, 1920, 52, 108),
+    ])
+    source_b = _midi_with_notes("Drums", 9, [
+        (0, 960, 49, 112),
+        (960, 1920, 52, 108),
+    ])
+
+    once = apply_technique(
+        "drums.cymbal_choke",
+        source_a,
+        seed=70,
+        tool="superior_drummer",
+    )
+    twice = apply_technique(
+        "drums.cymbal_choke",
+        once,
+        seed=70,
+        tool="superior_drummer",
+    )
+    same = apply_technique(
+        "drums.cymbal_choke",
+        source_b,
+        seed=70,
+        tool="superior_drummer",
+    )
+
+    assert _midi_bytes(twice) == _midi_bytes(once)
+    assert _midi_bytes(same) == _midi_bytes(once)
 
 
 def test_apply_uses_requested_tool_recipe_without_warning():
