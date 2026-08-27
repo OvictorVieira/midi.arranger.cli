@@ -177,7 +177,11 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert SUPPORTED_TECHNIQUES == ("drums.flam", "drums.ghost_notes")
+    assert SUPPORTED_TECHNIQUES == (
+        "drums.flam",
+        "drums.ghost_notes",
+        "drums.microtiming",
+    )
 
 
 def test_global_dispatch_rejects_documented_but_unimplemented_technique():
@@ -186,7 +190,11 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError) as exc:
         apply_technique("drums.accent_hierarchy", payload, seed=1)
 
-    assert exc.value.available == ("drums.flam", "drums.ghost_notes")
+    assert exc.value.available == (
+        "drums.flam",
+        "drums.ghost_notes",
+        "drums.microtiming",
+    )
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
@@ -1192,6 +1200,122 @@ def test_drums_flam_is_idempotent():
     assert _midi_bytes(twice) == once_bytes
 
 
+def test_drums_microtiming_moves_hihat_without_changing_pitch_or_count():
+    source = _midi_hihat_ostinato(16)
+    before_notes = _note_tuples(source)
+
+    result = apply_technique("drums.microtiming", source, seed=41)
+
+    after_notes = _note_tuples(result)
+    assert [(n[0], n[1], n[2], n[4] - n[3], n[5]) for n in after_notes] == [
+        (n[0], n[1], n[2], n[4] - n[3], n[5]) for n in before_notes
+    ]
+    assert _hihat_offsets_ms(_midi_hihat_ostinato(16), result)
+
+
+def test_drums_microtiming_never_exceeds_sloppy_threshold():
+    source = _midi_hihat_ostinato(48)
+
+    result = apply_technique(
+        "drums.microtiming",
+        source,
+        seed=42,
+        parameters={
+            "hihat_timing_sigma_ms": 200,
+            "hihat_autocorr_lag1": -0.48,
+            "perception_threshold_ms": 5,
+            "musical_range_ms": [100, 100],
+            "sloppy_threshold_ms": 50,
+        },
+    )
+
+    assert max(abs(offset) for offset in _hihat_offsets_ms(
+        _midi_hihat_ostinato(48),
+        result,
+    )) <= 50
+
+
+def test_drums_microtiming_is_seed_deterministic_byte_for_byte():
+    same_a = apply_technique("drums.microtiming", _midi_hihat_ostinato(32), seed=43)
+    same_b = apply_technique("drums.microtiming", _midi_hihat_ostinato(32), seed=43)
+    different = apply_technique(
+        "drums.microtiming",
+        _midi_hihat_ostinato(32),
+        seed=44,
+    )
+
+    assert _midi_bytes(same_a) == _midi_bytes(same_b)
+    assert _midi_bytes(same_a) != _midi_bytes(different)
+
+
+def test_drums_microtiming_offsets_are_lag1_anticorrelated():
+    source = _midi_hihat_ostinato(128)
+    result = apply_technique("drums.microtiming", source, seed=45)
+    offsets = _hihat_offsets_ms(_midi_hihat_ostinato(128), result)
+
+    assert _lag1_autocorrelation(offsets) < -0.2
+
+
+def test_drums_microtiming_does_not_move_before_zero_or_swap_neighbors():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 60, 42, 80),
+        (100, 160, 36, 100),
+        (110, 170, 42, 82),
+        (120, 180, 38, 105),
+    ])
+
+    result = apply_technique(
+        "drums.microtiming",
+        source,
+        seed=46,
+        parameters={
+            "hihat_timing_sigma_ms": 200,
+            "hihat_autocorr_lag1": -0.48,
+            "perception_threshold_ms": 5,
+            "musical_range_ms": [100, 100],
+            "sloppy_threshold_ms": 50,
+        },
+    )
+
+    starts = [note[3] for note in _note_tuples(result)]
+    pitches = [note[2] for note in _note_tuples(result)]
+    assert min(starts) >= 0
+    assert pitches == [42, 36, 42, 38]
+    assert starts == sorted(starts)
+
+
+def test_drums_microtiming_uses_requested_tool_hihat_recipe():
+    source = _midi_with_notes("Drums", 9, [
+        (240, 300, 42, 80),
+        (480, 540, 61, 82),
+    ])
+
+    result = apply_technique_with_warnings(
+        "drums.microtiming",
+        source,
+        seed=47,
+        tool="superior_drummer",
+        parameters={
+            "hihat_timing_sigma_ms": 8.7,
+            "hihat_autocorr_lag1": -0.48,
+            "perception_threshold_ms": 5,
+            "musical_range_ms": [5, 20],
+            "sloppy_threshold_ms": 50,
+        },
+        index=_technique_index(
+            "drums.microtiming",
+            {
+                "generic": {"hihat_notes": [42]},
+                "superior_drummer": {"hihat_notes": [61]},
+            },
+        ),
+    )
+
+    assert result.warnings == ()
+    assert _note_tuples(result.result)[0][3] == 240
+    assert _note_tuples(result.result)[1][3] != 480
+
+
 def test_apply_uses_requested_tool_recipe_without_warning():
     registry = TechniqueRegistry()
 
@@ -1982,6 +2106,48 @@ def _midi_with_ghost_note_window(
     if extra_notes:
         notes.extend(extra_notes)
     return _midi_with_notes("Drums", 9, notes)
+
+
+def _midi_hihat_ostinato(count: int) -> mido.MidiFile:
+    notes = [
+        (240 * index, 240 * index + 60, 42, 78 + index % 2)
+        for index in range(count)
+    ]
+    return _midi_with_notes("Drums", 9, notes)
+
+
+def _hihat_offsets_ms(
+    before: mido.MidiFile,
+    after: mido.MidiFile,
+) -> list[float]:
+    before_starts = [
+        start
+        for _track, channel, pitch, start, _end, _velocity
+        in _note_tuples(before)
+        if channel == 9 and pitch == 42
+    ]
+    after_starts = [
+        start
+        for _track, channel, pitch, start, _end, _velocity
+        in _note_tuples(after)
+        if channel == 9 and pitch == 42
+    ]
+    ticks_per_ms = before.ticks_per_beat * 1000 / 500_000
+    return [
+        (after_tick - before_tick) / ticks_per_ms
+        for before_tick, after_tick in zip(before_starts, after_starts, strict=True)
+        if after_tick != before_tick
+    ]
+
+
+def _lag1_autocorrelation(values: list[float]) -> float:
+    if len(values) < 3:
+        return 0.0
+    mean = sum(values) / len(values)
+    centered = [value - mean for value in values]
+    numerator = sum(a * b for a, b in zip(centered, centered[1:], strict=False))
+    denominator = sum(value * value for value in centered)
+    return numerator / denominator
 
 
 def _new_note_tuples(

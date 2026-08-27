@@ -1528,6 +1528,222 @@ def _apply_drums_flam(
     return mid
 
 
+@register_technique("drums.microtiming", "humanize")
+def _apply_drums_microtiming(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import math as _math
+
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
+
+    hihat_notes = recipe.get("hihat_notes")
+    if (
+        not isinstance(hihat_notes, list)
+        or not hihat_notes
+        or not all(isinstance(note, int) for note in hihat_notes)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar hihat_notes na receita"
+        )
+    hihat_note_set = set(hihat_notes)
+
+    params = {param.name: param for param in technique.parameters}
+
+    def parameter_value(name, fallback=None):
+        value = context.parameters.get(name)
+        if value is not None:
+            if (
+                isinstance(value, (list, tuple))
+                and len(value) == 2
+                and all(isinstance(item, (int, float)) for item in value)
+            ):
+                return (float(value[0]) + float(value[1])) / 2
+            if isinstance(value, (int, float)):
+                return float(value)
+        parameter = params.get(name)
+        if parameter is None:
+            return fallback
+        if parameter.value is not None:
+            return float(parameter.value)
+        if parameter.range is not None:
+            return (float(parameter.range[0]) + float(parameter.range[1])) / 2
+        return fallback
+
+    density = context.parameters.get("density")
+    if isinstance(density, (int, float)) and float(density) <= 0.0:
+        return mid
+
+    sigma_ms = parameter_value("hihat_timing_sigma_ms")
+    autocorr = parameter_value("hihat_autocorr_lag1")
+    perception_ms = parameter_value("perception_threshold_ms")
+    musical_hi_ms = parameter_value("musical_range_ms")
+    sloppy_ms = parameter_value("sloppy_threshold_ms")
+    if (
+        sigma_ms is None
+        or autocorr is None
+        or perception_ms is None
+        or musical_hi_ms is None
+        or sloppy_ms is None
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar "
+            "hihat_timing_sigma_ms, hihat_autocorr_lag1, "
+            "perception_threshold_ms, musical_range_ms e sloppy_threshold_ms"
+        )
+    if sigma_ms <= 0 or sloppy_ms <= 0:
+        return mid
+    autocorr = max(-0.95, min(0.95, float(autocorr)))
+    max_abs_ms = min(float(sloppy_ms), float(musical_hi_ms))
+    if max_abs_ms <= 0:
+        return mid
+
+    tempo = 500_000
+    for track in mid.tracks:
+        absolute_tick = 0
+        for msg in track:
+            absolute_tick += msg.time
+            if msg.is_meta and msg.type == "set_tempo":
+                tempo = msg.tempo
+                break
+        if tempo != 500_000:
+            break
+    ticks_per_ms = mid.ticks_per_beat * 1000 / tempo
+    max_abs_ticks = max(1, int(_math.floor(max_abs_ms * ticks_per_ms)))
+    perception_ticks = max(1, int(round(float(perception_ms) * ticks_per_ms)))
+
+    def note_pairs(track):
+        pending = {}
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append(
+                    (tick, msg_index)
+                )
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, note_on_index = stack.pop(0)
+                yield {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": start_tick,
+                    "end": tick,
+                    "note_on_index": note_on_index,
+                    "note_off_index": msg_index,
+                }
+
+    def note_on_events(track):
+        events = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if (
+                not msg.is_meta
+                and msg.type == "note_on"
+                and msg.velocity > 0
+            ):
+                events.append((msg_index, tick))
+        return events
+
+    def clamp_offset(offset, current_tick, previous_tick, next_tick):
+        lower = -max_abs_ticks
+        upper = max_abs_ticks
+        if current_tick + lower < 0:
+            lower = -current_tick
+        if previous_tick is not None:
+            lower = max(lower, previous_tick - current_tick)
+        if next_tick is not None:
+            upper = min(upper, next_tick - current_tick)
+        if lower > upper:
+            return 0
+        clamped = max(lower, min(upper, offset))
+        if (
+            clamped != 0
+            and abs(clamped) < perception_ticks
+            and lower <= (perception_ticks if clamped > 0 else -perception_ticks) <= upper
+        ):
+            return perception_ticks if clamped > 0 else -perception_ticks
+        return clamped
+
+    def rebuild_track(track, shifts):
+        absolute = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            absolute.append((tick + shifts.get(msg_index, 0), msg_index, msg))
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _msg_index, msg in sorted(
+            absolute,
+            key=lambda item: (item[0], item[1]),
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    rng = context.rng("hihat-offsets")
+    previous_series_ms = 0.0
+    scale = _math.sqrt(max(0.0, 1.0 - autocorr * autocorr))
+
+    for track in mid.tracks:
+        pairs = list(note_pairs(track))
+        if not pairs:
+            continue
+        ons = note_on_events(track)
+        previous_by_index = {}
+        next_by_index = {}
+        for pos, (msg_index, _tick) in enumerate(ons):
+            previous_by_index[msg_index] = ons[pos - 1][1] if pos > 0 else None
+            next_by_index[msg_index] = ons[pos + 1][1] if pos + 1 < len(ons) else None
+
+        shifts = {}
+        for pair in pairs:
+            if pair["channel"] != 9 or pair["pitch"] not in hihat_note_set:
+                continue
+            innovation = rng.gauss(0.0, float(sigma_ms)) * scale
+            series_ms = autocorr * previous_series_ms + innovation
+            previous_series_ms = series_ms
+            raw_ticks = int(round(series_ms * ticks_per_ms))
+            if raw_ticks == 0:
+                raw_ticks = 1 if series_ms >= 0 else -1
+            offset = clamp_offset(
+                raw_ticks,
+                pair["start"],
+                previous_by_index[pair["note_on_index"]],
+                next_by_index[pair["note_on_index"]],
+            )
+            if offset == 0:
+                continue
+            shifts[pair["note_on_index"]] = offset
+            shifts[pair["note_off_index"]] = offset
+
+        if shifts:
+            rebuild_track(track, shifts)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

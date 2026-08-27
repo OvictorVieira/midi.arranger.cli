@@ -560,7 +560,9 @@ tutoriais dá número.
     {"name": "sloppy_threshold_ms", "value": 50, "source": "Slam Tracks"}
   ],
   "tools": {
-    "generic": {"note": "aplique como offset absoluto em ms a cada nota; nao substitui hierarquia de acento"}
+    "generic": {"hihat_notes": [42, 44, 46], "note": "aplique como offset absoluto em ms a cada nota; nao substitui hierarquia de acento"},
+    "superior_drummer": {"hihat_notes": [10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26, 42, 44, 46, 60, 61, 62, 63, 64, 65, 119, 120, 121, 122, 123, 124], "note": "aliases de hi-hat do kit real do usuario e mapa de trabalho SD3"},
+    "addictive_drums": {"hihat_notes": [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59], "note": "AD2 resolve abertura por numero de nota"}
   }
 }
 ```
