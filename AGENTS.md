@@ -54,6 +54,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - O contrato do nível `technique` também é checado em `TechniqueRegistry.apply`: pode acrescentar
   ornamentos, CC e pitch bend, mas pitch e posição das notas estruturais são intocáveis; velocity e
   duração estrutural só mudam com flags explícitas no registro da técnica.
+- A única exceção para pitch estrutural em técnica de bateria é troca de articulação da mesma peça
+  (`drums.articulation_diff`): registre `allow_structural_pitch_change=True` e preserve contagem,
+  track, canal, início, duração e velocity. Não use essa flag para trocar conteúdo musical.
 - A idempotência de ornamentos do nível `technique` também fica em `TechniqueRegistry.apply`: ao
   reaplicar, nota extra com a mesma assinatura exata já existente (track/canal/pitch/início/fim),
   CC ou pitch bend com mesma assinatura (track/canal/tick/valor) é descartado antes da validação

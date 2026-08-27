@@ -75,6 +75,7 @@ def test_registered_technique_declares_canonical_level_and_apply_function():
     assert tech.canonical == "drums.ghost_notes"
     assert tech.level == "technique"
     assert callable(tech.apply)
+    assert tech.allow_structural_pitch_change is False
     assert tech.allow_structural_velocity_change is False
     assert tech.allow_structural_duration_change is False
 
@@ -179,6 +180,7 @@ def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
     assert SUPPORTED_TECHNIQUES == (
         "drums.accented_roll",
+        "drums.articulation_diff",
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
@@ -193,6 +195,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
 
     assert exc.value.available == (
         "drums.accented_roll",
+        "drums.articulation_diff",
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
@@ -427,6 +430,8 @@ def test_registered_techniques_preserve_structural_notes_by_default():
     for tech in registered_techniques():
         if tech.level != "technique":
             continue
+        if tech.allow_structural_pitch_change:
+            continue
 
         source = _midi_with_two_notes()
         result = apply_technique(tech.canonical, source, seed=1)
@@ -575,6 +580,56 @@ def test_technique_can_declare_structural_velocity_and_duration_changes():
 
     assert result.tracks[1][1].velocity == 72
     assert result.tracks[1][2].time == 300
+
+
+def test_technique_can_declare_structural_pitch_changes_only():
+    registry = TechniqueRegistry()
+
+    @registry.register(
+        "drums.articulation_diff",
+        "technique",
+        allow_structural_pitch_change=True,
+    )
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        on = mid.tracks[1][1]
+        off = mid.tracks[1][2]
+        mid.tracks[1][1] = on.copy(note=40)
+        mid.tracks[1][2] = off.copy(note=40)
+        return mid
+
+    result = registry.apply("drums.articulation_diff", _midi_with_two_notes(), seed=1)
+
+    assert _note_tuples(result) == [
+        (1, 9, 40, 0, 480, 96),
+        (1, 9, 64, 480, 960, 88),
+    ]
+
+
+def test_structural_pitch_permission_still_rejects_position_changes():
+    registry = TechniqueRegistry()
+
+    @registry.register(
+        "drums.articulation_diff",
+        "technique",
+        allow_structural_pitch_change=True,
+    )
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        on = mid.tracks[1][1]
+        mid.tracks[1][1] = on.copy(time=24)
+        return mid
+
+    with pytest.raises(TechniqueContractError, match="posicao"):
+        registry.apply("drums.articulation_diff", _midi_with_two_notes(), seed=1)
 
 
 def test_technique_application_is_idempotent_in_memory_byte_for_byte():
@@ -1461,6 +1516,142 @@ def test_drums_accented_roll_is_seed_deterministic_byte_for_byte():
             for index in range(8)
         ]),
         seed=57,
+    )
+
+    assert _midi_bytes(same_a) == _midi_bytes(same_b)
+
+
+def test_drums_articulation_diff_varies_repeated_hits_without_moving_them():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 60, 42, 80),
+        (240, 300, 42, 82),
+        (480, 540, 42, 84),
+        (720, 780, 42, 86),
+    ])
+    before = _note_tuples(source)
+
+    result = apply_technique(
+        "drums.articulation_diff",
+        source,
+        seed=61,
+        tool="superior_drummer",
+    )
+    after = _note_tuples(result)
+
+    assert [(n[0], n[1], n[3], n[4], n[5]) for n in after] == [
+        (n[0], n[1], n[3], n[4], n[5]) for n in before
+    ]
+    assert [pitch for _track, _channel, pitch, *_rest in after] == [22, 42, 22, 42]
+    assert len({pitch for _track, _channel, pitch, *_rest in after}) > 1
+
+
+def test_drums_articulation_diff_uses_addictive_drums_aliases_from_recipe():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 60, 49, 80),
+        (240, 300, 49, 82),
+        (1920, 1980, 60, 84),
+        (960, 1020, 60, 86),
+        (1440, 1500, 38, 112),
+    ])
+
+    result = apply_technique_with_warnings(
+        "drums.articulation_diff",
+        source,
+        seed=62,
+        tool="addictive_drums",
+        index=_technique_index(
+            "drums.articulation_diff",
+            {
+                "addictive_drums": {
+                    "hat_tip": [49, 51],
+                    "hat_edge": [50, 52],
+                    "ride_bow_tip": [60],
+                    "ride_bow_shank": [62],
+                    "ride_bell": [61],
+                    "snare_center": [38],
+                    "snare_rimshot": [37],
+                },
+            },
+        ),
+    )
+
+    assert result.warnings == ()
+    assert [pitch for _track, _channel, pitch, *_rest in _note_tuples(result.result)] == [
+        50,
+        49,
+        62,
+        37,
+        61,
+    ]
+
+
+def test_drums_articulation_diff_rejects_tool_without_recipe_before_apply():
+    source = _midi_with_notes("Drums", 9, [(0, 60, 42, 80)])
+
+    with pytest.raises(TechniqueRecipeError, match="nem fallback generic"):
+        apply_technique_with_warnings(
+            "drums.articulation_diff",
+            source,
+            seed=63,
+            tool="generic",
+            index=_technique_index(
+                "drums.articulation_diff",
+                {
+                    "superior_drummer": {
+                        "hat_tip": [42],
+                        "hat_edge": [22],
+                        "ride_bow_tip": [51],
+                        "ride_bow_shank": [116],
+                        "ride_bell": [53],
+                        "snare_center": [38],
+                        "snare_rimshot": [40],
+                    },
+                },
+            ),
+        )
+
+
+def test_drums_articulation_diff_density_zero_disables_technique():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 60, 42, 80),
+        (480, 540, 42, 84),
+    ])
+
+    result = apply_technique(
+        "drums.articulation_diff",
+        source,
+        seed=64,
+        tool="superior_drummer",
+        parameters={"density": 0.0},
+    )
+
+    assert _midi_bytes(result) == _midi_bytes(source)
+
+
+def test_drums_articulation_diff_is_seed_deterministic_byte_for_byte():
+    same_a = apply_technique(
+        "drums.articulation_diff",
+        _midi_with_notes("Drums", 9, [
+            (0, 60, 42, 80),
+            (240, 300, 42, 82),
+            (480, 540, 51, 84),
+            (960, 1020, 51, 86),
+            (1440, 1500, 38, 112),
+        ]),
+        seed=65,
+        tool="superior_drummer",
+    )
+    same_b = apply_technique(
+        "drums.articulation_diff",
+        _midi_with_notes("Drums", 9, [
+            (0, 60, 42, 80),
+            (240, 300, 42, 82),
+            (480, 540, 51, 84),
+            (960, 1020, 51, 86),
+            (1440, 1500, 38, 112),
+        ]),
+        seed=65,
+        tool="superior_drummer",
     )
 
     assert _midi_bytes(same_a) == _midi_bytes(same_b)

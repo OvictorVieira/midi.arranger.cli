@@ -13,6 +13,7 @@ import dis
 import hashlib
 import inspect
 import random
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
@@ -96,6 +97,7 @@ class RegisteredTechnique:
     canonical: str
     level: TechniqueLevel
     apply: TechniqueApply
+    allow_structural_pitch_change: bool = False
     allow_structural_velocity_change: bool = False
     allow_structural_duration_change: bool = False
 
@@ -127,6 +129,7 @@ class TechniqueRegistry:
         canonical: str,
         level: TechniqueLevel,
         *,
+        allow_structural_pitch_change: bool = False,
         allow_structural_velocity_change: bool = False,
         allow_structural_duration_change: bool = False,
     ) -> Callable[[TechniqueApply], TechniqueApply]:
@@ -153,6 +156,7 @@ class TechniqueRegistry:
                 canonical=canonical,
                 level=level,
                 apply=func,
+                allow_structural_pitch_change=allow_structural_pitch_change,
                 allow_structural_velocity_change=allow_structural_velocity_change,
                 allow_structural_duration_change=allow_structural_duration_change,
             )
@@ -629,6 +633,25 @@ def _validate_technique_contract(
 ) -> None:
     """Garante que `technique` ornamenta sem deslocar material estrutural."""
 
+    if technique.allow_structural_pitch_change:
+        before_shape = _structural_shape_counts(
+            before,
+            include_velocity=not technique.allow_structural_velocity_change,
+            include_duration=not technique.allow_structural_duration_change,
+        )
+        after_shape = _structural_shape_counts(
+            after,
+            include_velocity=not technique.allow_structural_velocity_change,
+            include_duration=not technique.allow_structural_duration_change,
+        )
+        missing = before_shape - after_shape
+        if missing:
+            raise TechniqueContractError(
+                f"contrato technique violado por {technique.canonical}: troca "
+                "de articulacao removeu nota estrutural ou alterou posicao"
+            )
+        return
+
     for key, before_note in before.notes.items():
         after_note = after.notes.get(key)
         if after_note is None:
@@ -652,6 +675,24 @@ def _validate_technique_contract(
                 f"contrato technique violado por {technique.canonical}: "
                 "duracao de nota estrutural mudou sem permissao declarada"
             )
+
+
+def _structural_shape_counts(
+    snapshot: _StructuralSnapshot,
+    *,
+    include_velocity: bool,
+    include_duration: bool,
+) -> Counter[tuple[int, int, int, int | None, int | None]]:
+    shapes: Counter[tuple[int, int, int, int | None, int | None]] = Counter()
+    for note in snapshot.notes.values():
+        shapes[(
+            note.key.track_index,
+            note.key.channel,
+            note.key.start_tick,
+            note.end_tick if include_duration else None,
+            note.velocity if include_velocity else None,
+        )] += 1
+    return shapes
 
 
 def _drop_reapplied_notes(
@@ -862,6 +903,7 @@ def register_technique(
     canonical: str,
     level: TechniqueLevel,
     *,
+    allow_structural_pitch_change: bool = False,
     allow_structural_velocity_change: bool = False,
     allow_structural_duration_change: bool = False,
 ) -> Callable[[TechniqueApply], TechniqueApply]:
@@ -870,6 +912,7 @@ def register_technique(
     register = _REGISTRY.register(
         canonical,
         level,
+        allow_structural_pitch_change=allow_structural_pitch_change,
         allow_structural_velocity_change=allow_structural_velocity_change,
         allow_structural_duration_change=allow_structural_duration_change,
     )
@@ -1703,6 +1746,145 @@ def _apply_drums_accented_roll(
                 )
         if velocity_by_index:
             rebuild_track(track, velocity_by_index)
+
+    return mid
+
+
+@register_technique(
+    "drums.articulation_diff",
+    "technique",
+    allow_structural_pitch_change=True,
+)
+def _apply_drums_articulation_diff(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        available = sorted(technique.tools.keys())
+        raise ValueError(
+            f"tecnica {context.canonical!r} exige ferramenta-alvo; "
+            f"receitas disponiveis: {available!r}"
+        )
+
+    def notes_for(name):
+        values = recipe.get(name)
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(note, int) for note in values)
+        ):
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} "
+                "como lista de MIDI ints"
+            )
+        return tuple(int(note) for note in values)
+
+    hat_tip = notes_for("hat_tip")
+    hat_edge = notes_for("hat_edge")
+    ride_bow_tip = notes_for("ride_bow_tip")
+    ride_bow_shank = notes_for("ride_bow_shank")
+    ride_bell = notes_for("ride_bell")
+    snare_center = notes_for("snare_center")
+    snare_rimshot = notes_for("snare_rimshot")
+
+    density = context.parameters.get("density")
+    if isinstance(density, (int, float)) and float(density) <= 0.0:
+        return mid
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    bar_ticks = ticks_per_beat * 4
+
+    def note_pairs(track):
+        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append((
+                    tick,
+                    msg.velocity,
+                    msg_index,
+                ))
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity, note_on_index = stack.pop(0)
+                yield {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": start_tick,
+                    "velocity": velocity,
+                    "note_on_index": note_on_index,
+                    "note_off_index": msg_index,
+                }
+
+    def replacement_for(note):
+        pitch = note["pitch"]
+        start = note["start"]
+        velocity = note["velocity"]
+        beat_in_bar = start % bar_ticks
+        beat_position = beat_in_bar // ticks_per_beat
+
+        if pitch in hat_tip or pitch in hat_edge:
+            if start % ticks_per_beat == 0:
+                return hat_edge[0]
+            return hat_tip[0]
+
+        if pitch in ride_bow_tip or pitch in ride_bow_shank or pitch in ride_bell:
+            if beat_in_bar == 0:
+                return ride_bell[0]
+            if start % ticks_per_beat == 0 and beat_position in {2, 3}:
+                return ride_bow_shank[0]
+            return ride_bow_tip[0]
+
+        if pitch in snare_center or pitch in snare_rimshot:
+            if start % ticks_per_beat == 0 and beat_position in {1, 3} and velocity >= 90:
+                return snare_rimshot[0]
+            return snare_center[0]
+
+        return pitch
+
+    def rebuild_track(track, pitch_by_index):
+        rebuilt = _mido.MidiTrack()
+        for msg_index, msg in enumerate(track):
+            pitch = pitch_by_index.get(msg_index)
+            if pitch is not None and not msg.is_meta:
+                rebuilt.append(msg.copy(note=pitch))
+            else:
+                rebuilt.append(msg.copy())
+        track[:] = rebuilt
+
+    for track in mid.tracks:
+        pitch_by_index = {}
+        for note in note_pairs(track):
+            if note["channel"] != 9:
+                continue
+            replacement = replacement_for(note)
+            if replacement == note["pitch"]:
+                continue
+            pitch_by_index[note["note_on_index"]] = replacement
+            pitch_by_index[note["note_off_index"]] = replacement
+        if pitch_by_index:
+            rebuild_track(track, pitch_by_index)
 
     return mid
 
