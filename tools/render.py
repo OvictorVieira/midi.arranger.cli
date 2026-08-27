@@ -31,6 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import mido
 import pretty_midi
@@ -421,10 +422,17 @@ def _canonical_style_technique(
 def _style_technique_parameters(
     style_parameters: dict[str, float | list[float]],
     density: float | None,
-) -> dict[str, float | list[float]]:
-    parameters = dict(style_parameters)
+    style: str | None = None,
+) -> dict[str, Any]:
+    parameters: dict[str, Any] = dict(style_parameters)
     if density is not None:
         parameters["density"] = float(density)
+    if style is not None:
+        # `style` (dedo/palheta/slap) e a UNICA excecao numerica-only de
+        # `style.parameters` — vem do vocabulario fechado de
+        # `StyleTechnique.style`, ja validado em `plan.validate`, nunca de
+        # texto livre.
+        parameters["style"] = style
     return parameters
 
 
@@ -495,6 +503,7 @@ def _run_style_pipeline(
                 parameters=_style_technique_parameters(
                     style.parameters,
                     technique.density,
+                    technique.style,
                 ),
                 tool=tool_target,
                 index=index,

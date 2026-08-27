@@ -44,6 +44,19 @@ MIDI_PITCH_MIN = 0
 MIDI_PITCH_MAX = 127
 
 
+# Vocabulario FECHADO para selecao de tecnica de execucao (ex.: dedo, palheta,
+# slap em `bass.attack_style`). NAO e um campo de texto livre — e a unica
+# excecao ao "so numero ou par" do bloco `style`, e existe porque a escolha
+# nao tem como ser numero: e uma categoria que o manual da tecnica declara.
+# Fechado por lista explicita para nao reabrir a porta que o anticopia
+# fecha para todo o resto de `style` (nenhum campo aqui pode virar deposito
+# de texto arbitrario). Technique nova que precisar de outra categoria
+# ACRESCENTA aqui, nunca aceita string fora desta lista.
+STYLE_TECHNIQUE_STYLE_VALUES = frozenset({
+    "dedo", "fingered", "palheta", "picked", "slap",
+})
+
+
 def style_technique_schema(*, additional_properties: bool | None = None) -> dict[str, Any]:
     schema: dict[str, Any] = {
         "type": "object",
@@ -56,6 +69,12 @@ def style_technique_schema(*, additional_properties: bool | None = None) -> dict
                 ],
             },
             "rationale": {"type": ["string", "null"]},
+            "style": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"enum": sorted(STYLE_TECHNIQUE_STYLE_VALUES)},
+                ],
+            },
         },
         "required": ["name"],
     }

@@ -1620,6 +1620,30 @@ def _apply_bass_palm_mute(
 
     technique, _range = load_range_resolver(context)
 
+    # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
+    # uma quantidade continua aplicada por cima do estilo ativo... NAO
+    # EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario
+    # atribuiu, ou a tecnica nao sai." A receita `modo_bass` carrega
+    # `cc: null` de proposito.
+    #
+    # Sem esta guarda, pedir `tool=modo_bass` sem declarar o CC caia no
+    # comportamento generic (so encurta duracao e ajusta velocity) SEM
+    # avisar — o usuario acharia que ganhou o palm mute continuo do plugin
+    # e recebeu outra coisa. FALHA ALTA em vez de fallback silencioso.
+    #
+    # A emissao real da curva de CC continua fora do escopo desta correcao:
+    # o manual pede "desenhe uma curva", nao um valor unico, e a FORMA dessa
+    # curva nao tem fonte — inventa-la aqui repetiria o erro que motivou a
+    # issue #53. Rastreado separadamente.
+    if context.tool == "modo_bass" and context.recipe.get("cc") is None:
+        cc_param = context.parameters.get("cc")
+        if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
+            raise ValueError(
+                f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
+                "de style.bass.parameters.cc (0-127) declarado no plano — o "
+                "MODO BASS nao tem CC de fabrica para palm mute"
+            )
+
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
     velocity_hi = max(velocity_lo, int(velocity_range[1]))
@@ -2052,13 +2076,18 @@ def _apply_bass_hammer_pull(
                     continue
                 if b["start"] <= a["start"]:
                     continue
-                # IDEMPOTENCIA: par ja ligado nao entra de novo. Sobreposicao
-                # (`a.end > b.start`) e a assinatura do ligado — e ela que
-                # dispara o legato. Sem esta guarda o caminho `generic`, que
-                # nao tem keyswitch para reconhecer o que ja fez, reaplicava
-                # `velocity_relativa` a cada passada e a segunda nota afundava
-                # a cada render (100 -> 71 -> 42).
-                if a["end"] > b["start"]:
+                if a["end"] > b["start"] and keyswitch_pitch is None:
+                    # IDEMPOTENCIA no caminho `generic`: sem keyswitch para
+                    # reconhecer o que ja foi feito, a sobreposicao e a
+                    # UNICA assinatura disponivel. Sem esta guarda, reaplicar
+                    # `velocity_relativa` a cada passada afundava a segunda
+                    # nota a cada render (100 -> 71 -> 42).
+                    #
+                    # No MODO BASS a sobreposicao pode ser NATURAL — baixo
+                    # tocado por gente as vezes ja liga notas sem que a
+                    # tecnica tenha passado por ali. Nesse caminho a
+                    # idempotencia real e a checagem de keyswitch logo
+                    # abaixo, entao overlap sozinho nao basta para pular.
                     continue
                 if keyswitch_pitch is not None and any(
                     lo <= a["start"] <= hi

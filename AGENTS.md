@@ -69,6 +69,10 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   conta como mão, incluindo `48` (tom) e `59` (ride/crash).
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
+  A ÚNICA exceção é `StyleTechnique.style`: seleção de técnica de execução (dedo/palheta/slap) contra
+  vocabulário FECHADO em `tools/style_schema.py::STYLE_TECHNIQUE_STYLE_VALUES` — nunca texto livre.
+  Técnica nova que precisar de outra categoria acrescenta à lista fechada, nunca aceita string fora
+  dela. `render._style_technique_parameters` repassa como `context.parameters["style"]`.
 - Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em
   domínio e fachada em vez de duplicar listas de chaves musicais, detecção anticópia ou schema de
   `techniques[]`.
