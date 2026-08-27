@@ -69,6 +69,10 @@ from .plan import (
     Element,
     FamilyStyle,
     PlanSection,
+    PlanValidationError,
+    _canonicalize_authorized_name,
+    _load_brief_authorized_techniques,
+    _reject_style_techniques_without_brief,
     load,
     normalize_style_defaults,
     validate_edits_against_midi,
@@ -146,6 +150,52 @@ STAMP_PREFIX = "midi-arranger v1"
 
 class RenderError(Exception):
     """Falha de render que nao pode ser silenciada."""
+
+
+def _reject_unauthorized_style_techniques(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> None:
+    """Barreira do render: recusa tecnica que o brief nao autoriza.
+
+    Dupla defesa em relacao a `plan.validate` — mesmo `ArrangementPlan`
+    construido em memoria, sem passar por `plan.load`, nao pode aplicar
+    tecnica de familia cuja autorizacao nao cobre aquele nome. Recusa e
+    sempre `RenderError` explicito citando familia e tecnica; nunca aplica
+    parcial nem ignora em silencio. Roda ANTES de `validate_plan` para que
+    a violacao de autorizacao vire `RenderError`, nao `PlanValidationError`.
+    """
+    if not plan.style:
+        return
+    families_present = [
+        (family, entry)
+        for family, entry in plan.style.items()
+        if family in STYLE_FAMILIES
+        and isinstance(entry, FamilyStyle)
+        and entry.techniques
+    ]
+    if not families_present:
+        return
+
+    try:
+        if plan.brief_ref is None:
+            _reject_style_techniques_without_brief(plan.style)
+            return
+        authorized = _load_brief_authorized_techniques(plan, plan_dir)
+    except PlanValidationError as exc:
+        raise RenderError(f"{exc.path}: {exc.message}") from None
+
+    index = build_techniques_index()
+    for family, entry in families_present:
+        allowed = authorized.get(family, set())
+        for i, tech in enumerate(entry.techniques):
+            canonical = _canonicalize_authorized_name(index, family, tech.name)
+            if canonical is None or canonical not in allowed:
+                shown = sorted(allowed) if allowed else "[]"
+                raise RenderError(
+                    f"style.{family}.techniques[{i}].name: technique "
+                    f"{tech.name!r} not in authorized_techniques for "
+                    f"family {family!r} (brief authorized: {shown})"
+                )
 
 
 # --- dataclasses do relatorio ----------------------------------------------
@@ -1315,8 +1365,12 @@ def render(
       source_path: override do caminho de origem. Default: `plan.source_midi.path`.
 
     Raises:
-      RenderError: source inexistente, output apontaria para o source, ou
-        elemento pad sem instrument.plugin/preset.
+      RenderError: source inexistente, output apontaria para o source,
+        elemento pad sem instrument.plugin/preset, OU tecnica de
+        `style.<familia>.techniques[]` fora de
+        `brief.style.<familia>.authorized_techniques` (a barreira do
+        render roda antes de `validate_plan`, entao violacao de
+        autorizacao vira `RenderError`, nao `PlanValidationError`).
       PlanValidationError: quando `plan` e invalido, vindo de caminho ou
         construido em memoria.
 
@@ -1324,9 +1378,13 @@ def render(
     source. Pode mutar `Element.register` do plano em memoria via validator
     de colisao (mesma semantica de `validate_collisions`).
     """
+    plan_dir: Path | None = None
     if not isinstance(plan, ArrangementPlan):
-        plan = load(plan)
-    validate_plan(plan)
+        plan_path = Path(plan).expanduser()
+        plan_dir = plan_path.parent
+        plan = load(plan_path)
+    _reject_unauthorized_style_techniques(plan, plan_dir)
+    validate_plan(plan, plan_dir)
     plan = normalize_style_defaults(plan)
 
     src = Path(source_path).expanduser() if source_path else _resolve_source_path(plan)

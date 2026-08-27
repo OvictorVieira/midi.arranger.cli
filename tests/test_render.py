@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import mido
@@ -1384,3 +1385,152 @@ def test_render_shadow_octave_shift_from_pattern(tmp_path):
     out = tmp_path / "out.mid"
     report = render(plan, out)
     assert report.elements[0].rendered is True
+
+
+# --- US-004: barreira de autorizacao no render ------------------------------
+
+@pytest.mark.parametrize(
+    ("family", "authorized", "declared"),
+    [
+        ("drums", "drums.ghost_notes", "drums.flam"),
+        ("bass", "bass.ghost_notes", "bass.palm_mute"),
+        ("guitar", "guitar.palm_mute", "guitar.bend"),
+        ("keys", "keys.hand_asynchrony", "keys.rolled_chord"),
+    ],
+)
+def test_render_refuses_unauthorized_style_technique_per_family(
+    tmp_path, family, authorized, declared,
+):
+    """AC US-004: render recusa tecnica fora de `authorized_techniques` para
+    cada uma das quatro familias — RenderError explicito citando familia e
+    tecnica, sem arquivo de saida."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        family: FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/style"],
+            confidence="high",
+            techniques=[StyleTechnique(name=declared)],
+            parameters={},
+        ),
+    }
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({"style": {family: {"authorized_techniques": [authorized]}}}),
+        encoding="utf-8",
+    )
+    plan.brief_ref = BriefRef(
+        path=str(brief_path), sha256=brief_sha256(brief_path),
+    )
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError) as excinfo:
+        render(plan, out)
+    msg = str(excinfo.value)
+    assert f"style.{family}.techniques[0].name" in msg
+    assert declared in msg
+    assert family in msg
+    assert not out.exists(), (
+        "unauthorized technique must not produce an output file"
+    )
+
+
+def test_render_family_with_empty_authorized_yields_source_identical_tracks(
+    tmp_path,
+):
+    """AC US-004: familia com `authorized_techniques` vazio (sem tecnica
+    declarada, portanto) sai nota-a-nota IDENTICA a origem — sem ornamento,
+    sem alteracao de pitch/tempo/duracao."""
+    src = _build_synthetic_source(tmp_path)
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {
+                fam: {"authorized_techniques": []}
+                for fam in ("bass", "drums", "guitar", "keys")
+            },
+        }),
+        encoding="utf-8",
+    )
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.brief_ref = BriefRef(
+        path=str(brief_path), sha256=brief_sha256(brief_path),
+    )
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    src_pm = pretty_midi.PrettyMIDI(str(src))
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    assert len(out_pm.instruments) == len(src_pm.instruments)
+    for src_inst, out_inst in zip(
+        src_pm.instruments, out_pm.instruments, strict=True,
+    ):
+        src_notes = [
+            (n.pitch, n.velocity, round(n.start, 6), round(n.end, 6))
+            for n in src_inst.notes
+        ]
+        out_notes = [
+            (n.pitch, n.velocity, round(n.start, 6), round(n.end, 6))
+            for n in out_inst.notes
+        ]
+        assert src_notes == out_notes
+
+
+def test_render_refuses_style_technique_without_brief_ref(tmp_path):
+    """AC US-004: sem `brief_ref` a barreira do render tambem age como
+    `RenderError` — nao como `PlanValidationError` — porque render e a
+    ultima linha de defesa."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/style"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    plan.brief_ref = None
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError) as excinfo:
+        render(plan, out)
+    msg = str(excinfo.value)
+    assert "brief_ref" in msg
+    assert "drums" in msg
+    assert not out.exists()
+
+
+def test_render_refuses_when_brief_sha256_mismatches(tmp_path):
+    """AC US-004: brief editado apos aprovacao (sha divergente) tambem para
+    o render com `RenderError`."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/style"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {"drums": {"authorized_techniques": ["drums.ghost_notes"]}},
+        }),
+        encoding="utf-8",
+    )
+    plan.brief_ref = BriefRef(
+        path=str(brief_path),
+        sha256="0" * 64,  # sha propositalmente errado
+    )
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError, match="brief_ref.sha256"):
+        render(plan, out)
+    assert not out.exists()
