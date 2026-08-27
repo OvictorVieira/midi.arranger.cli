@@ -2038,6 +2038,259 @@ def _apply_bass_attack_style(
     return mid
 
 
+@register_technique(
+    "bass.hammer_pull",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
+def _apply_bass_hammer_pull(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Hammer-on e pull-off do baixo — ligado sem reataque.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity_relativa` e `overlap_ms` do manual pelo indice.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - So aplica entre notas adjacentes fisicamente ligaveis: mesmo canal,
+        intervalo em semitons dentro do limite de ligado (<= 4), separacao
+        temporal curta (<= metade de um beat) e ambas alcancaveis na mesma
+        corda pela afinacao declarada.
+      - Ligada (segunda nota) sai mais fraca por `velocity_relativa`
+        (delta negativo); primeira estende note_off para sobrepor a segunda
+        por `overlap_ms` — sobreposicao e o que dispara o legato no MODO BASS.
+      - Nao altera pitch nem posicao (start_tick) de nota estrutural.
+      - Receita `modo_bass` insere keyswitch C0 (12), segurado do inicio da
+        primeira ao fim da segunda; keyswitch fica fora da regiao tocavel
+        via `_keyswitch_pitches_from_recipe`.
+      - Idempotente na receita com keyswitch: se ja ha keyswitch do canal
+        pendurado sobre a primeira nota da ligadura, pulamos o par.
+    """
+
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    params_by_name = {p.name: p for p in technique.parameters}
+    recipe = context.recipe
+
+    def _range(name: str, fallback: tuple[float, float]) -> tuple[float, float]:
+        if name in context.parameters:
+            value = context.parameters[name]
+        elif name in recipe:
+            value = recipe[name]
+        else:
+            param = params_by_name.get(name)
+            if param is None:
+                return fallback
+            if param.range is not None:
+                value = param.range
+            elif param.value is not None:
+                value = (param.value, param.value)
+            else:
+                return fallback
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, (int, float)):
+            return (float(value), float(value))
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+            )
+        ):
+            return (float(value[0]), float(value[1]))
+        return fallback
+
+    density_raw = context.parameters.get("density")
+    if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
+        density = float(density_raw)
+    else:
+        density = 0.0
+    if density <= 0.0:
+        # Ligado geral e ausencia de intencao musical: sem `density` positiva,
+        # a tecnica e NO-OP — mantem a linha original intocada por default.
+        return mid
+
+    velocity_rel_range = _range("velocity_relativa", (-30.0, -15.0))
+    overlap_range = _range("overlap_ms", (10.0, 40.0))
+
+    keyswitch_pitch: int | None = None
+    ks_raw = recipe.get("keyswitch") if recipe else None
+    if isinstance(ks_raw, int) and not isinstance(ks_raw, bool):
+        keyswitch_pitch = ks_raw
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+
+    # Ligadura so entre notas proximas: gap <= meia batida (colcheia).
+    max_gap_ticks = ticks_per_beat // 2
+    # Hammer-on/pull-off em baixo: ate um terco maior (4 semitons).
+    max_interval_semitones = 4
+
+    rng = context.rng("hammer_pull")
+
+    for track in mid.tracks:
+        # Pareia note_on/note_off preservando referencia das mensagens.
+        structural: list[dict] = []
+        pending: dict[tuple[int, int], list[dict]] = {}
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                entry = {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": tick,
+                    "end": None,
+                    "on_msg": msg,
+                    "off_msg": None,
+                }
+                structural.append(entry)
+                pending.setdefault((msg.channel, msg.note), []).append(entry)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if stack:
+                    entry = stack.pop(0)
+                    entry["end"] = tick
+                    entry["off_msg"] = msg
+
+        structural = [e for e in structural if e["end"] is not None]
+        if len(structural) < 2:
+            continue
+
+        # Keyswitches ja presentes por canal, com intervalo de vigencia
+        # (para idempotencia quando a receita usa keyswitch).
+        existing_keyswitches: dict[int, list[tuple[int, int]]] = {}
+        if keyswitch_pitch is not None:
+            ks_pending: dict[int, list[int]] = {}
+            ktick = 0
+            for msg in track:
+                ktick += msg.time
+                if msg.is_meta:
+                    continue
+                if msg.note != keyswitch_pitch:
+                    continue
+                if msg.type == "note_on" and msg.velocity > 0:
+                    ks_pending.setdefault(msg.channel, []).append(ktick)
+                elif msg.type == "note_off" or (
+                    msg.type == "note_on" and msg.velocity == 0
+                ):
+                    stack = ks_pending.get(msg.channel)
+                    if stack:
+                        start = stack.pop(0)
+                        existing_keyswitches.setdefault(msg.channel, []).append(
+                            (start, ktick)
+                        )
+
+        by_channel: dict[int, list[dict]] = {}
+        for entry in structural:
+            by_channel.setdefault(entry["channel"], []).append(entry)
+        for lst in by_channel.values():
+            lst.sort(key=lambda e: (e["start"], e["end"]))
+
+        candidate_pairs: list[tuple[dict, dict]] = []
+        for lst in by_channel.values():
+            for a, b in zip(lst, lst[1:], strict=False):
+                interval = abs(b["pitch"] - a["pitch"])
+                if interval == 0 or interval > max_interval_semitones:
+                    continue
+                gap = b["start"] - a["end"]
+                if gap > max_gap_ticks:
+                    continue
+                if b["start"] <= a["start"]:
+                    continue
+                if keyswitch_pitch is not None and any(
+                    lo <= a["start"] <= hi
+                    for lo, hi in existing_keyswitches.get(a["channel"], ())
+                ):
+                    continue
+                candidate_pairs.append((a, b))
+
+        candidate_pairs.sort(key=lambda pair: (pair[0]["start"], pair[0]["channel"]))
+        select_rng = context.rng("select")
+        ligatures: list[tuple[dict, dict]] = []
+        if density >= 1.0:
+            ligatures = list(candidate_pairs)
+        else:
+            for pair in candidate_pairs:
+                if select_rng.random() < density:
+                    ligatures.append(pair)
+
+        if not ligatures:
+            continue
+
+        events_to_insert: list[tuple[int, int, mido.Message]] = []
+        new_end_by_id: dict[int, int] = {}
+        for a, b in ligatures:
+            overlap_ms = rng.uniform(overlap_range[0], overlap_range[1])
+            overlap_ticks = max(1, int(round(overlap_ms * ticks_per_beat / 500.0)))
+            new_end = b["start"] + overlap_ticks
+            if new_end > a["end"] and a["off_msg"] is not None:
+                new_end_by_id[id(a["off_msg"])] = new_end
+                a["end"] = new_end
+
+            vel_delta = rng.uniform(velocity_rel_range[0], velocity_rel_range[1])
+            b["on_msg"].velocity = max(
+                1, min(127, int(round(b["on_msg"].velocity + vel_delta))),
+            )
+
+            if keyswitch_pitch is not None:
+                ks_start_tick = max(0, a["start"] - 1)
+                ks_end_tick = b["end"] if b["end"] is not None else b["start"] + 1
+                events_to_insert.append((
+                    ks_start_tick, -2,
+                    _mido.Message(
+                        "note_on", channel=a["channel"],
+                        note=keyswitch_pitch, velocity=127,
+                    ),
+                ))
+                events_to_insert.append((
+                    ks_end_tick, 4,
+                    _mido.Message(
+                        "note_off", channel=a["channel"],
+                        note=keyswitch_pitch, velocity=0,
+                    ),
+                ))
+
+        # Reconstroi a track: reposiciona note_off estendidos e injeta keyswitches.
+        absolute: list[tuple[int, int, int, mido.Message]] = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            abs_tick = new_end_by_id.get(id(msg), tick)
+            absolute.append((abs_tick, 0, order, msg))
+            order += 1
+        for abs_tick, bias, msg in events_to_insert:
+            absolute.append((abs_tick, bias, order, msg))
+            order += 1
+
+        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in absolute:
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

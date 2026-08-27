@@ -180,6 +180,7 @@ def test_supported_techniques_is_derived_from_the_registry():
     assert SUPPORTED_TECHNIQUES == (
         "bass.attack_style",
         "bass.ghost_notes",
+        "bass.hammer_pull",
         "bass.palm_mute",
         "bass.velocity_contour",
         "drums.ghost_notes",
@@ -195,6 +196,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     assert exc.value.available == (
         "bass.attack_style",
         "bass.ghost_notes",
+        "bass.hammer_pull",
         "bass.palm_mute",
         "bass.velocity_contour",
         "drums.ghost_notes",
