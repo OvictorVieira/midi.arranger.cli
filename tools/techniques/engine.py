@@ -1290,41 +1290,15 @@ def _apply_bass_velocity_contour(
       - Determinismo por seed atraves de `context.rng()`.
     """
 
-    from .index import build_index
+    from ._param_range import load_range_resolver
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
+    _, _range = load_range_resolver(context)
 
-    params_by_name = {p.name: p for p in technique.parameters}
+    def _as_int(name: str, default: int) -> int:
+        rng = _range(name) or (default, default)
+        return int(round((rng[0] + rng[1]) / 2))
 
-    def _pick(name: str) -> Any:
-        if name in context.parameters:
-            return context.parameters[name]
-        if name in context.recipe:
-            return context.recipe[name]
-        param = params_by_name.get(name)
-        if param is None:
-            return None
-        if param.value is not None:
-            return param.value
-        return param.range
-
-    def _as_int(value: Any, default: int) -> int:
-        if isinstance(value, bool):
-            return default
-        if isinstance(value, (int, float)):
-            return int(value)
-        if isinstance(value, (list, tuple)) and len(value) == 2 and all(
-            isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
-        ):
-            lo, hi = float(value[0]), float(value[1])
-            return int(round((lo + hi) / 2))
-        return default
-
-    span_tipico = max(1, _as_int(_pick("span_tipico"), 40))
+    span_tipico = max(1, _as_int("span_tipico", 40))
     accent = max(2, span_tipico // 6)
     jitter_hi = max(1, span_tipico // 10)
 
@@ -1407,40 +1381,9 @@ def _apply_bass_ghost_notes(
 
     import mido as _mido
 
-    from .index import build_index
+    from ._param_range import load_range_resolver
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    params_by_name = {p.name: p for p in technique.parameters}
-
-    def _range(name: str) -> tuple[float, float] | None:
-        if name in context.parameters:
-            value = context.parameters[name]
-        elif name in context.recipe:
-            value = context.recipe[name]
-        else:
-            param = params_by_name.get(name)
-            if param is None:
-                return None
-            if param.range is not None:
-                value = param.range
-            elif param.value is not None:
-                value = (param.value, param.value)
-            else:
-                return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return (float(value), float(value))
-        if (
-            isinstance(value, (list, tuple))
-            and len(value) == 2
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
-        ):
-            return (float(value[0]), float(value[1]))
-        return None
+    technique, _range = load_range_resolver(context)
 
     velocity_range = _range("velocity") or (25.0, 50.0)
     velocity_lo = max(1, int(velocity_range[0]))
@@ -1476,8 +1419,6 @@ def _apply_bass_ghost_notes(
     gate_rng = context.rng("gate")
 
     def target_count(size: int) -> int:
-        if size <= 0:
-            return 0
         if density is None:
             return size
         if density <= 0.0:
@@ -1675,42 +1616,9 @@ def _apply_bass_palm_mute(
 
     import mido as _mido
 
-    from .index import build_index
+    from ._param_range import load_range_resolver
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    params_by_name = {p.name: p for p in technique.parameters}
-
-    def _range(name: str) -> tuple[float, float] | None:
-        if name in context.parameters:
-            value = context.parameters[name]
-        elif name in context.recipe:
-            value = context.recipe[name]
-        else:
-            param = params_by_name.get(name)
-            if param is None:
-                return None
-            if param.range is not None:
-                value = param.range
-            elif param.value is not None:
-                value = (param.value, param.value)
-            else:
-                return None
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return (float(value), float(value))
-        if (
-            isinstance(value, (list, tuple))
-            and len(value) == 2
-            and all(
-                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
-            )
-        ):
-            return (float(value[0]), float(value[1]))
-        return None
+    technique, _range = load_range_resolver(context)
 
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
@@ -1735,34 +1643,7 @@ def _apply_bass_palm_mute(
     gate_rng = context.rng("gate")
 
     def collect_pairs(track):
-        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-        collected: list[tuple[int, int, int, int, int, int, int]] = []
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append(
-                    (tick, msg.velocity, msg_index),
-                )
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, velocity, note_on_index = stack.pop(0)
-                collected.append((
-                    msg.channel,
-                    msg.note,
-                    start_tick,
-                    tick,
-                    velocity,
-                    note_on_index,
-                    msg_index,
-                ))
-        return collected
+        return list(_iter_note_pairs(track))
 
     for track in mid.tracks:
         pairs = collect_pairs(track)
@@ -1806,9 +1687,6 @@ def _apply_bass_palm_mute(
 
             new_velocity_by_msg[note_on_index] = proposed
             new_end_tick_by_msg[note_off_index] = new_end_tick
-
-        if not new_velocity_by_msg:
-            continue
 
         absolute = []
         tick = 0
@@ -1867,15 +1745,15 @@ def _apply_bass_attack_style(
 
     import mido as _mido
 
-    from .index import build_index
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import (
+        collect_absolute as _collect_absolute,
+    )
+    from ._track_rebuild import (
+        sort_and_flush as _sort_and_flush,
+    )
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    params_by_name = {p.name: p for p in technique.parameters}
+    technique, _range = load_range_resolver(context)
     recipe = context.recipe
 
     style_raw = context.parameters.get("style")
@@ -1906,43 +1784,14 @@ def _apply_bass_attack_style(
     # inserido como nota da linha e reembaralhe velocity.
     keyswitch_pitches: set[int] = set()
     for key, value in (recipe or {}).items():
-        if not isinstance(key, str):
-            continue
         if key != "keyswitch" and not key.startswith("keyswitch_"):
             continue
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool):
             keyswitch_pitches.add(value)
 
     def _midrange(name: str, fallback: tuple[float, float]) -> int:
-        if name in context.parameters:
-            value = context.parameters[name]
-        elif name in recipe:
-            value = recipe[name]
-        else:
-            param = params_by_name.get(name)
-            if param is None:
-                value = fallback
-            elif param.value is not None:
-                value = param.value
-            elif param.range is not None:
-                value = param.range
-            else:
-                value = fallback
-        if isinstance(value, bool):
-            return int(round((fallback[0] + fallback[1]) / 2))
-        if isinstance(value, (int, float)):
-            return int(round(float(value)))
-        if (
-            isinstance(value, (list, tuple))
-            and len(value) == 2
-            and all(
-                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
-            )
-        ):
-            return int(round((float(value[0]) + float(value[1])) / 2))
-        return int(round((fallback[0] + fallback[1]) / 2))
+        rng = _range(name) or fallback
+        return int(round((rng[0] + rng[1]) / 2))
 
     downstroke_vel = max(1, min(127, _midrange("picked_downstroke_velocity", (85, 120))))
     upstroke_vel = max(1, min(127, _midrange("picked_upstroke_velocity", (70, 100))))
@@ -1974,13 +1823,8 @@ def _apply_bass_attack_style(
         channel = structural[0][1].channel
 
         # Coleta absoluta de todas as mensagens da track — vamos reconstruir.
-        absolute: list[tuple[int, int, int, mido.Message | mido.MetaMessage]] = []
-        tick = 0
-        order = 0
-        for msg in track:
-            tick += msg.time
-            absolute.append((tick, 0, order, msg))
-            order += 1
+        absolute = _collect_absolute(track)
+        order = len(absolute)
 
         # Keyswitch de estilo, uma vez por track, antes da primeira nota.
         first_tick = structural[0][0]
@@ -2027,13 +1871,7 @@ def _apply_bass_attack_style(
                     ))
                     order += 1
 
-        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _bias, _order, msg in absolute:
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
+        _sort_and_flush(absolute, track)
 
     return mid
 
@@ -2071,45 +1909,14 @@ def _apply_bass_hammer_pull(
 
     import mido as _mido
 
-    from .index import build_index
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import sort_and_flush as _sort_and_flush
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    params_by_name = {p.name: p for p in technique.parameters}
+    technique, _resolve_range = load_range_resolver(context)
     recipe = context.recipe
 
     def _range(name: str, fallback: tuple[float, float]) -> tuple[float, float]:
-        if name in context.parameters:
-            value = context.parameters[name]
-        elif name in recipe:
-            value = recipe[name]
-        else:
-            param = params_by_name.get(name)
-            if param is None:
-                return fallback
-            if param.range is not None:
-                value = param.range
-            elif param.value is not None:
-                value = (param.value, param.value)
-            else:
-                return fallback
-        if isinstance(value, bool):
-            return fallback
-        if isinstance(value, (int, float)):
-            return (float(value), float(value))
-        if (
-            isinstance(value, (list, tuple))
-            and len(value) == 2
-            and all(
-                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
-            )
-        ):
-            return (float(value[0]), float(value[1]))
-        return fallback
+        return _resolve_range(name) or fallback
 
     density_raw = context.parameters.get("density")
     if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
@@ -2280,13 +2087,7 @@ def _apply_bass_hammer_pull(
             absolute.append((abs_tick, bias, order, msg))
             order += 1
 
-        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _bias, _order, msg in absolute:
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
+        _sort_and_flush(absolute, track)
 
     return mid
 
@@ -2316,41 +2117,18 @@ def _apply_bass_let_ring(
 
     import mido as _mido
 
-    from .index import build_index
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import (
+        collect_absolute as _collect_absolute,
+    )
+    from ._track_rebuild import (
+        sort_and_flush as _sort_and_flush,
+    )
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
+    technique, _range = load_range_resolver(context)
 
-    params_by_name = {p.name: p for p in technique.parameters}
-    recipe = context.recipe
-
-    def _cc_number() -> int | None:
-        if "cc" in context.parameters:
-            value = context.parameters["cc"]
-        elif "cc" in recipe:
-            value = recipe["cc"]
-        else:
-            param = params_by_name.get("cc")
-            if param is None:
-                return None
-            if param.value is not None:
-                value = param.value
-            elif param.range is not None:
-                value = param.range
-            else:
-                return None
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        return None
-
-    cc_number = _cc_number()
+    cc_range = _range("cc")
+    cc_number = int(cc_range[0]) if cc_range else None
     if cc_number is None or not (0 <= cc_number <= 127):
         return mid
 
@@ -2369,43 +2147,19 @@ def _apply_bass_let_ring(
     select_rng = context.rng("let_ring_select")
 
     def collect_pairs(track):
-        pending: dict[tuple[int, int], list[int]] = {}
-        collected: list[tuple[int, int, int, int]] = []
-        tick = 0
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append(tick)
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start = stack.pop(0)
-                collected.append((msg.channel, msg.note, start, tick))
-        return collected
+        return [
+            (channel, pitch, start_tick, end_tick)
+            for channel, pitch, start_tick, end_tick, _vel, _on_idx, _off_idx
+            in _iter_note_pairs(track)
+        ]
 
     def insert_events(track, events):
-        absolute: list[tuple[int, int, int, mido.Message | mido.MetaMessage]] = []
-        tick = 0
-        order = 0
-        for msg in track:
-            tick += msg.time
-            absolute.append((tick, 0, order, msg))
-            order += 1
+        absolute = _collect_absolute(track)
+        order = len(absolute)
         for event_tick, bias, msg in events:
             absolute.append((event_tick, bias, order, msg))
             order += 1
-        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _bias, _order, msg in absolute:
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
+        _sort_and_flush(absolute, track)
 
     for track in mid.tracks:
         pairs = collect_pairs(track)
