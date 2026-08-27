@@ -128,6 +128,10 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
   bateria de andaime). Hoje está nessa situação `drums.accent_hierarchy` (issue #50).
+- Inventário atual de bateria aplicável pelo motor: `drums.accented_roll`,
+  `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`,
+  `drums.ghost_notes` e `drums.microtiming`. Esse conjunto é travado por teste; qualquer técnica de
+  bateria documentada fora dele continua não suportada até ter aplicador real e contrato coberto.
 - Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
   no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
   63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por

@@ -532,8 +532,8 @@ tutoriais dá número.
   "description": "DUAS ESTRATEGIAS, e ha desacordo documentado. A articulacao gravada do SD3 (nota 69) resolve com uma nota so, mas ha tutorial de producao que a considera larga demais e prefere montar a mao para apertar. Montando a mao: duas notas com o GRID DESLIGADO, senao a DAW gruda a graca na grade e o flam some. Gradacao de realismo, da pior para a melhor: articulacao gravada < duas notas na mesma altura < segunda batida numa amostra ou grupo LIGEIRAMENTE DIFERENTE, que imita como um baterista bate duas vezes seguidas. No AD2 nao ha articulacao gravada, entao a graca vai na alternada (40) para as duas nao roubarem voz. REGRA QUE VALE ALEM DO FLAM: dois toms atacados no mesmo tick nao existem em execucao real — num fill com toms simultaneos, flameie.",
   "parameters": [
     {"name": "gap_ms", "range": [8, 15], "source": "Moozix"},
-    {"name": "grace_velocity_ratio", "value": 0.38, "source": null},
-    {"name": "reading_ceiling_ms", "value": 35, "source": null}
+    {"name": "grace_velocity_ratio", "value": 0.38, "source": "CONVENCAO — a razao graca/principal e derivada, nao afirmada por fonte (ver secao 11). 0.38 fica na faixa em que a graca soa como ornamento e nao como segunda batida; escolhido para o motor, nao medido"},
+    {"name": "reading_ceiling_ms", "value": 35, "source": "CONVENCAO — teto operacional acima do qual as duas batidas passam a ser lidas como notas separadas em vez de flam; escolhido para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"notes_main": [38], "notes_grace": [38], "tom_notes": [41, 43, 45, 47, 48], "note": "grid DESLIGADO para arrastar a graca livre; segunda batida em amostra diferente quando a lib permitir"},
@@ -577,8 +577,8 @@ tutoriais dá número.
   "verified": false,
   "description": "Represente como 32as/64as em velocity subindo devagar. NAO use nota longa sustentada. NAO confunda com Snare Backward/Forward Swirl (SD3 66/67) nem com a familia Sweep do AD2 (26-35) — aquilo e vassoura, nao rufo. [NAO VERIFICADO] CONVENCAO operacional: a rampa linear entra no compasso como preparacao curta para a nota estrutural, porque o manual so documenta a direcao musical da rampa e nao a sua forma exata.",
   "parameters": [
-    {"name": "grid", "value": "32nd/64th", "source": null},
-    {"name": "velocity_ramp", "value": {"shape": "linear", "start_ratio": 0.35, "end_ratio": 0.78, "gate_ratio": 0.72, "window_beats": 1.0, "convention": "[NAO VERIFICADO] CONVENCAO: rampa linear curta ate a nota estrutural para evitar semicolcheia mecanica e nota sustentada falsa"}, "range": null, "source": null}
+    {"name": "grid", "value": "32nd/64th", "source": "CONVENCAO — a grade vem da descricao textual do manual (32as/64as); o valor exato por contexto nao e afirmado por fonte"},
+    {"name": "velocity_ramp", "value": {"shape": "linear", "start_ratio": 0.35, "end_ratio": 0.78, "gate_ratio": 0.72, "window_beats": 1.0}, "range": null, "source": "CONVENCAO — a secao 11 declara que a FORMA da rampa de velocity do buzz nao tem fonte. Rampa linear curta ate a nota estrutural, escolhida para evitar semicolcheia mecanica e nota sustentada falsa. E escolha do motor, nao medicao"}
   ],
   "tools": {
     "superior_drummer": {"engine": ["ligar Smoothing na caixa antes"], "notes": [38], "note": "sem Smoothing cada repeticao redispara ataque duro"},

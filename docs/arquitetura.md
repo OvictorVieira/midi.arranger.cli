@@ -137,6 +137,21 @@ contrato, assim como CC e pitch bend com a mesma assinatura de track/canal/tick/
 técnicas rodam, o render reconstrói as notas renderizadas a partir do MIDI final dessas tracks, para
 que harmonia, placement, artificialidade e persona validem também os ornamentos.
 
+Inventário atual de técnicas de bateria que o motor executa:
+
+- `drums.accented_roll` (`humanize`)
+- `drums.articulation_diff` (`technique`, troca articulação da mesma peça)
+- `drums.buzz_roll` (`technique`)
+- `drums.cymbal_choke` (`technique`)
+- `drums.flam` (`technique`)
+- `drums.ghost_notes` (`technique`)
+- `drums.microtiming` (`humanize`)
+
+`drums.accent_hierarchy` continua fora do motor e fora de `SUPPORTED_TECHNIQUES`: ela está
+documentada no manual, mas só deve entrar quando a issue #50 entregar um aplicador real que não
+inverta a intenção de velocity da origem. Plano que declara técnica documentada mas não suportada
+falha na validação em vez de ser aceito como no-op.
+
 Exemplo mínimo válido:
 
 ```json
