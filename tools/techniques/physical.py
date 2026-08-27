@@ -87,6 +87,7 @@ def validate_physical_plausibility(
     before: mido.MidiFile,
     after: mido.MidiFile,
     parameters: Mapping[str, Any],
+    recipe: Mapping[str, Any] | None = None,
 ) -> None:
     """Rejeita ornamentos novos que violem regras fisicas por familia."""
 
@@ -96,12 +97,35 @@ def validate_physical_plausibility(
     if not new_notes:
         return
 
+    keyswitch_pitches = _keyswitch_pitches_from_recipe(recipe or {})
+    if keyswitch_pitches:
+        new_notes = tuple(
+            note for note in new_notes if note.pitch not in keyswitch_pitches
+        )
+        notes = tuple(
+            note for note in notes if note.pitch not in keyswitch_pitches
+        )
+        if not new_notes:
+            return
+
     if family == "drums":
         _validate_drums(canonical, notes, new_notes)
     elif family in {"bass", "guitar"}:
         _validate_strings(canonical, family, notes, new_notes, parameters)
     elif family == "keys":
         _validate_keys(canonical, notes, new_notes, parameters)
+
+
+def _keyswitch_pitches_from_recipe(recipe: Mapping[str, Any]) -> frozenset[int]:
+    """Pitches de keyswitch declarados na receita — fora da regiao tocavel."""
+
+    pitches: set[int] = set()
+    keyswitch = recipe.get("keyswitch")
+    if isinstance(keyswitch, int):
+        pitches.add(keyswitch)
+    elif isinstance(keyswitch, Sequence) and not isinstance(keyswitch, str):
+        pitches.update(p for p in keyswitch if isinstance(p, int))
+    return frozenset(pitches)
 
 
 def _notes_from_midi(mid: mido.MidiFile) -> tuple[_PhysicalNote, ...]:

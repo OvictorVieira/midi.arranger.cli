@@ -244,6 +244,7 @@ class TechniqueRegistry:
                 before_technique.midi,
                 after_mid,
                 context.parameters,
+                context.recipe,
             )
             after = _StructuralSnapshot.from_midi(after_mid)
             _validate_technique_contract(
@@ -1378,6 +1379,275 @@ def _apply_bass_velocity_contour(
             if original_vel >= p75 and new_vel < p25:
                 new_vel = max(new_vel, p25)
             msg.velocity = new_vel
+
+    return mid
+
+
+@register_technique("bass.ghost_notes", "technique")
+def _apply_bass_ghost_notes(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Dead notes entre notas estruturais do baixo.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity`, `velocity_relativa_pct` e `gate_pct` pelo indice.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - `density = 0.0` DESLIGA — teto checado ANTES de acrescentar candidato.
+      - Nao semeia em silencio: intervalo entre notas estruturais > 1 compasso
+        e borda de pausa, nao groove.
+      - Ghost herda pitch da nota estrutural anterior (mesma corda que a mao ja
+        esta) — nunca inventa altura.
+      - Idempotente: reaplicar com a mesma seed dispara o dedup do dispatch.
+      - Receita `modo_bass` insere keyswitch A#-1 (10) simultaneo ao ghost;
+        keyswitch fica fora da regiao tocavel do baixo e o validador fisico
+        ignora pitches declarados como keyswitch na receita.
+    """
+
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    params_by_name = {p.name: p for p in technique.parameters}
+
+    def _range(name: str) -> tuple[float, float] | None:
+        if name in context.parameters:
+            value = context.parameters[name]
+        elif name in context.recipe:
+            value = context.recipe[name]
+        else:
+            param = params_by_name.get(name)
+            if param is None:
+                return None
+            if param.range is not None:
+                value = param.range
+            elif param.value is not None:
+                value = (param.value, param.value)
+            else:
+                return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return (float(value), float(value))
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
+        ):
+            return (float(value[0]), float(value[1]))
+        return None
+
+    velocity_range = _range("velocity") or (25.0, 50.0)
+    velocity_lo = max(1, int(velocity_range[0]))
+    velocity_hi = max(velocity_lo, int(velocity_range[1]))
+
+    relative_range = _range("velocity_relativa_pct") or (20.0, 40.0)
+    relative_hi = max(1.0, float(relative_range[1]))
+
+    gate_range = _range("gate_pct") or (10.0, 25.0)
+    gate_lo = max(1.0, float(gate_range[0]))
+    gate_hi = max(gate_lo, float(gate_range[1]))
+
+    density_raw = context.parameters.get("density")
+    density: float | None
+    if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
+        density = float(density_raw)
+    else:
+        density = None
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    sixteenth = max(1, ticks_per_beat // 4)
+    max_groove_interval = ticks_per_beat * 4
+
+    keyswitch_pitch: int | None = None
+    ks_raw = context.recipe.get("keyswitch") if context.recipe else None
+    if isinstance(ks_raw, int):
+        keyswitch_pitch = ks_raw
+
+    position_rng = context.rng("positions")
+    velocity_rng = context.rng("velocity")
+    gate_rng = context.rng("gate")
+
+    def target_count(size: int) -> int:
+        if size <= 0:
+            return 0
+        if density is None:
+            return size
+        if density <= 0.0:
+            return 0
+        return max(1, min(size, int(round(size * density))))
+
+    def read_pairs(track):
+        return [
+            (channel, pitch, start_tick, end_tick, velocity)
+            for (
+                channel,
+                pitch,
+                start_tick,
+                end_tick,
+                velocity,
+                _note_on_index,
+                _note_off_index,
+            ) in _iter_note_pairs(track)
+        ]
+
+    def overlaps_structural(existing, channel, pitch, start_tick, end_tick):
+        for chan, pit, start, end, _vel in existing:
+            if chan != channel or pit != pitch:
+                continue
+            if start < end_tick and end > start_tick:
+                return True
+        return False
+
+    def insert_events(track, events):
+        # events: list of (tick, order_bias, mido.Message)
+        absolute = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, 0, order, msg))
+            order += 1
+        for candidate_tick, bias, msg in events:
+            absolute.append((candidate_tick, bias, order, msg))
+            order += 1
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in sorted(
+            absolute, key=lambda item: (item[0], item[1], item[2])
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    for track in mid.tracks:
+        pairs = read_pairs(track)
+        if len(pairs) < 2:
+            continue
+
+        by_channel: dict[int, list[tuple[int, int, int, int, int]]] = {}
+        for pair in pairs:
+            by_channel.setdefault(pair[0], []).append(pair)
+        for channel_pairs in by_channel.values():
+            channel_pairs.sort(key=lambda item: (item[2], item[3]))
+
+        candidates: list[dict[str, int]] = []
+        for channel_pairs in by_channel.values():
+            for current, following in zip(
+                channel_pairs, channel_pairs[1:], strict=False,
+            ):
+                _chan, cur_pitch, cur_start, cur_end, cur_vel = current
+                _n_chan, _n_pitch, next_start, _n_end, _n_vel = following
+                if next_start - cur_start > max_groove_interval:
+                    continue
+                tick = cur_start + sixteenth
+                while tick < next_start:
+                    sixteenth_in_beat = (tick % ticks_per_beat) // sixteenth
+                    if sixteenth_in_beat in (1, 3):
+                        candidates.append({
+                            "tick": tick,
+                            "channel": current[0],
+                            "pitch": cur_pitch,
+                            "reference_velocity": cur_vel,
+                        })
+                    tick += sixteenth
+
+        if not candidates:
+            continue
+
+        shuffled = list(candidates)
+        position_rng.shuffle(shuffled)
+        wanted = target_count(len(shuffled))
+        selected: list[dict[str, int]] = []
+        seen_slots: set[tuple[int, int]] = set()
+        for candidate in shuffled:
+            if len(selected) >= wanted:
+                break
+            slot = (candidate["channel"], candidate["tick"])
+            if slot in seen_slots:
+                continue
+            gate_pct = gate_rng.uniform(gate_lo, gate_hi)
+            duration = max(1, int(round(sixteenth * gate_pct / 100.0)))
+            end_tick = candidate["tick"] + duration
+            if overlaps_structural(
+                pairs,
+                candidate["channel"],
+                candidate["pitch"],
+                candidate["tick"],
+                end_tick,
+            ):
+                continue
+            candidate["end_tick"] = end_tick
+            candidate["velocity"] = min(
+                velocity_hi,
+                max(
+                    velocity_lo,
+                    min(
+                        velocity_rng.randint(velocity_lo, velocity_hi),
+                        int(round(candidate["reference_velocity"] * relative_hi / 100.0)),
+                    ),
+                ),
+            )
+            selected.append(candidate)
+            seen_slots.add(slot)
+
+        if not selected:
+            continue
+
+        selected.sort(key=lambda item: item["tick"])
+        events = []
+        for candidate in selected:
+            channel = candidate["channel"]
+            events.append((
+                candidate["tick"],
+                1,
+                _mido.Message(
+                    "note_on",
+                    channel=channel,
+                    note=candidate["pitch"],
+                    velocity=candidate["velocity"],
+                ),
+            ))
+            events.append((
+                candidate["end_tick"],
+                3,
+                _mido.Message(
+                    "note_off",
+                    channel=channel,
+                    note=candidate["pitch"],
+                    velocity=0,
+                ),
+            ))
+            if keyswitch_pitch is not None:
+                events.append((
+                    candidate["tick"],
+                    0,
+                    _mido.Message(
+                        "note_on",
+                        channel=channel,
+                        note=keyswitch_pitch,
+                        velocity=127,
+                    ),
+                ))
+                events.append((
+                    candidate["end_tick"],
+                    4,
+                    _mido.Message(
+                        "note_off",
+                        channel=channel,
+                        note=keyswitch_pitch,
+                        velocity=0,
+                    ),
+                ))
+        insert_events(track, events)
 
     return mid
 
