@@ -87,6 +87,7 @@ def validate_physical_plausibility(
     before: mido.MidiFile,
     after: mido.MidiFile,
     parameters: Mapping[str, Any],
+    recipe: Mapping[str, Any] | None = None,
 ) -> None:
     """Rejeita ornamentos novos que violem regras fisicas por familia."""
 
@@ -96,12 +97,47 @@ def validate_physical_plausibility(
     if not new_notes:
         return
 
+    keyswitch_pitches = _keyswitch_pitches_from_recipe(recipe or {})
+    if keyswitch_pitches:
+        new_notes = tuple(
+            note for note in new_notes if note.pitch not in keyswitch_pitches
+        )
+        notes = tuple(
+            note for note in notes if note.pitch not in keyswitch_pitches
+        )
+        if not new_notes:
+            return
+
     if family == "drums":
         _validate_drums(canonical, notes, new_notes)
     elif family in {"bass", "guitar"}:
         _validate_strings(canonical, family, notes, new_notes, parameters)
     elif family == "keys":
         _validate_keys(canonical, notes, new_notes, parameters)
+
+
+def _keyswitch_pitches_from_recipe(recipe: Mapping[str, Any]) -> frozenset[int]:
+    """Pitches de keyswitch declarados na receita — fora da regiao tocavel.
+
+    Reconhece a chave canonica `keyswitch` (int ou lista) e qualquer chave que
+    comece com `keyswitch_` (int), para receitas como `bass.attack_style` do
+    MODO BASS, que declara `keyswitch_dedo`, `keyswitch_palheta`,
+    `keyswitch_slap`, `keyswitch_forcar_primeiro` e `keyswitch_forcar_segundo`.
+    """
+
+    pitches: set[int] = set()
+    for key, value in recipe.items():
+        if not isinstance(key, str):
+            continue
+        if key != "keyswitch" and not key.startswith("keyswitch_"):
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            pitches.add(value)
+        elif isinstance(value, Sequence) and not isinstance(value, str):
+            pitches.update(p for p in value if isinstance(p, int) and not isinstance(p, bool))
+    return frozenset(pitches)
 
 
 def _notes_from_midi(mid: mido.MidiFile) -> tuple[_PhysicalNote, ...]:

@@ -72,6 +72,10 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   conta como mão, incluindo `48` (tom) e `59` (ride/crash).
 - Em `style.<familia>.parameters`, aceite apenas número escalar ou par `[min, max]`; sequências de
   notas/tempos e chaves de conteúdo musical são bloqueadas em `tools/plan.py` e no schema da fachada.
+  A ÚNICA exceção é `StyleTechnique.style`: seleção de técnica de execução (dedo/palheta/slap) contra
+  vocabulário FECHADO em `tools/style_schema.py::STYLE_TECHNIQUE_STYLE_VALUES` — nunca texto livre.
+  Técnica nova que precisar de outra categoria acrescenta à lista fechada, nunca aceita string fora
+  dela. `render._style_technique_parameters` repassa como `context.parameters["style"]`.
 - Regras estruturais compartilhadas de `style` vivem em `tools/style_schema.py`; use esse helper em
   domínio e fachada em vez de duplicar listas de chaves musicais, detecção anticópia ou schema de
   `techniques[]`.
@@ -127,11 +131,13 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
-  bateria de andaime). Hoje está nessa situação `drums.accent_hierarchy` (issue #50).
-- Inventário atual de bateria aplicável pelo motor: `drums.accented_roll`,
-  `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`,
-  `drums.ghost_notes` e `drums.microtiming`. Esse conjunto é travado por teste; qualquer técnica de
-  bateria documentada fora dele continua não suportada até ter aplicador real e contrato coberto.
+  bateria de andaime). Hoje estão nessa situação `drums.accent_hierarchy` (issue #50) e as técnicas
+  de baixo `bass.slide`, `bass.vibrato`, `bass.string_selection` e `bass.harmonic` (fora do escopo
+  da issue #47). Inventário canônico do motor em `docs/arquitetura.md` (§4, "Inventário de técnicas
+  do motor"); o teste `test_supported_techniques_is_derived_from_the_registry` em
+  `tests/test_techniques_engine.py` afirma a tupla exata e quebra o build se um registro fantasma
+  aparecer. Inventário atual de bateria: `drums.accented_roll`, `drums.articulation_diff`,
+  `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes` e `drums.microtiming`.
 - Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
   no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
   63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por

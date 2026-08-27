@@ -14,7 +14,7 @@ def test_style_technique_schema_can_close_additional_properties():
 
     assert schema["required"] == ["name"]
     assert schema["additionalProperties"] is False
-    assert set(schema["properties"]) == {"name", "density", "rationale"}
+    assert set(schema["properties"]) == {"name", "density", "rationale", "style"}
 
 
 def test_find_style_musical_content_rejects_content_key_with_path():

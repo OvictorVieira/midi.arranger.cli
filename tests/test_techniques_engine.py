@@ -194,6 +194,12 @@ def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
     assert SUPPORTED_TECHNIQUES == (
+        "bass.attack_style",
+        "bass.ghost_notes",
+        "bass.hammer_pull",
+        "bass.let_ring",
+        "bass.palm_mute",
+        "bass.velocity_contour",
         "drums.accented_roll",
         "drums.articulation_diff",
         "drums.buzz_roll",
@@ -211,6 +217,12 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
         apply_technique("drums.accent_hierarchy", payload, seed=1)
 
     assert exc.value.available == (
+        "bass.attack_style",
+        "bass.ghost_notes",
+        "bass.hammer_pull",
+        "bass.let_ring",
+        "bass.palm_mute",
+        "bass.velocity_contour",
         "drums.accented_roll",
         "drums.articulation_diff",
         "drums.buzz_roll",
