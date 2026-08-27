@@ -2291,6 +2291,180 @@ def _apply_bass_hammer_pull(
     return mid
 
 
+@register_technique("bass.let_ring", "technique")
+def _apply_bass_let_ring(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Let-ring do baixo — sustentacao via CC declarado no manual.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `cc` do manual pelo indice; precedencia parameters > recipe > manual.
+      - Sem `density` (ou `density<=0`) => NO-OP. Let-ring geral e ausencia de
+        intencao musical, nao default seguro.
+      - Agrupa notas estruturais por canal em runs (gap entre notas
+        consecutivas <= 1 compasso). `density` seleciona a fracao dos runs
+        que recebe pedal.
+      - Emite CC de liga (127) e desliga (0) em pares por run — nunca deixa
+        CC pendurado no fim da track.
+      - Nao altera nota estrutural (nivel technique sem flags de mudanca).
+      - Idempotencia: reaplicar com a mesma seed produz eventos com mesma
+        assinatura (canal, tick, cc, valor) e o dedup do dispatch central
+        (`_drop_reapplied_continuous_events`) descarta as duplicatas.
+    """
+
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    params_by_name = {p.name: p for p in technique.parameters}
+    recipe = context.recipe
+
+    def _cc_number() -> int | None:
+        if "cc" in context.parameters:
+            value = context.parameters["cc"]
+        elif "cc" in recipe:
+            value = recipe["cc"]
+        else:
+            param = params_by_name.get("cc")
+            if param is None:
+                return None
+            if param.value is not None:
+                value = param.value
+            elif param.range is not None:
+                value = param.range
+            else:
+                return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return None
+
+    cc_number = _cc_number()
+    if cc_number is None or not (0 <= cc_number <= 127):
+        return mid
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    max_gap_ticks = ticks_per_beat * 4
+
+    select_rng = context.rng("let_ring_select")
+
+    def collect_pairs(track):
+        pending: dict[tuple[int, int], list[int]] = {}
+        collected: list[tuple[int, int, int, int]] = []
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append(tick)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start = stack.pop(0)
+                collected.append((msg.channel, msg.note, start, tick))
+        return collected
+
+    def insert_events(track, events):
+        absolute: list[tuple[int, int, int, mido.Message | mido.MetaMessage]] = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, 0, order, msg))
+            order += 1
+        for event_tick, bias, msg in events:
+            absolute.append((event_tick, bias, order, msg))
+            order += 1
+        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in absolute:
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    for track in mid.tracks:
+        pairs = collect_pairs(track)
+        if not pairs:
+            continue
+
+        by_channel: dict[int, list[tuple[int, int, int]]] = {}
+        for channel, _pitch, start, end in pairs:
+            by_channel.setdefault(channel, []).append((start, end, _pitch))
+        for lst in by_channel.values():
+            lst.sort(key=lambda item: (item[0], item[1]))
+
+        runs: list[tuple[int, int, int]] = []
+        for channel, lst in by_channel.items():
+            run_start = lst[0][0]
+            run_end = lst[0][1]
+            for start, end, _pitch in lst[1:]:
+                gap = start - run_end
+                if gap > max_gap_ticks:
+                    runs.append((channel, run_start, run_end))
+                    run_start = start
+                    run_end = end
+                else:
+                    if end > run_end:
+                        run_end = end
+            runs.append((channel, run_start, run_end))
+
+        selected: list[tuple[int, int, int]] = []
+        if density >= 1.0:
+            selected = list(runs)
+        else:
+            for run in runs:
+                if select_rng.random() < density:
+                    selected.append(run)
+
+        if not selected:
+            continue
+
+        events: list[tuple[int, int, mido.Message]] = []
+        for channel, run_start, run_end in selected:
+            events.append((
+                run_start, -1,
+                _mido.Message(
+                    "control_change", channel=channel,
+                    control=cc_number, value=127,
+                ),
+            ))
+            events.append((
+                run_end, 5,
+                _mido.Message(
+                    "control_change", channel=channel,
+                    control=cc_number, value=0,
+                ),
+            ))
+        insert_events(track, events)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
