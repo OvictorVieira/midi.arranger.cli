@@ -532,13 +532,13 @@ tutoriais dá número.
   "description": "DUAS ESTRATEGIAS, e ha desacordo documentado. A articulacao gravada do SD3 (nota 69) resolve com uma nota so, mas ha tutorial de producao que a considera larga demais e prefere montar a mao para apertar. Montando a mao: duas notas com o GRID DESLIGADO, senao a DAW gruda a graca na grade e o flam some. Gradacao de realismo, da pior para a melhor: articulacao gravada < duas notas na mesma altura < segunda batida numa amostra ou grupo LIGEIRAMENTE DIFERENTE, que imita como um baterista bate duas vezes seguidas. No AD2 nao ha articulacao gravada, entao a graca vai na alternada (40) para as duas nao roubarem voz. REGRA QUE VALE ALEM DO FLAM: dois toms atacados no mesmo tick nao existem em execucao real — num fill com toms simultaneos, flameie.",
   "parameters": [
     {"name": "gap_ms", "range": [8, 15], "source": "Moozix"},
-    {"name": "grace_velocity_ratio", "source": null},
-    {"name": "reading_ceiling_ms", "source": null}
+    {"name": "grace_velocity_ratio", "value": 0.38, "source": "CONVENCAO — a razao graca/principal e derivada, nao afirmada por fonte (ver secao 11). 0.38 fica na faixa em que a graca soa como ornamento e nao como segunda batida; escolhido para o motor, nao medido"},
+    {"name": "reading_ceiling_ms", "value": 35, "source": "CONVENCAO — teto operacional acima do qual as duas batidas passam a ser lidas como notas separadas em vez de flam; escolhido para o motor, sem medicao publicada"}
   ],
   "tools": {
-    "generic": {"note": "grid DESLIGADO para arrastar a graca livre; segunda batida em amostra diferente quando a lib permitir"},
-    "superior_drummer": {"notes": [69], "note": "articulacao Snare Flams gravada — uma nota so. Alternativa: montar a mao em 38 se o espacamento gravado ficar largo demais", "fonte_do_desacordo": "https://www.youtube.com/watch?v=x-Fjokn-YI4"},
-    "addictive_drums": {"notes_main": [38], "notes_grace": [40], "note": "AD2 nao tem articulacao de flam gravada"}
+    "generic": {"notes_main": [38], "notes_grace": [38], "tom_notes": [41, 43, 45, 47, 48], "note": "grid DESLIGADO para arrastar a graca livre; segunda batida em amostra diferente quando a lib permitir"},
+    "superior_drummer": {"notes": [69], "notes_main": [38], "tom_notes": [41, 43, 45, 47, 48], "note": "articulacao Snare Flams gravada — uma nota so. Alternativa: montar a mao em 38 se o espacamento gravado ficar largo demais", "fonte_do_desacordo": "https://www.youtube.com/watch?v=x-Fjokn-YI4"},
+    "addictive_drums": {"notes_main": [38], "notes_grace": [40], "tom_notes": [65, 67, 69, 71], "note": "AD2 nao tem articulacao de flam gravada"}
   }
 }
 ```
@@ -560,7 +560,9 @@ tutoriais dá número.
     {"name": "sloppy_threshold_ms", "value": 50, "source": "Slam Tracks"}
   ],
   "tools": {
-    "generic": {"note": "aplique como offset absoluto em ms a cada nota; nao substitui hierarquia de acento"}
+    "generic": {"hihat_notes": [42, 44, 46], "note": "aplique como offset absoluto em ms a cada nota; nao substitui hierarquia de acento"},
+    "superior_drummer": {"hihat_notes": [10, 11, 12, 13, 14, 15, 16, 17, 21, 22, 23, 24, 25, 26, 42, 44, 46, 60, 61, 62, 63, 64, 65, 119, 120, 121, 122, 123, 124], "note": "aliases de hi-hat do kit real do usuario e mapa de trabalho SD3"},
+    "addictive_drums": {"hihat_notes": [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59], "note": "AD2 resolve abertura por numero de nota"}
   }
 }
 ```
@@ -573,10 +575,10 @@ tutoriais dá número.
   "family": "drums",
   "summary": "Repeticoes densas em velocity baixa; NENHUMA das duas ferramentas tem articulacao de buzz roll.",
   "verified": false,
-  "description": "Represente como 32as/64as em velocity subindo devagar. NAO use nota longa sustentada. NAO confunda com Snare Backward/Forward Swirl (SD3 66/67) nem com a familia Sweep do AD2 (26-35) — aquilo e vassoura, nao rufo.",
+  "description": "Represente como 32as/64as em velocity subindo devagar. NAO use nota longa sustentada. NAO confunda com Snare Backward/Forward Swirl (SD3 66/67) nem com a familia Sweep do AD2 (26-35) — aquilo e vassoura, nao rufo. [NAO VERIFICADO] CONVENCAO operacional: a rampa linear entra no compasso como preparacao curta para a nota estrutural, porque o manual so documenta a direcao musical da rampa e nao a sua forma exata.",
   "parameters": [
-    {"name": "grid", "value": "32nd/64th", "source": null},
-    {"name": "velocity_ramp", "value": null, "range": null, "source": null}
+    {"name": "grid", "value": "32nd/64th", "source": "CONVENCAO — a grade vem da descricao textual do manual (32as/64as); o valor exato por contexto nao e afirmado por fonte"},
+    {"name": "velocity_ramp", "value": {"shape": "linear", "start_ratio": 0.35, "end_ratio": 0.78, "gate_ratio": 0.72, "window_beats": 1.0}, "range": null, "source": "CONVENCAO — a secao 11 declara que a FORMA da rampa de velocity do buzz nao tem fonte. Rampa linear curta ate a nota estrutural, escolhida para evitar semicolcheia mecanica e nota sustentada falsa. E escolha do motor, nao medicao"}
   ],
   "tools": {
     "superior_drummer": {"engine": ["ligar Smoothing na caixa antes"], "notes": [38], "note": "sem Smoothing cada repeticao redispara ataque duro"},
@@ -596,8 +598,20 @@ tutoriais dá número.
   "description": "AD2 tem notas de choke dedicadas (hi-hat NAO tem choke). SD3 tem tres rotas: nota Mute Hit, Note Off, ou aftertouch. Cuidado no SD3: se Mute Tail Trigger estiver em Note Off, o comprimento da nota do prato passa a ter significado musical.",
   "parameters": [],
   "tools": {
-    "addictive_drums": {"notes": [63, 78, 80, 82, 87, 90, 92, 94], "note": "hi-hat nao tem choke"},
-    "superior_drummer": {"notes": [50, 54, 56, 58, 83, 94, 95, 106, 107, 118], "note": "Mute Hit dedicado; ou Note Off; ou aftertouch"}
+    "addictive_drums": {
+      "target_notes": [60, 77, 79, 81, 89, 91, 93],
+      "notes": [63, 78, 80, 82, 87, 90, 92, 94],
+      "choke_after_beats": 0.5,
+      "short_ceiling_beats": 0.25,
+      "note": "hi-hat nao tem choke; duracao curta sem choke e convencao operacional para nao matar prato ja abafado"
+    },
+    "superior_drummer": {
+      "target_notes": [49, 52, 55, 57, 59],
+      "notes": [50, 54, 56, 58, 83, 94, 95, 106, 107, 118],
+      "choke_after_beats": 0.5,
+      "short_ceiling_beats": 0.25,
+      "note": "Mute Hit dedicado; ou Note Off; ou aftertouch. Duracao curta sem choke e convencao operacional para nao matar prato ja abafado"
+    }
   }
 }
 ```
@@ -639,8 +653,8 @@ tutoriais dá número.
   "parameters": [
     {"name": "velocity_acento", "value": 118, "source": "CONVENCAO — GetGood Drums, demonstrado na tela, https://www.youtube.com/watch?v=OPnrlXhJhOo 1:05-1:16"},
     {"name": "velocity_suave", "value": 55, "source": "CONVENCAO — mesma fonte; coincide com o piso da faixa soft da Toontrack em accent_hierarchy"},
-    {"name": "delta_mao_dominante", "source": null},
-    {"name": "delta_lift_pre_acento", "source": null},
+    {"name": "delta_mao_dominante", "value": 6, "source": "CONVENCAO — ajuste operacional derivado da regra de mao dominante; sem medicao publicada"},
+    {"name": "delta_lift_pre_acento", "value": 14, "source": "CONVENCAO — ajuste operacional derivado da regra de lift pre-acento; sem medicao publicada"},
     {"name": "sticking_padrao", "value": "RLRL com acento na dominante", "source": "CONVENCAO — mesma fonte, 2:32-2:47"}
   ],
   "tools": {

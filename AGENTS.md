@@ -54,6 +54,9 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - O contrato do nível `technique` também é checado em `TechniqueRegistry.apply`: pode acrescentar
   ornamentos, CC e pitch bend, mas pitch e posição das notas estruturais são intocáveis; velocity e
   duração estrutural só mudam com flags explícitas no registro da técnica.
+- A única exceção para pitch estrutural em técnica de bateria é troca de articulação da mesma peça
+  (`drums.articulation_diff`): registre `allow_structural_pitch_change=True` e preserve contagem,
+  track, canal, início, duração e velocity. Não use essa flag para trocar conteúdo musical.
 - A idempotência de ornamentos do nível `technique` também fica em `TechniqueRegistry.apply`: ao
   reaplicar, nota extra com a mesma assinatura exata já existente (track/canal/pitch/início/fim),
   CC ou pitch bend com mesma assinatura (track/canal/tick/valor) é descartado antes da validação
@@ -133,7 +136,8 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   da issue #47). Inventário canônico do motor em `docs/arquitetura.md` (§4, "Inventário de técnicas
   do motor"); o teste `test_supported_techniques_is_derived_from_the_registry` em
   `tests/test_techniques_engine.py` afirma a tupla exata e quebra o build se um registro fantasma
-  aparecer.
+  aparecer. Inventário atual de bateria: `drums.accented_roll`, `drums.articulation_diff`,
+  `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes` e `drums.microtiming`.
 - Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
   no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
   63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por

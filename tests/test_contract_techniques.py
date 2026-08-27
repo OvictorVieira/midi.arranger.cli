@@ -108,6 +108,17 @@ def test_describe_carries_source_manual():
     assert env["data"]["source_manual"] == "tecnicas_bateria_midi.md"
 
 
+def test_describe_accepts_parameter_value_object():
+    env = call("techniques.describe", {
+        "name": "drums.buzz_roll",
+        "tool": "superior_drummer",
+    })
+
+    assert env["ok"] is True
+    params = {p["name"]: p for p in env["data"]["parameters"]}
+    assert params["velocity_ramp"]["value"]["shape"] == "linear"
+
+
 def test_describe_ambiguous_bare_name_errors_with_candidates():
     """`ghost_notes` existe em bateria e em baixo.
 
