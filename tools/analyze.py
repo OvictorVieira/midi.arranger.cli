@@ -23,6 +23,9 @@ from .primitives import KICKS, SNARES
 from .primitives import bars_from as _bars_from
 from .primitives import chord_root as _chord_root
 from .primitives import key_root as _key_root
+from .tuning import TrackChannelDistribution, TrackTuningInference, fallback_track_name
+from .tuning import channel_distribution as _channel_distribution
+from .tuning import tuning_inference as _tuning_inference
 
 UNISON_WINDOW_S = 0.010  # 10 ms — mesmo limiar de cluster de strum do humanize
 
@@ -70,6 +73,8 @@ class Analysis:
     guitar_unison_positions: list[float]       # segundos
     track_names: list[str]                     # ordem estavel
     guitar_notes: list[GuitarNote] = field(default_factory=list)
+    channel_distribution: list[TrackChannelDistribution] = field(default_factory=list)
+    tuning_inference: list[TrackTuningInference] = field(default_factory=list)
 
 
 def find_bar(analysis: Analysis, onset_s: float) -> BarAnalysis | None:
@@ -91,12 +96,13 @@ def bar_number(bar: BarAnalysis | None) -> int:
 
 
 def _track_name(inst: pretty_midi.Instrument, idx: int) -> str:
-    """Nome estavel para uma track — cai em 'Track {idx}' quando o arquivo
-    nao tem nome."""
+    """Nome estavel para uma track — reusa `fallback_track_name` de
+    `tools.tuning` para nao divergir do texto que a inferencia de afinacao
+    reporta na mesma posicao."""
     name = (inst.name or "").strip()
     if name:
         return name
-    return f"Track {idx}"
+    return fallback_track_name(idx)
 
 
 def _is_guitar_track(inst: pretty_midi.Instrument) -> bool:
@@ -195,8 +201,14 @@ def _find_unisons(
     return unisons
 
 
-def analyze(midi_path: str) -> Analysis:
-    """Analisa `midi_path` e devolve uma `Analysis` pronta para o planejador."""
+def analyze(
+    midi_path: str,
+    declared_stringed_tracks: list[str] | None = None,
+) -> Analysis:
+    """Analisa `midi_path` e devolve uma `Analysis` pronta para o planejador.
+
+    `declared_stringed_tracks` propaga a declaracao explicita do usuario
+    para a TRAVA 1 da inferencia de afinacao (US-002)."""
     pm = pretty_midi.PrettyMIDI(midi_path)
     key_root = _key_root(pm)
 
@@ -258,6 +270,8 @@ def analyze(midi_path: str) -> Analysis:
         guitar_unison_positions=unisons,
         track_names=track_names,
         guitar_notes=guitar_notes,
+        channel_distribution=_channel_distribution(midi_path),
+        tuning_inference=_tuning_inference(midi_path, declared_stringed_tracks),
     )
 
 

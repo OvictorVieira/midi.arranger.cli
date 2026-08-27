@@ -28,6 +28,7 @@ from . import plugins as plugins_mod
 from . import render as render_mod
 from . import sections as sections_mod
 from . import techniques as techniques_mod
+from . import tuning as tuning_mod
 from .brief_schema import BRIEF_VALIDATE_TOOL
 from .constants import REGISTER_BANDS
 from .plan import (
@@ -394,6 +395,42 @@ def _track_from_instrument(inst: pretty_midi.Instrument, name: str) -> dict[str,
     }
 
 
+def _channel_stats_dict(c: tuning_mod.ChannelStats) -> dict[str, Any]:
+    """Serializa `ChannelStats` para o payload da tool. Ponto unico de
+    conversao — usado por `channels` e `candidate_channels`."""
+    return {
+        "channel": int(c.channel),
+        "note_count": int(c.note_count),
+        "pitch_min": int(c.pitch_min),
+        "pitch_max": int(c.pitch_max),
+        "span": int(c.span),
+        "percentage": float(c.percentage),
+    }
+
+
+_CHANNEL_STATS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+            "note_count": {"type": "integer", "minimum": 1},
+            "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
+            "pitch_max": {"type": "integer", "minimum": 0, "maximum": 127},
+            "span": {"type": "integer", "minimum": 0},
+            "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+        },
+        "required": [
+            "channel", "note_count", "pitch_min", "pitch_max",
+            "span", "percentage",
+        ],
+        "additionalProperties": False,
+    },
+}
+"""Schema unico para `channels`/`candidate_channels` — mesma forma de
+`ChannelStats`, um lugar so pra atualizar."""
+
+
 def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     src = _resolve_midi(payload["midi_path"])
     try:
@@ -405,7 +442,9 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             path="midi_path",
         ) from None
 
-    a = analyze_mod.analyze(str(src))
+    declared_raw = payload.get("declared_stringed_tracks") or []
+    declared_stringed = [str(x) for x in declared_raw]
+    a = analyze_mod.analyze(str(src), declared_stringed_tracks=declared_stringed)
     secs = sections_mod.read_sections(str(src))
 
     tempo = _tempo_of(pm)
@@ -433,7 +472,16 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     tracks_out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for i, inst in enumerate(pm.instruments):
-        name = inst.name.strip() if inst.name and inst.name.strip() else f"track_{i}"
+        # ATENCAO: `tracks[i]` e `tuning_inference[i]` NAO sao o mesmo indice.
+        # Aqui a base e `pm.instruments`, que o pretty_midi quebra por
+        # (channel, program); em `tuning_inference` a base e a SMF track
+        # fisica lida com `mido`. Uma SMF track sem nome com notas nos canais
+        # 0/1/2 vira tres entradas aqui (`Track 0/1/2`) e UMA la (`Track 0`).
+        # Track com `track_name` meta casa nos dois lados pelo nome, que e o
+        # que `declared_stringed_tracks` usa; para track sem nome, so o
+        # fallback da SMF track casa. Declaracao que nao casa com nada vira
+        # warning `W_DECLARED_TRACK_NOT_FOUND` abaixo, nunca no-op silencioso.
+        name = a.track_names[i]
         # Preserva duplicatas de nome com sufixo estavel — indice de origem.
         if name in seen:
             name = f"{name}#{i}"
@@ -466,9 +514,89 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "snare_positions_s": [float(x) for x in a.snare_positions],
             "guitar_unison_positions_s": [float(x) for x in a.guitar_unison_positions],
         },
+        "channel_distribution": [
+            {
+                "track_index": int(td.track_index),
+                "track_name": td.track_name,
+                "channels": [_channel_stats_dict(c) for c in td.channels],
+            }
+            for td in a.channel_distribution
+        ],
+        "tuning_inference": [
+            {
+                "track_index": int(ti.track_index),
+                "track_name": ti.track_name,
+                "is_stringed": bool(ti.is_stringed),
+                "stringed_source": ti.stringed_source,
+                "discard_reason": ti.discard_reason,
+                "gm_programs": [int(p) for p in ti.gm_programs],
+                "candidate_channels": [
+                    _channel_stats_dict(c) for c in ti.candidate_channels
+                ],
+                "discarded_channels": [
+                    {
+                        "channel": int(d.channel),
+                        "reason": d.reason,
+                        "note_count": int(d.note_count),
+                        "span": int(d.span),
+                    }
+                    for d in ti.discarded_channels
+                ],
+                "tuning_intervals": [int(x) for x in ti.tuning_intervals],
+                "tuning_class": ti.tuning_class,
+                "tuning_name": ti.tuning_name,
+                "lowest_string_pitch": (
+                    int(ti.lowest_string_pitch)
+                    if ti.lowest_string_pitch is not None
+                    else None
+                ),
+                "confidence": ti.confidence,
+                "string_concentrations": [
+                    {
+                        "string_index": int(s.string_index),
+                        "channel": int(s.channel),
+                        "pitch_min": int(s.pitch_min),
+                        "note_count": int(s.note_count),
+                        "percentage": float(s.percentage),
+                    }
+                    for s in ti.string_concentrations
+                ],
+                "low_strings_top3_percentage": (
+                    float(ti.low_strings_top3_percentage)
+                    if ti.low_strings_top3_percentage is not None
+                    else None
+                ),
+                "name_patch_conflict": (
+                    {
+                        "hint": ti.name_patch_conflict.hint,
+                        "programs": [
+                            int(p) for p in ti.name_patch_conflict.programs
+                        ],
+                    }
+                    if ti.name_patch_conflict is not None
+                    else None
+                ),
+                "inference_incomplete": bool(ti.inference_incomplete),
+            }
+            for ti in a.tuning_inference
+        ],
     }
 
     warnings: list[dict[str, Any]] = []
+    orphan_declared = tuning_mod.unmatched_declared_tracks(
+        a.tuning_inference, declared_stringed,
+    )
+    if orphan_declared:
+        warnings.append({
+            "code": "W_DECLARED_TRACK_NOT_FOUND",
+            "message": (
+                f"{list(orphan_declared)!r} nao casou com track nenhuma do MIDI; "
+                "a declaracao foi ignorada e essas tracks seguem pela inferencia "
+                "normal (podendo sair `unknown`). Use exatamente o texto de "
+                "`tuning_inference[].track_name`."
+            ),
+            "path": "declared_stringed_tracks",
+        })
     inferred = [s.label for s in secs if s.source == "inferred"]
     if inferred:
         warnings.append({
@@ -520,8 +648,15 @@ ANALYZE_TOOL = Tool(
     description=ANALYZE_DESCRIPTION,
     input_schema={
         "type": "object",
-        "properties": {"midi_path": {"type": "string", "minLength": 1}},
+        "properties": {
+            "midi_path": {"type": "string", "minLength": 1},
+            "declared_stringed_tracks": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+        },
         "required": ["midi_path"],
+        "additionalProperties": False,
     },
     output_schema={
         "type": "object",
@@ -581,11 +716,156 @@ ANALYZE_TOOL = Tool(
                     "kick_positions_s", "snare_positions_s",
                     "guitar_unison_positions_s",
                 ],
+                "additionalProperties": False,
+            },
+            "channel_distribution": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "track_index": {"type": "integer", "minimum": 0},
+                        "track_name": {"type": "string"},
+                        "channels": _CHANNEL_STATS_SCHEMA,
+                    },
+                    "required": ["track_index", "track_name", "channels"],
+                    "additionalProperties": False,
+                },
+            },
+            "tuning_inference": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "track_index": {"type": "integer", "minimum": 0},
+                        "track_name": {"type": "string"},
+                        "is_stringed": {"type": "boolean"},
+                        "stringed_source": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {"enum": [
+                                    tuning_mod.STRINGED_SOURCE_DECLARED,
+                                    tuning_mod.STRINGED_SOURCE_GM_PROGRAM,
+                                    tuning_mod.STRINGED_SOURCE_NAME,
+                                ]},
+                            ],
+                        },
+                        "discard_reason": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {"enum": [
+                                    tuning_mod.NOT_STRINGED,
+                                    tuning_mod.NAME_PATCH_CONFLICT,
+                                ]},
+                            ],
+                        },
+                        "gm_programs": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer", "minimum": 0, "maximum": 127,
+                            },
+                        },
+                        "candidate_channels": _CHANNEL_STATS_SCHEMA,
+                        "discarded_channels": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+                                    "reason": {"enum": [
+                                        tuning_mod.DISCARD_LOW_NOTE_COUNT,
+                                        tuning_mod.DISCARD_SPAN_TOO_WIDE,
+                                        tuning_mod.DISCARD_NON_STRINGED_PATCH,
+                                    ]},
+                                    "note_count": {"type": "integer", "minimum": 0},
+                                    "span": {"type": "integer", "minimum": 0},
+                                },
+                                "required": ["channel", "reason", "note_count", "span"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "tuning_intervals": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                        },
+                        "tuning_class": {"enum": [
+                            tuning_mod.TUNING_CLASS_DROP,
+                            tuning_mod.TUNING_CLASS_STANDARD,
+                            tuning_mod.TUNING_CLASS_UNKNOWN,
+                        ]},
+                        "tuning_name": {"type": ["string", "null"]},
+                        "lowest_string_pitch": {
+                            "type": ["integer", "null"],
+                            "minimum": 0,
+                            "maximum": 127,
+                        },
+                        "confidence": {"enum": [
+                            tuning_mod.TUNING_CONFIDENCE_HIGH,
+                            tuning_mod.TUNING_CONFIDENCE_LOW,
+                            tuning_mod.TUNING_CONFIDENCE_UNKNOWN,
+                        ]},
+                        "string_concentrations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "string_index": {"type": "integer", "minimum": 0},
+                                    "channel": {"type": "integer", "minimum": 0, "maximum": 15},
+                                    "pitch_min": {"type": "integer", "minimum": 0, "maximum": 127},
+                                    "note_count": {"type": "integer", "minimum": 1},
+                                    "percentage": {"type": "number", "minimum": 0, "maximum": 100},
+                                },
+                                "required": [
+                                    "string_index", "channel", "pitch_min",
+                                    "note_count", "percentage",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "low_strings_top3_percentage": {
+                            "type": ["number", "null"],
+                            "minimum": 0,
+                            "maximum": 100,
+                        },
+                        "name_patch_conflict": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "hint": {"type": "string", "minLength": 1},
+                                        "programs": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 127,
+                                            },
+                                        },
+                                    },
+                                    "required": ["hint", "programs"],
+                                    "additionalProperties": False,
+                                },
+                            ],
+                        },
+                        "inference_incomplete": {"type": "boolean"},
+                    },
+                    "required": [
+                        "track_index", "track_name", "is_stringed",
+                        "stringed_source", "discard_reason", "gm_programs",
+                        "candidate_channels", "discarded_channels",
+                        "tuning_intervals", "tuning_class", "tuning_name",
+                        "lowest_string_pitch", "confidence",
+                        "string_concentrations", "low_strings_top3_percentage",
+                        "name_patch_conflict", "inference_incomplete",
+                    ],
+                    "additionalProperties": False,
+                },
             },
         },
         "required": [
             "midi_path", "sha256", "tempo", "time_signature", "key_root",
             "key_name", "sections", "bars", "tracks", "rhythmic_anchors",
+            "channel_distribution", "tuning_inference",
         ],
     },
     func=_analyze_impl,

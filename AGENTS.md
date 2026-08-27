@@ -58,6 +58,37 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `note_on` por canal/altura deve preservar a ordem original.
 - Ao adicionar campo em `ArrangementPlan`, atualize juntos `tools/plan.py` (dataclass,
   serialização e validação) e `tools/contract.py` (JSON Schema das tools).
+- Nunca inferir afinação sem evidência de instrumento de corda (`instrument_name`, patch General
+  MIDI em `GM_GUITAR_PROGRAMS`/`GM_BASS_PROGRAMS`, ou declaração explícita via
+  `declared_stringed_tracks`). Sem evidência, `tools.tuning.tuning_inference` marca
+  `discard_reason=not_stringed` e não classifica. Afinação `unknown` **nunca** vem acompanhada de
+  `tuning_name` — a regra é garantida estruturalmente por `_tuning_name`/`_classify_confidence` em
+  `tools/tuning.py` e não deve ser contornada no consumidor.
+- Afinação só é nomeada quando os intervalos são inequívocos e nenhum canal relevante foi
+  descartado. Prefixo ambíguo (menos que `MIN_INTERVALS_FOR_CLASSIFICATION`, ou casando DROP e
+  STANDARD ao mesmo tempo) resulta em `unknown` sem `tuning_name`; qualquer descarte de canal
+  força `confidence != high` e `inference_incomplete=true`.
+- Nome de track em `tools/tuning.py` casa por PALAVRA (não substring), tratando `_`, `-` e `.`
+  como separador além de whitespace — DAW sanitiza espaço no export (`Guitar_1`, `bass-gtr`,
+  `Guitar.L` casam). Qualificador de sopro, percussão, voz ou synth logo depois de `bass`
+  (`_BASS_DISQUALIFIERS`: clarinet, trombone, flute, drum, sax/saxophone, tuba, oboe, bassoon,
+  choir, voice, synth) tira a track de corda: `Bass Clarinet`, `Bass_Drum`, `bass-flute`,
+  `Bass Synth` NÃO casam. `Bass`, `Bass Guitar`, `Electric Bass`, `bass 2` continuam casando.
+- Patch GM só conta como evidência de corda quando **rege nota**: a classificação usa
+  `_governing_programs_by_channel` (patch vigente no `note_on`), nunca a lista histórica de
+  `program_change`. Canal que declara guitarra e depois flauta antes da primeira nota toca flauta.
+  Canal regido por patch de corda **e** de não-corda é ambíguo e fica fora da inferência.
+  `gm_programs` na saída continua relatando todos os patches observados — o relato é completo,
+  a decisão é que é restrita.
+- `GM_BASS_PROGRAMS` é 32-37, **não** 32-39: GM 38/39 (`Synth Bass 1/2`) são sintetizador, não têm
+  corda e portanto não têm afinação a inferir. Manter 38/39 contradiria `_BASS_DISQUALIFIERS`,
+  que já tira `Bass Synth` do casamento por nome.
+- `analyze.tracks[i]` e `analyze.tuning_inference[i]` **não compartilham índice**: `tracks[]` é
+  indexado por `Instrument` do pretty_midi (quebrado por canal/programa) e `tuning_inference[]` por
+  SMF track física lida com `mido`. Uma SMF track sem nome com notas em três canais vira três
+  entradas de um lado e uma do outro. Por isso `declared_stringed_tracks` casa por NOME, e nome
+  declarado que não bate com track nenhuma emite `W_DECLARED_TRACK_NOT_FOUND` — declaração órfã
+  nunca pode ser no-op silencioso.
 
 ## Qualidade
 
