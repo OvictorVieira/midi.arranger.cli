@@ -197,6 +197,26 @@ A skill `midi-brief` fecha o ciclo: lista as técnicas disponíveis por família
 e o resumo de cada uma, apresenta ao usuário, e preenche `authorized_techniques` só com o que ele
 marcou. Silêncio ou dúvida não autoriza.
 
+### Inventário de técnicas do motor
+
+Manual e motor são coisas separadas. `knowledge/tecnicas/*.md` documenta técnicas;
+`tools/techniques/engine.py` executa as que têm aplicador real. `SUPPORTED_TECHNIQUES` é
+derivado do registro e é a única lista que o `plan.validate` aceita — técnica só documentada
+recebe `PlanValidationError` com `not implemented by the engine`.
+
+Estado atual do motor:
+
+| Família | Executadas pelo motor | Documentadas, ainda sem aplicador |
+|---|---|---|
+| `drums` | `drums.ghost_notes` | `drums.accent_hierarchy` (issue #50) |
+| `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.string_selection`, `bass.harmonic` |
+| `keys` | — | tudo documentado |
+| `guitar` | — | tudo documentado |
+
+O teste `test_supported_techniques_is_derived_from_the_registry` em
+`tests/test_techniques_engine.py` afirma a tupla exata para que registro fantasma
+(aplicador stub, `_identity_apply`) quebre o build.
+
 ### Carimbo de plugin/preset em toda track tocada pelo arranjador
 
 Toda track de saída que o arranjador criou ou editou carrega, além do nome
