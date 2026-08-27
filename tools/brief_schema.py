@@ -36,7 +36,7 @@ from . import techniques as techniques_mod
 from .plan import ROUTES
 from .registry import SchemaError, Tool, ToolError, validate_input
 from .style_schema import NOTE_NAME_RE as _NOTE_NAME_RE
-from .style_schema import style_technique_schema
+from .style_schema import find_style_musical_content, style_technique_schema
 
 # --- vocabularios fechados -------------------------------------------------
 
@@ -77,6 +77,16 @@ def _family_style_schema() -> dict[str, Any]:
             "techniques": {
                 "type": "array",
                 "items": style_technique_schema(),
+            },
+            "authorized_techniques": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "default": [],
+            },
+            "suggested_techniques": {
+                "type": "array",
+                "items": style_technique_schema(),
+                "default": [],
             },
             "parameters": {
                 "type": "object",
@@ -214,6 +224,96 @@ def _scan_no_musical_content(node: Any, path: str) -> None:
 # --- validador ------------------------------------------------------------
 
 
+def _resolve_family_technique(
+    idx: techniques_mod.TechniqueIndex, family: str, name: str, path: str,
+) -> techniques_mod.Technique:
+    """Devolve a Technique casada por nome, resolvendo pela familia do path.
+
+    Levanta `E_BRIEF_TECHNIQUE_NOT_FOUND` citando o path e sugerindo tecnicas
+    parecidas quando nada casa. E a mesma resolucao usada em `techniques[]`,
+    `authorized_techniques` e `suggested_techniques` — nunca duas verdades.
+    """
+    resolved = idx.get(name) or next(
+        (t for t in idx.candidates(name) if t.family == family), None
+    )
+    if resolved is not None:
+        return resolved
+    candidates = list(idx.names()) + [t.name for t in idx.techniques]
+    matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
+    raise ToolError(
+        "E_BRIEF_TECHNIQUE_NOT_FOUND",
+        f"tecnica {name!r} declarada em style.{family} nao existe no indice",
+        path=path,
+        hint=(
+            f"tecnicas parecidas: {matches}"
+            if matches
+            else f"tecnicas disponiveis: {list(idx.names())}"
+        ),
+    )
+
+
+def _validate_family_techniques(
+    family: str, entry: dict[str, Any], idx: techniques_mod.TechniqueIndex,
+) -> None:
+    """Valida os tres campos de tecnica de uma familia de style.
+
+    Ordem intencional:
+    1. Existencia de cada nome no indice — `authorized`, `suggested` e
+       `techniques`. Nome desconhecido erra ANTES de qualquer regra de
+       autorizacao, para que erros de digitacao apontem para o field certo.
+    2. Anticopia sobre `suggested_techniques` via helper compartilhado.
+    3. `techniques` como SUBCONJUNTO de `authorized_techniques`.
+    """
+    authorized_raw = entry.get("authorized_techniques", [])
+    authorized_canonicals: set[str] = set()
+    for i, name in enumerate(authorized_raw):
+        resolved = _resolve_family_technique(
+            idx, family, name, f"style.{family}.authorized_techniques[{i}]",
+        )
+        authorized_canonicals.add(resolved.canonical)
+
+    suggested = entry.get("suggested_techniques", [])
+    for i, tech in enumerate(suggested):
+        _resolve_family_technique(
+            idx, family, tech["name"],
+            f"style.{family}.suggested_techniques[{i}].name",
+        )
+
+    violation = find_style_musical_content(
+        suggested, f"style.{family}.suggested_techniques",
+    )
+    if violation is not None:
+        vpath, reason = violation
+        raise ToolError(
+            "E_BRIEF_MUSICAL_CONTENT",
+            f"campo {vpath!r} carrega conteudo musical: {reason}. "
+            f"suggested_techniques so aceita nome de tecnica e parametros — "
+            f"nao conteudo musical.",
+            path=vpath,
+            hint=(
+                "Descreva o comportamento pelo nome da tecnica em "
+                "suggested_techniques[].name e por parametros numericos."
+            ),
+        )
+
+    for i, tech in enumerate(entry.get("techniques", [])):
+        name = tech["name"]
+        path = f"style.{family}.techniques[{i}].name"
+        resolved = _resolve_family_technique(idx, family, name, path)
+        if resolved.canonical not in authorized_canonicals:
+            raise ToolError(
+                "E_BRIEF_TECHNIQUE_NOT_AUTHORIZED",
+                f"tecnica {name!r} em style.{family}.techniques nao esta em "
+                f"authorized_techniques da familia {family!r} — sugestao nao "
+                f"e autorizacao, e o usuario nao autorizou esta tecnica",
+                path=path,
+                hint=(
+                    f"authorized_techniques da familia {family}: "
+                    f"{sorted(authorized_canonicals) or '[]'}"
+                ),
+            )
+
+
 def validate_brief(brief: Any) -> None:
     """Valida `brief` contra o schema e as regras semanticas.
 
@@ -246,28 +346,7 @@ def validate_brief(brief: Any) -> None:
         ) from None
 
     for family, entry in style.items():
-        for i, tech in enumerate(entry.get("techniques", [])):
-            name = tech["name"]
-            # A familia ja esta no caminho (`style.drums.techniques[...]`), entao
-            # nome cru aqui NAO e ambiguo: `ghost_notes` sob `style.drums` so pode
-            # ser o de bateria. Resolve pela familia antes de cair no erro.
-            resolved = idx.get(name) or next(
-                (t for t in idx.candidates(name) if t.family == family), None
-            )
-            if resolved is None:
-                candidates = list(idx.names()) + [t.name for t in idx.techniques]
-                matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
-                raise ToolError(
-                    "E_BRIEF_TECHNIQUE_NOT_FOUND",
-                    f"tecnica {name!r} declarada em style.{family} "
-                    f"nao existe no indice",
-                    path=f"style.{family}.techniques[{i}].name",
-                    hint=(
-                        f"tecnicas parecidas: {matches}"
-                        if matches
-                        else f"tecnicas disponiveis: {list(idx.names())}"
-                    ),
-                )
+        _validate_family_techniques(family, entry, idx)
 
 
 # --- tool -----------------------------------------------------------------
