@@ -104,6 +104,12 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   aceito pelo schema, validado contra a faixa do manual e depois ignorado na aplicação é parâmetro
   mentiroso — mesma categoria de `_identity_apply`. Ao escrever técnica nova, leia `context.parameters`
   antes de cair na receita.
+- **Técnica só se aplica se o usuário autorizou.** Vale para bateria, baixo, guitarra e teclas.
+  Ausência de autorização significa NENHUMA técnica, nunca "todas" — o default seguro é não mexer no
+  material do usuário. Pesquisa e autorização são coisas separadas, mesmo padrão de
+  `suggested_plugin`/`suggested_preset`: o arranjador sugere, o usuário marca, e só o que ele marcou
+  vira `plan.style.<família>.techniques[]`. Rastreado em #51; enquanto não fecha, nada valida isso —
+  `brief_ref` só carrega `path` e `sha256`.
 - Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
