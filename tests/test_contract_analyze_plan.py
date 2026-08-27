@@ -286,12 +286,19 @@ def test_plan_validate_accepts_complete_style_in_all_four_families():
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_accepts_valid_brief_ref():
+def test_plan_validate_accepts_valid_brief_ref(tmp_path: Path):
+    from tools.brief_ref import brief_sha256
+
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({"style": {"drums": {"authorized_techniques": []}}}),
+        encoding="utf-8",
+    )
     plan["brief_ref"] = {
-        "path": "arrangement-brief.json",
-        "sha256": "0" * 64,
+        "path": str(brief_path),
+        "sha256": brief_sha256(brief_path),
     }
 
     env = call("plan.validate", {"plan": plan, "midi_path": midi})

@@ -1103,6 +1103,9 @@ def _plan_validate_impl(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     plan_dict = _read_plan_dict(payload)
     src = _resolve_midi(payload["midi_path"])
+    plan_dir: Path | None = None
+    if "plan_path" in payload:
+        plan_dir = Path(payload["plan_path"]).expanduser().parent
 
     errors: list[dict[str, Any]] = []
     domain_warnings: list[str] = []
@@ -1110,7 +1113,7 @@ def _plan_validate_impl(
 
     try:
         plan_obj = _load_plan_from_dict(plan_dict)
-        domain_warnings = plan_mod.validate(plan_obj)
+        domain_warnings = plan_mod.validate(plan_obj, plan_dir=plan_dir)
     except PlanValidationError as exc:
         errors.append({"path": exc.path, "message": exc.message})
     except ToolError as exc:

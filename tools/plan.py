@@ -291,6 +291,100 @@ def _build_techniques_index_for_style():
         ) from None
 
 
+def _canonicalize_authorized_name(index, family: str, name: str) -> str | None:
+    """Devolve o canonical (`familia.tecnica`) para um nome autorizado.
+
+    Aceita apelido curto (`ghost_notes`) e canonical (`drums.ghost_notes`).
+    Nome que nao casa e ignorado — a validacao do brief (US-001) ja errou nesse
+    caso; aqui o objetivo e comparar a lista autorizada contra o plano.
+    """
+    resolved = index.get(name) or next(
+        (t for t in index.candidates(name) if t.family == family), None
+    )
+    return resolved.canonical if resolved is not None else None
+
+
+def _load_brief_authorized_techniques(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> dict[str, set[str]]:
+    """Le o brief apontado por `plan.brief_ref` e devolve as autorizacoes.
+
+    Verifica `brief_ref.sha256` antes de confiar no conteudo — autorizacao
+    editada depois de aprovada deixaria o hash divergir. Retorna um dict
+    `{familia: {canonical, ...}}` para as quatro familias, mesmo que uma
+    familia esteja ausente do brief (nesse caso, conjunto vazio).
+
+    Levanta `PlanValidationError` com o path exato (`brief_ref.path` ou
+    `brief_ref.sha256`) para brief inexistente, ilegivel, JSON invalido
+    ou hash divergente.
+    """
+    from .brief_ref import brief_sha256
+
+    ref = plan.brief_ref
+    assert ref is not None  # chamada so quando brief_ref esta presente
+    brief_path = Path(ref.path).expanduser()
+    if not brief_path.is_absolute() and plan_dir is not None:
+        brief_path = plan_dir / brief_path
+
+    if not brief_path.is_file():
+        raise PlanValidationError(
+            "brief_ref.path",
+            f"brief file not found at {brief_path}",
+        )
+    try:
+        actual_sha = brief_sha256(brief_path)
+    except OSError as exc:
+        raise PlanValidationError(
+            "brief_ref.path",
+            f"could not read brief file at {brief_path}: {exc}",
+        ) from None
+    if actual_sha != ref.sha256:
+        raise PlanValidationError(
+            "brief_ref.sha256",
+            (
+                f"brief sha256 mismatch: plan declares {ref.sha256}, "
+                f"brief at {brief_path} hashes to {actual_sha} — "
+                "autorizacao pode ter sido editada apos aprovacao"
+            ),
+        )
+    try:
+        brief = json.loads(brief_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PlanValidationError(
+            "brief_ref.path",
+            f"could not parse brief file at {brief_path}: {exc}",
+        ) from None
+    if not isinstance(brief, dict):
+        raise PlanValidationError(
+            "brief_ref.path",
+            f"brief at {brief_path} must be a JSON object",
+        )
+
+    style = brief.get("style")
+    if not isinstance(style, dict):
+        raise PlanValidationError(
+            "brief_ref.path",
+            f"brief at {brief_path} has no 'style' object",
+        )
+
+    index = _build_techniques_index_for_style()
+    authorized: dict[str, set[str]] = {family: set() for family in STYLE_FAMILIES}
+    for family in STYLE_FAMILIES:
+        entry = style.get(family) or {}
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("authorized_techniques") or []
+        if not isinstance(raw, list):
+            continue
+        for name in raw:
+            if not isinstance(name, str):
+                continue
+            canonical = _canonicalize_authorized_name(index, family, name)
+            if canonical is not None:
+                authorized[family].add(canonical)
+    return authorized
+
+
 def _resolve_style_technique(index, family: str, name: str, path: str):
     import difflib
 
@@ -428,7 +522,10 @@ def _family_style_content_scan_dict(entry: FamilyStyle) -> dict[str, Any]:
     }
 
 
-def _validate_style(plan_style: Any) -> list[str]:
+def _validate_style(
+    plan_style: Any,
+    brief_authorized: dict[str, set[str]] | None = None,
+) -> list[str]:
     warnings: list[str] = []
     if plan_style is None:
         return warnings
@@ -508,12 +605,26 @@ def _validate_style(plan_style: Any) -> list[str]:
                     f"must be string or null, got {type(technique.rationale).__name__}",
                 )
             if technique_index is not None:
-                resolved_techniques.append(_resolve_style_technique(
+                resolved = _resolve_style_technique(
                     technique_index,
                     family,
                     technique.name,
                     f"{technique_base}.name",
-                ))
+                )
+                resolved_techniques.append(resolved)
+                if brief_authorized is not None:
+                    allowed = brief_authorized.get(family, set())
+                    if resolved.canonical not in allowed:
+                        raise PlanValidationError(
+                            f"{technique_base}.name",
+                            (
+                                f"technique {technique.name!r} is not in "
+                                f"authorized_techniques for family "
+                                f"{family!r} (brief authorized: "
+                                f"{sorted(allowed) or '[]'}); tecnica so se "
+                                "aplica se o usuario autorizou"
+                            ),
+                        )
         if not isinstance(entry.parameters, dict):
             raise PlanValidationError(
                 f"{base}.parameters",
@@ -672,13 +783,24 @@ def _validate_suggested_instrument(
         )
 
 
-def validate(plan: ArrangementPlan) -> list[str]:
+def validate(
+    plan: ArrangementPlan, plan_dir: Path | str | None = None,
+) -> list[str]:
     """Valida um `ArrangementPlan` e devolve avisos nao-bloqueantes.
 
     Ordem: campos raiz -> source_midi -> sections -> elements. Section
     labels sao coletados antes de validar elements para que a checagem
     de referencia funcione mesmo sem sections declaradas em ordem
     especifica.
+
+    Quando `plan.brief_ref` esta presente, le o brief apontado por
+    `brief_ref.path` (relativo a `plan_dir`, se dado; senao relativo ao
+    diretorio corrente), confere que `brief_ref.sha256` casa com o hash real
+    do arquivo (`tools.brief_ref.brief_sha256`) e exige que toda tecnica em
+    `plan.style.<familia>.techniques[]` esteja em
+    `brief.style.<familia>.authorized_techniques`. Autorizacao ausente
+    significa NENHUMA tecnica — nunca "todas". Brief inexistente, ilegivel ou
+    com hash divergente e erro explicito, nunca fallback silencioso.
 
     Retorna lista de avisos (strings). Avisos NAO bloqueiam. Erros
     bloqueiam via `PlanValidationError`.
@@ -696,6 +818,7 @@ def validate(plan: ArrangementPlan) -> list[str]:
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
     _require_nonempty_str(plan.source_midi.sha256, "source_midi.sha256")
+    brief_authorized: dict[str, set[str]] | None = None
     if plan.brief_ref is not None:
         _require_nonempty_str(plan.brief_ref.path, "brief_ref.path")
         if not isinstance(plan.brief_ref.sha256, str) or not SHA256_RE.fullmatch(plan.brief_ref.sha256):
@@ -703,7 +826,10 @@ def validate(plan: ArrangementPlan) -> list[str]:
                 "brief_ref.sha256",
                 "must be 64 lowercase hexadecimal characters",
             )
-    warnings.extend(_validate_style(plan.style))
+        brief_authorized = _load_brief_authorized_techniques(
+            plan, Path(plan_dir) if plan_dir is not None else None,
+        )
+    warnings.extend(_validate_style(plan.style, brief_authorized))
 
     section_labels: set[str] = set()
     for i, s in enumerate(plan.sections):
@@ -1133,8 +1259,9 @@ def dump(plan: ArrangementPlan, path: str | Path) -> None:
 
     Falha da validacao aborta a escrita — nao existe half-written plan.
     """
-    validate(plan)
-    Path(path).write_text(json.dumps(to_dict(plan), indent=2), encoding="utf-8")
+    target = Path(path)
+    validate(plan, plan_dir=target.parent)
+    target.write_text(json.dumps(to_dict(plan), indent=2), encoding="utf-8")
 
 
 def load(path: str | Path) -> ArrangementPlan:
@@ -1143,7 +1270,8 @@ def load(path: str | Path) -> ArrangementPlan:
     Falha da validacao aborta o load — quem chama recebe `PlanValidationError`
     com o path exato.
     """
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    source = Path(path)
+    data = json.loads(source.read_text(encoding="utf-8"))
     plan = from_dict(data)
-    validate(plan)
+    validate(plan, plan_dir=source.parent)
     return plan

@@ -2378,7 +2378,6 @@ def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito():
     """
     from tools.plan import (
         ArrangementPlan,
-        BriefRef,
         FamilyStyle,
         PlanValidationError,
         SourceMidi,
@@ -2394,7 +2393,6 @@ def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito():
         sections=[],
         elements=[],
     )
-    plan.brief_ref = BriefRef(path="brief.json", sha256="0" * 64)
     plan.style = {
         "drums": FamilyStyle(
             reference="X",

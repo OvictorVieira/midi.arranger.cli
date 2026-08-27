@@ -143,12 +143,30 @@ def test_brief_sha256_hashes_exact_file_bytes(tmp_path: Path):
     assert brief_sha256(brief) == hashlib.sha256(content).hexdigest()
 
 
-def test_plan_accepts_valid_brief_ref():
+def _write_brief(
+    tmp_path: Path,
+    authorized: dict[str, list[str]] | None = None,
+) -> tuple[Path, str]:
+    """Grava um brief minimo em `tmp_path/arrangement-brief.json`.
+
+    O plan.validate so olha `brief.style.<familia>.authorized_techniques`;
+    o resto do brief nao entra na conta. A fixture segue essa fronteira.
+    """
+    authorized = authorized or {}
+    style_dict = {
+        family: {"authorized_techniques": list(authorized.get(family, []))}
+        for family in ("bass", "drums", "guitar", "keys")
+    }
+    brief = {"style": style_dict}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps(brief, indent=2), encoding="utf-8")
+    return brief_path, brief_sha256(brief_path)
+
+
+def test_plan_accepts_valid_brief_ref(tmp_path: Path):
     plan = _valid_plan()
-    plan.brief_ref = BriefRef(
-        path="arrangement-brief.json",
-        sha256="0" * 64,
-    )
+    brief_path, sha = _write_brief(tmp_path)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
 
     validate(plan)
     assert from_dict(to_dict(plan)) == plan
@@ -166,6 +184,88 @@ def test_validate_rejects_malformed_brief_ref_sha256():
 
     assert exc.value.path == "brief_ref.sha256"
     assert "64 lowercase hexadecimal" in exc.value.message
+
+
+def test_validate_rejects_missing_brief_file(tmp_path: Path):
+    plan = _valid_plan()
+    missing = tmp_path / "nao-existe.json"
+    plan.brief_ref = BriefRef(path=str(missing), sha256="0" * 64)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "brief_ref.path"
+    assert "not found" in exc.value.message
+
+
+def test_validate_rejects_brief_sha256_mismatch(tmp_path: Path):
+    plan = _valid_plan()
+    brief_path, _sha = _write_brief(tmp_path)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256="0" * 64)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "brief_ref.sha256"
+    assert "mismatch" in exc.value.message
+
+
+def test_validate_accepts_authorized_style_technique(tmp_path: Path):
+    plan = _valid_plan()
+    brief_path, sha = _write_brief(tmp_path, {"drums": ["drums.ghost_notes"]})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    validate(plan)  # nao levanta
+
+
+def test_validate_rejects_unauthorized_style_technique(tmp_path: Path):
+    plan = _valid_plan()
+    # brief autoriza NADA em drums, embora o plano declare uma tecnica.
+    brief_path, sha = _write_brief(tmp_path, {"drums": []})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+    assert "drums.ghost_notes" in exc.value.message
+    assert "drums" in exc.value.message
+    assert "authorized_techniques" in exc.value.message
+
+
+def test_validate_accepts_short_name_when_canonical_is_authorized(tmp_path: Path):
+    """Autorizacao por canonical casa com plano que usa apelido curto e vice-versa."""
+    plan = _valid_plan()
+    brief_path, sha = _write_brief(tmp_path, {"drums": ["ghost_notes"]})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    validate(plan)
 
 
 @pytest.mark.parametrize(
