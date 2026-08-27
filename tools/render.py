@@ -1356,6 +1356,7 @@ def render(
     *,
     source_path: str | Path | None = None,
     strict_persona: bool = False,
+    plan_dir: str | Path | None = None,
 ) -> RenderReport:
     """Renderiza `plan` sobre o MIDI de origem em um arquivo novo.
 
@@ -1378,11 +1379,19 @@ def render(
     source. Pode mutar `Element.register` do plano em memoria via validator
     de colisao (mesma semantica de `validate_collisions`).
     """
-    plan_dir: Path | None = None
+    # `plan_dir` ancora `brief_ref.path` relativo. Quando `plan` vem como
+    # caminho, sai dele; quando vem como objeto ja carregado — o caso das
+    # fachadas em `tools/contract.py`, que leem o JSON antes —, quem chama
+    # tem que informar, senao o relativo resolveria contra o cwd e o brief
+    # ao lado do plano nao seria encontrado.
+    resolved_plan_dir: Path | None = (
+        Path(plan_dir).expanduser() if plan_dir is not None else None
+    )
     if not isinstance(plan, ArrangementPlan):
         plan_path = Path(plan).expanduser()
-        plan_dir = plan_path.parent
+        resolved_plan_dir = plan_path.parent
         plan = load(plan_path)
+    plan_dir = resolved_plan_dir
     _reject_unauthorized_style_techniques(plan, plan_dir)
     validate_plan(plan, plan_dir)
     plan = normalize_style_defaults(plan)

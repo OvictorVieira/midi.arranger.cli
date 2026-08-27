@@ -16,6 +16,7 @@ from tools.plan import (
     BriefRef,
     Element,
     FamilyStyle,
+    PlanEdit,
     PlanSection,
     SourceMidi,
     StyleTechnique,
@@ -1436,46 +1437,106 @@ def test_render_refuses_unauthorized_style_technique_per_family(
     )
 
 
-def test_render_family_with_empty_authorized_yields_source_identical_tracks(
-    tmp_path,
-):
-    """AC US-004: familia com `authorized_techniques` vazio (sem tecnica
-    declarada, portanto) sai nota-a-nota IDENTICA a origem — sem ornamento,
-    sem alteracao de pitch/tempo/duracao."""
-    src = _build_synthetic_source(tmp_path)
-    brief_path = tmp_path / "arrangement-brief.json"
-    brief_path.write_text(
-        json.dumps({
-            "style": {
-                fam: {"authorized_techniques": []}
-                for fam in ("bass", "drums", "guitar", "keys")
-            },
-        }),
-        encoding="utf-8",
-    )
-    plan = _build_plan(src)
-    plan.elements = []
-    plan.brief_ref = BriefRef(
-        path=str(brief_path), sha256=brief_sha256(brief_path),
-    )
-    out = tmp_path / "out.mid"
-    render(plan, out)
+def test_authorization_is_what_makes_the_difference_in_the_output(tmp_path):
+    """AC US-004, em forma DIFERENCIAL: a autorizacao tem que ser a unica
+    coisa que muda entre sair ornamentado e nao sair.
 
-    src_pm = pretty_midi.PrettyMIDI(str(src))
-    out_pm = pretty_midi.PrettyMIDI(str(out))
-    assert len(out_pm.instruments) == len(src_pm.instruments)
-    for src_inst, out_inst in zip(
-        src_pm.instruments, out_pm.instruments, strict=True,
-    ):
-        src_notes = [
-            (n.pitch, n.velocity, round(n.start, 6), round(n.end, 6))
-            for n in src_inst.notes
-        ]
-        out_notes = [
-            (n.pitch, n.velocity, round(n.start, 6), round(n.end, 6))
-            for n in out_inst.notes
-        ]
-        assert src_notes == out_notes
+    A versao anterior deste teste zerava `plan.elements` e nao declarava
+    tecnica nenhuma — passava mesmo que o render ignorasse
+    `authorized_techniques` por completo. Teste que passa com a barreira
+    desligada nao testa barreira. Aqui o MESMO plano roda duas vezes,
+    mudando so o brief:
+
+    - brief AUTORIZA `drums.ghost_notes` -> saida ganha ornamento
+    - brief com `authorized_techniques: []` -> render RECUSA, e o arquivo
+      de saida nem chega a existir
+    """
+    # Fonte propria: a sintetica compartilhada nao tem bateria no canal 9,
+    # entao `drums.ghost_notes` nao teria backbeat para ornamentar e os DOIS
+    # lados do teste sairiam iguais por falta de material, nao por barreira.
+    src = tmp_path / "drums_source.mid"
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    previous = 0
+    for tick in (480, 1440, 2400, 3360, 4320, 5280, 6240, 7200):
+        track.append(mido.Message(
+            "note_on", note=38, velocity=100, channel=9, time=tick - previous,
+        ))
+        track.append(mido.Message(
+            "note_off", note=38, velocity=0, channel=9, time=60,
+        ))
+        previous = tick + 60
+    mid.tracks.append(track)
+    mid.save(str(src))
+
+    def brief_with(authorized: list[str]) -> BriefRef:
+        path = tmp_path / f"brief_{len(authorized)}.json"
+        path.write_text(
+            json.dumps({
+                "style": {
+                    fam: {
+                        "authorized_techniques": (
+                            authorized if fam == "drums" else []
+                        ),
+                    }
+                    for fam in ("bass", "drums", "guitar", "keys")
+                },
+            }),
+            encoding="utf-8",
+        )
+        return BriefRef(path=str(path), sha256=brief_sha256(path))
+
+    def plan_declaring_ghost_notes(ref: BriefRef):
+        plan = _build_plan(src)
+        plan.brief_ref = ref
+        plan.elements = []
+        # A tecnica so alcanca track de origem que esteja em `plan.edits`.
+        plan.edits = [PlanEdit(track="Drums", profile="drums", intensity=0.0)]
+        plan.style = {
+            "drums": FamilyStyle(
+                reference="Research",
+                researched_at="2026-08-24",
+                sources=["https://example.test/drums"],
+                confidence="high",
+                techniques=[StyleTechnique(name="drums.ghost_notes")],
+                parameters={},
+            ),
+        }
+        return plan
+
+    # 1) autorizado: renderiza e ornamenta
+    autorizado = tmp_path / "autorizado.mid"
+    render(
+        plan_declaring_ghost_notes(brief_with(["drums.ghost_notes"])),
+        autorizado,
+    )
+    assert autorizado.exists()
+
+    def drum_note_count(path) -> int:
+        mid = mido.MidiFile(str(path))
+        return sum(
+            1
+            for tr in mid.tracks
+            for msg in tr
+            if msg.type == "note_on"
+            and msg.velocity > 0
+            and getattr(msg, "channel", -1) == 9
+        )
+
+    assert drum_note_count(autorizado) > drum_note_count(src), (
+        "com a tecnica autorizada o render tem que acrescentar ornamento — "
+        "sem isso o outro lado do teste nao prova nada"
+    )
+
+    # 2) nao autorizado: MESMO plano, so o brief muda -> recusa
+    negado = tmp_path / "negado.mid"
+    with pytest.raises(RenderError) as exc:
+        render(plan_declaring_ghost_notes(brief_with([])), negado)
+    assert "drums.ghost_notes" in str(exc.value)
+    assert not negado.exists(), (
+        "render recusado nao pode deixar arquivo de saida para tras"
+    )
 
 
 def test_render_refuses_style_technique_without_brief_ref(tmp_path):

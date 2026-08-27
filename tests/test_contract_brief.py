@@ -488,3 +488,34 @@ def test_suggested_techniques_reject_musical_content_via_shared_helper(
         bs.validate_brief(brief)
     assert exc.value.code == "E_BRIEF_MUSICAL_CONTENT"
     assert exc.value.path == f"style.{family}.suggested_techniques[0].notes"
+
+
+def test_brief_recusa_tecnica_canonica_de_outra_familia():
+    """Achado do review com o Codex no PR #52.
+
+    `_resolve_family_technique` tentava `idx.get(name)` ANTES de filtrar por
+    familia, entao canonico de outra familia passava: `drums.ghost_notes`
+    declarado sob `style.bass` era aceito. O bloco de estilo de uma familia
+    so declara tecnica dela mesma — senao a barreira do brief vira decorativa
+    e a recusa fica dependendo de plan/render mais adiante.
+    """
+    brief = _valid_brief()
+    brief["style"]["bass"]["authorized_techniques"] = ["drums.ghost_notes"]
+    brief["style"]["bass"]["techniques"] = [{"name": "drums.ghost_notes"}]
+
+    with pytest.raises(ToolError) as exc:
+        validate_brief(brief)
+    assert exc.value.code == "E_BRIEF_TECHNIQUE_WRONG_FAMILY"
+    assert "bass" in str(exc.value)
+
+
+def test_brief_aceita_nome_simples_resolvido_pela_familia_do_bloco():
+    """Contraprova: nome simples continua resolvendo pela familia do path.
+
+    `ghost_notes` sob `style.drums` nao e ambiguo — a familia esta no
+    caminho. A correcao da familia errada nao pode quebrar isso.
+    """
+    brief = _valid_brief()
+    brief["style"]["drums"]["authorized_techniques"] = ["ghost_notes"]
+    brief["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
+    validate_brief(brief)  # nao levanta

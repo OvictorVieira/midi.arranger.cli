@@ -232,12 +232,31 @@ def _resolve_family_technique(
     Levanta `E_BRIEF_TECHNIQUE_NOT_FOUND` citando o path e sugerindo tecnicas
     parecidas quando nada casa. E a mesma resolucao usada em `techniques[]`,
     `authorized_techniques` e `suggested_techniques` — nunca duas verdades.
+
+    A familia do path MANDA. Tentar `idx.get(name)` primeiro deixava passar
+    canonico de outra familia: `drums.ghost_notes` declarado sob `style.bass`
+    resolvia pelo canonico e era aceito. `style.<familia>` so pode declarar
+    tecnica daquela familia — o bloco de estilo do baixo nao autoriza nada de
+    bateria.
     """
-    resolved = idx.get(name) or next(
+    resolved = next(
         (t for t in idx.candidates(name) if t.family == family), None
     )
     if resolved is not None:
         return resolved
+    foreign = idx.get(name)
+    if foreign is not None:
+        raise ToolError(
+            "E_BRIEF_TECHNIQUE_WRONG_FAMILY",
+            f"tecnica {name!r} e da familia {foreign.family!r}, mas foi "
+            f"declarada em style.{family} — bloco de estilo de uma familia "
+            f"so declara tecnica dela mesma",
+            path=path,
+            hint=(
+                f"tecnicas de {family}: "
+                f"{[t.canonical for t in idx.by_family(family)]}"
+            ),
+        )
     candidates = list(idx.names()) + [t.name for t in idx.techniques]
     matches = difflib.get_close_matches(name, candidates, n=5, cutoff=0.4)
     raise ToolError(
