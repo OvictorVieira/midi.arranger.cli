@@ -37,7 +37,17 @@ def sort_and_flush(absolute, track) -> None:
 
     import mido
 
-    absolute.sort(key=lambda item: (item[0], item[1], item[2]))
+    # `end_of_track` e o ultimo evento da track por definicao do formato SMF.
+    # Sem este desempate, um CC inserido no mesmo tick do EOT (pedal-off de
+    # `let_ring`, por exemplo) podia cair DEPOIS dele e ser ignorado por
+    # qualquer leitor que respeite o EOT — o pedal ficava presa para sempre.
+    # Empurra EOT para o fim do proprio tick, sem mexer na ordem do resto.
+    def _sort_key(item):
+        tick, bias, order, msg = item
+        is_eot = 1 if (msg.is_meta and msg.type == "end_of_track") else 0
+        return (tick, is_eot, bias, order)
+
+    absolute.sort(key=_sort_key)
     rebuilt = mido.MidiTrack()
     previous_tick = 0
     for absolute_tick, _bias, _order, msg in absolute:

@@ -1822,6 +1822,20 @@ def _apply_bass_attack_style(
 
         channel = structural[0][1].channel
 
+        # IDEMPOTENCIA: o keyswitch de estilo e a assinatura do que ja foi
+        # aplicado. Se ele ja esta na track, a alternancia tambem ja esta —
+        # reaplicar deslocaria a velocity de novo e a linha afundaria a cada
+        # render. A checagem tem que vir ANTES de qualquer escrita.
+        already_applied = any(
+            not msg.is_meta
+            and msg.type == "note_on"
+            and msg.velocity > 0
+            and msg.note == style_ks
+            for msg in track
+        )
+        if already_applied:
+            continue
+
         # Coleta absoluta de todas as mensagens da track — vamos reconstruir.
         absolute = _collect_absolute(track)
         order = len(absolute)
@@ -1842,9 +1856,19 @@ def _apply_bass_attack_style(
 
         if is_picked:
             # Alternancia deterministica por posicao: even=down, odd=up.
+            #
+            # O DELTA e relativo a velocity da ORIGEM, nunca valor absoluto.
+            # Sobrescrever com o alvo do manual destruia a dinamica escrita
+            # pelo usuario: uma nota em 127 saia em 85 (upstroke), abaixo do
+            # piso da propria origem. E o mesmo defeito que tirou
+            # `drums.accent_hierarchy` do motor — tecnica nao pode inverter a
+            # intencao da origem. Os numeros do manual definem a DIFERENCA
+            # entre golpe para baixo e para cima; e essa diferenca que
+            # caracteriza a alternancia, nao o valor absoluto.
+            half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
             for idx, (_start, msg) in enumerate(structural):
-                target = downstroke_vel if idx % 2 == 0 else upstroke_vel
-                msg.velocity = target
+                shift = half_delta if idx % 2 == 0 else -half_delta
+                msg.velocity = max(1, min(127, msg.velocity + shift))
 
             if isinstance(forcar_primeiro, int) and isinstance(forcar_segundo, int) \
                     and not isinstance(forcar_primeiro, bool) \
@@ -1990,6 +2014,13 @@ def _apply_bass_hammer_pull(
                 ktick += msg.time
                 if msg.is_meta:
                     continue
+                # Cheque o TIPO antes de tocar em `.note`: `control_change`,
+                # `pitchwheel` e afins nao tem esse atributo, e MIDI real de
+                # baixo carrega CC (let ring, expressao) no meio das notas.
+                # Ler `.note` cedo levantava AttributeError na primeira track
+                # de verdade.
+                if msg.type not in ("note_on", "note_off"):
+                    continue
                 if msg.note != keyswitch_pitch:
                     continue
                 if msg.type == "note_on" and msg.velocity > 0:
@@ -2020,6 +2051,14 @@ def _apply_bass_hammer_pull(
                 if gap > max_gap_ticks:
                     continue
                 if b["start"] <= a["start"]:
+                    continue
+                # IDEMPOTENCIA: par ja ligado nao entra de novo. Sobreposicao
+                # (`a.end > b.start`) e a assinatura do ligado — e ela que
+                # dispara o legato. Sem esta guarda o caminho `generic`, que
+                # nao tem keyswitch para reconhecer o que ja fez, reaplicava
+                # `velocity_relativa` a cada passada e a segunda nota afundava
+                # a cada render (100 -> 71 -> 42).
+                if a["end"] > b["start"]:
                     continue
                 if keyswitch_pitch is not None and any(
                     lo <= a["start"] <= hi
