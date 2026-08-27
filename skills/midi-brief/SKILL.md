@@ -39,14 +39,20 @@ Leia antes de comecar: `AGENTS.md`, `docs/arquitetura.md` (secoes 2, 3 e 4) e
    Se o usuario corrigir, use a correcao. Se aceitar, marque
    `sections_confirmed: true`.
 3. **Entreviste.** Ver "A entrevista", abaixo.
-4. **Pesquise as referencias.** Ver "Pesquisa e confianca", abaixo. Nesta
-   iteracao a instrucao e apenas: cite fonte, registre `sources`,
-   `researched_at`, `confidence` no `style` da familia.
-5. **Mostre o que vai gravar.** Antes de escrever o arquivo, apresente o
+4. **Pesquise as referencias.** Ver "Pesquisa e confianca", abaixo. O que
+   voce levantar entra em `style.<familia>.suggested_techniques`, com nome +
+   parametros + razao curta ("por que essa referencia sugere essa tecnica").
+   Sugestao **nao autoriza nada**.
+5. **Apresente as tecnicas e pergunte quais entram.** Ver "Autorizacao",
+   abaixo. So o que o usuario marcar vira `authorized_techniques` e so o
+   que ele autorizar pode aparecer em `techniques[]`.
+6. **Mostre o que vai gravar.** Antes de escrever o arquivo, apresente o
    brief montado ao usuario em formato legivel — quais sao as decisoes,
-   quais foram as suposicoes que voce assumiu, o que veio de pesquisa. Peca
-   confirmacao. Corrija o que ele apontar.
-6. **Valide e grave.** Chame `brief.validate` antes de gravar. Se falhar,
+   quais foram as suposicoes que voce assumiu, o que veio de pesquisa
+   (`suggested_techniques`) e o que ele autorizou (`authorized_techniques`
+   e o subconjunto `techniques[]`). Peca confirmacao. Corrija o que ele
+   apontar.
+7. **Valide e grave.** Chame `brief.validate` antes de gravar. Se falhar,
    corrija — nao gaste iteracao do `run` com brief invalido. Grave o JSON
    em `arrangement-brief.json` na raiz do projeto.
 
@@ -103,7 +109,18 @@ assumptions: [
 ```
 
 E marque no `style` da familia: `reference: null`, `sources: []`,
-`confidence: "default"`, `techniques: []`.
+`confidence: "default"`, `techniques: []`, `authorized_techniques: []`,
+`suggested_techniques: []`.
+
+### Configuracao de instrumento — a mesma conversa
+
+A pergunta de estilo/referencia por familia **e a mesma conversa** que a
+configuracao de instrumento coberta pela issue #44 (plugin/patch/verified
+por familia). Nao pergunte duas vezes: agrupe estilo, referencia e
+instrumento por familia na mesma linha da entrevista, e depois, na etapa
+de autorizacao (abaixo), aproveite a apresentacao das tecnicas para
+confirmar tambem o instrumento marcado. O usuario responde uma vez por
+familia; voce distribui a resposta pelos campos do brief.
 
 ## Pesquisa e confianca
 
@@ -112,8 +129,16 @@ pesquisa levanta **tecnica e comportamento**: como o musico toca. Densidade
 de ghost note. Feel de timing (adiantado, atrasado, laid back, on top).
 Articulacao preferida (staccato, legato, palm mute). Uso de efeito (compressao
 esmagada, reverb longo, delay dotted, saturacao de fita). Escolha de
-registro. Preferencia de dinamica. Isso e o que entra em `techniques[]` e
-`parameters` do `style`.
+registro. Preferencia de dinamica.
+
+Isso entra em `style.<familia>.suggested_techniques[]` — mesma forma de
+`techniques[]` (nome canonico + `parameters`), acompanhado de uma razao
+curta ("por que a referencia sugere essa tecnica"). **Sugerir nao autoriza.**
+`techniques[]` continua sendo o subconjunto que o usuario autorizou e o
+`run` vai aplicar — nada entra la sem passar pela etapa de autorizacao.
+
+Sempre cite fonte: registre `sources`, `researched_at` e `confidence` no
+`style` da familia, mesmo para o que entrou como sugestao.
 
 **Nunca conteudo musical.** Nao pesquise, nao registre e nao cite melodia,
 riff, levada, progressao, transcricao de solo, sequencia de notas. Nao e
@@ -151,6 +176,50 @@ A `describe` e como voce traduz a tecnica escolhida em parametro MIDI que o
 `run` sabe renderizar. Nome fora do indice e recusado por `brief.validate`
 — nao invente tecnica nem "adapte" o nome.
 
+## Autorizacao
+
+**Tecnica so entra no arranjo se o usuario autorizar.** Isso vale nas quatro
+familias (drums, bass, guitar, keys). Ausencia de autorizacao significa
+NENHUMA tecnica, nunca todas. `plan.validate` e `render` recusam plano
+com tecnica fora de `authorized_techniques`; a barreira e real, nao aviso.
+
+Faca assim, depois da pesquisa e antes de gravar o brief:
+
+1. Para cada familia com estilo/referencia declarado, rode
+   `python3 -m tools.cli tool techniques.list --input <(echo '{"family":
+   "<familia>"}')` e, para as tecnicas que a pesquisa sugeriu, rode
+   `techniques.describe` para ter o resumo em maos.
+2. **Apresente ao usuario, familia por familia**, a lista das tecnicas
+   disponiveis com uma linha de resumo cada. Destaque as que a pesquisa
+   sugeriu (em `suggested_techniques`) com a razao curta da sugestao.
+   Ex.: *"para bateria voce citou Steve Jordan; a pesquisa sugere
+   `ghost_notes` (densidade media na caixa) e `laid_back_timing` (feel
+   levemente atrasado). Existem tambem `rim_shot`, `cross_stick`,
+   `accent_hierarchy`, ... — quer marcar mais alguma? quer tirar alguma
+   das sugeridas?"*
+3. **Preencha `authorized_techniques` SO com o nome canonico do que ele
+   marcou.** Nada mais. Sugestao nao marcada fica em
+   `suggested_techniques` como registro do que voce levantou, mas NAO
+   entra em `authorized_techniques` nem em `techniques[]`.
+4. `techniques[]` — a lista que o `run` aplica — e um subconjunto de
+   `authorized_techniques`. Se o usuario nao marcou nada naquela familia,
+   `authorized_techniques: []` e `techniques: []`. `brief.validate`
+   recusa `techniques[]` com nome fora de `authorized_techniques`.
+
+**Silencio ou duvida do usuario significa NAO autorizar.** Se ele nao
+respondeu para uma tecnica sugerida, se disse *"nao sei"*, *"talvez"*,
+*"pode ser"*, *"como voce achar melhor"* — aquela tecnica **nao entra** em
+`authorized_techniques`. Registre em `assumptions` a linha da omissao
+(*"Bateria — `ghost_notes` sugerida mas nao autorizada; usuario nao
+confirmou"*) para ele ver que a decisao foi de nao aplicar, nao de
+esquecer.
+
+O usuario pode autorizar tecnica que voce NAO sugeriu (ele pediu e voce
+respeita, desde que o nome exista no indice). O usuario pode desautorizar
+tecnica que voce sugeriu (voce respeita — a sugestao permanece em
+`suggested_techniques` como registro, so nao entra em
+`authorized_techniques`).
+
 **Perfil pesquisado nao vira base de conhecimento.** O que voce pesquisou
 sobre o musico X vive **so no `arrangement-brief.json` desta musica**. Nao
 grave em `knowledge/`. Nao crie arquivo em `personas/`. Nao proponha
@@ -172,7 +241,9 @@ Modo rapido default:
 - `route`: `banda` (ou o primeiro valor de `tools.plan.ROUTES` que couber).
 - `sections_confirmed`: `false` (o usuario nao confirmou).
 - todas as familias: `reference: null`, `confidence: "default"`,
-  `techniques: []`.
+  `techniques: []`, `authorized_techniques: []`, `suggested_techniques: []`.
+  Modo rapido nao autoriza tecnica em silencio — o default seguro e nao
+  aplicar nenhuma.
 - `assumptions`: uma linha por decisao, sempre comecando com "Modo rapido
   —" para o usuario reconhecer.
 
@@ -190,6 +261,10 @@ sobre o que mudar).
   nomes de nota (`C4`, `F#3`), nem trecho transcrito. So parametro de
   tecnica e nome de tecnica. O `brief.validate` recusa e voce recusa antes.
 - Nao invente tecnica. Se nao esta em `techniques.list`, nao entra.
+- Nao autorize tecnica em silencio. `authorized_techniques` so recebe o
+  que o usuario marcou explicitamente; sugestao da pesquisa vive em
+  `suggested_techniques` e nao autoriza nada. Silencio ou duvida =
+  nao autoriza.
 - Nao apresente chute como fato. Numero sem fonte vira `[NAO VERIFICADO]` na
   conversa e nao entra em `parameters` do `style`. Confianca fraca vira
   `confidence: "low"` no brief, nao vira `confidence: "high"` maquiado.
