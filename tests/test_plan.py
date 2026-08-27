@@ -338,6 +338,154 @@ def test_validate_accepts_style_without_techniques_and_without_brief_ref():
     validate(plan)  # caminho de quem so usa plan.edits
 
 
+def test_validate_resolves_relative_brief_path_against_plan_dir(tmp_path: Path):
+    """`brief_ref.path` relativo e resolvido contra `plan_dir` — como `plan.load` faz."""
+    plan = _valid_plan()
+    brief_path, sha = _write_brief(tmp_path)
+    plan.brief_ref = BriefRef(path="arrangement-brief.json", sha256=sha)
+
+    validate(plan, plan_dir=tmp_path)  # nao levanta; encontra o brief pelo diretorio
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)  # sem plan_dir, path relativo nao encontra o arquivo
+    assert exc.value.path == "brief_ref.path"
+
+
+def test_validate_rejects_unreadable_brief_file(tmp_path: Path):
+    """Brief que existe mas nao pode ser lido vira erro explicito no path."""
+    brief_path, sha = _write_brief(tmp_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    brief_path.chmod(0o000)
+    try:
+        with pytest.raises(PlanValidationError) as exc:
+            validate(plan)
+    finally:
+        brief_path.chmod(0o644)
+    assert exc.value.path == "brief_ref.path"
+    assert "could not read" in exc.value.message
+
+
+def test_validate_rejects_brief_with_invalid_json(tmp_path: Path):
+    """Brief com JSON quebrado (usuario editou a mao) vira erro explicito."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text("{not valid json", encoding="utf-8")
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "brief_ref.path"
+    assert "could not parse" in exc.value.message
+
+
+def test_validate_rejects_brief_root_not_object(tmp_path: Path):
+    """Brief cuja raiz e um array JSON nao passa — precisa ser objeto."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text("[]", encoding="utf-8")
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "brief_ref.path"
+    assert "JSON object" in exc.value.message
+
+
+def test_validate_rejects_brief_without_style_object(tmp_path: Path):
+    """Brief sem `style` (nao ha o que autorizar) vira erro explicito."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"input_midi": "x.mid"}), encoding="utf-8")
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "brief_ref.path"
+    assert "'style'" in exc.value.message
+
+
+def test_validate_treats_non_dict_family_as_no_authorization(tmp_path: Path):
+    """Familia com forma quebrada no brief e tratada como 'nada autorizado'."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({"style": {"drums": "boom-bap"}}), encoding="utf-8"
+    )
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+
+
+def test_validate_treats_non_list_authorized_techniques_as_empty(tmp_path: Path):
+    """`authorized_techniques` com forma quebrada e tratado como '[]', nunca 'tudo'."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {"drums": {"authorized_techniques": "drums.ghost_notes"}}
+        }),
+        encoding="utf-8",
+    )
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+
+
+def test_validate_ignores_non_string_entries_in_authorized(tmp_path: Path):
+    """Entrada nao-string em `authorized_techniques` e ignorada sem autorizar nada."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {
+                "drums": {"authorized_techniques": [None, 42, "drums.ghost_notes"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    validate(plan)  # a entrada valida "drums.ghost_notes" autoriza; as demais somem
+
+
 @pytest.mark.parametrize(
     ("field", "path"),
     [
