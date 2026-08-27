@@ -641,8 +641,8 @@ tutoriais dá número.
   "parameters": [
     {"name": "velocity_acento", "value": 118, "source": "CONVENCAO — GetGood Drums, demonstrado na tela, https://www.youtube.com/watch?v=OPnrlXhJhOo 1:05-1:16"},
     {"name": "velocity_suave", "value": 55, "source": "CONVENCAO — mesma fonte; coincide com o piso da faixa soft da Toontrack em accent_hierarchy"},
-    {"name": "delta_mao_dominante", "source": null},
-    {"name": "delta_lift_pre_acento", "source": null},
+    {"name": "delta_mao_dominante", "value": 6, "source": "CONVENCAO — ajuste operacional derivado da regra de mao dominante; sem medicao publicada"},
+    {"name": "delta_lift_pre_acento", "value": 14, "source": "CONVENCAO — ajuste operacional derivado da regra de lift pre-acento; sem medicao publicada"},
     {"name": "sticking_padrao", "value": "RLRL com acento na dominante", "source": "CONVENCAO — mesma fonte, 2:32-2:47"}
   ],
   "tools": {

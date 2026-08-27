@@ -178,6 +178,7 @@ def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
     assert SUPPORTED_TECHNIQUES == (
+        "drums.accented_roll",
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
@@ -191,6 +192,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
         apply_technique("drums.accent_hierarchy", payload, seed=1)
 
     assert exc.value.available == (
+        "drums.accented_roll",
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
@@ -1314,6 +1316,154 @@ def test_drums_microtiming_uses_requested_tool_hihat_recipe():
     assert result.warnings == ()
     assert _note_tuples(result.result)[0][3] == 240
     assert _note_tuples(result.result)[1][3] != 480
+
+
+def test_drums_accented_roll_shapes_velocity_without_changing_notes():
+    source = _midi_with_notes("Drums", 9, [
+        (120 * index, 120 * index + 60, 38, 60)
+        for index in range(8)
+    ])
+    before = [
+        (track, channel, pitch, start, end)
+        for track, channel, pitch, start, end, _velocity in _note_tuples(source)
+    ]
+
+    result = apply_technique("drums.accented_roll", source, seed=51)
+    after = _note_tuples(result)
+
+    assert [
+        (track, channel, pitch, start, end)
+        for track, channel, pitch, start, end, _velocity in after
+    ] == before
+    assert [velocity for *_note, velocity in after] == [
+        118, 55, 61, 69, 116, 55, 61, 69,
+    ]
+
+
+def test_drums_accented_roll_contour_is_not_square_wave():
+    source = _midi_with_notes("Drums", 9, [
+        (120 * index, 120 * index + 60, 38, 60)
+        for index in range(12)
+    ])
+
+    result = apply_technique("drums.accented_roll", source, seed=52)
+    velocities = [note[-1] for note in _note_tuples(result)]
+    accents = [velocities[index] for index in range(0, len(velocities), 4)]
+    softs = [
+        velocity for index, velocity in enumerate(velocities)
+        if index % 4 != 0
+    ]
+
+    assert len(set(softs)) > 1
+    assert len(set(accents)) > 1
+
+
+def test_drums_accented_roll_preserves_top_pressure_out_of_low_layer():
+    source = _midi_with_notes("Drums", 9, [
+        (120 * index, 120 * index + 60, 38, 127)
+        for index in range(8)
+    ])
+
+    result = apply_technique("drums.accented_roll", source, seed=53)
+
+    assert all(note[-1] >= 105 for note in _note_tuples(result))
+    assert not any(note[-1] <= 79 for note in _note_tuples(result))
+
+
+def test_drums_accented_roll_plan_parameters_command_velocity_contour():
+    source = _midi_with_notes("Drums", 9, [
+        (120 * index, 120 * index + 60, 38, 60)
+        for index in range(4)
+    ])
+
+    result = apply_technique(
+        "drums.accented_roll",
+        source,
+        seed=54,
+        parameters={
+            "velocity_acento": 110,
+            "velocity_suave": 50,
+            "delta_mao_dominante": 4,
+            "delta_lift_pre_acento": 12,
+        },
+    )
+
+    assert [velocity for *_note, velocity in _note_tuples(result)] == [
+        110, 50, 54, 62,
+    ]
+
+
+def test_drums_accented_roll_uses_requested_tool_note_recipe():
+    source = _midi_with_notes("Drums", 9, [
+        (0, 60, 40, 60),
+        (120, 180, 40, 60),
+        (240, 300, 40, 60),
+        (360, 420, 40, 60),
+        (480, 540, 38, 60),
+        (600, 660, 38, 60),
+        (720, 780, 38, 60),
+        (840, 900, 38, 60),
+    ])
+
+    result = apply_technique_with_warnings(
+        "drums.accented_roll",
+        source,
+        seed=55,
+        tool="superior_drummer",
+        index=_technique_index(
+            "drums.accented_roll",
+            {"superior_drummer": {"notes": [40]}},
+        ),
+    )
+
+    assert result.warnings == ()
+    assert [
+        velocity for _track, _channel, pitch, _start, _end, velocity
+        in _note_tuples(result.result)
+        if pitch == 38
+    ] == [60, 60, 60, 60]
+    assert [
+        velocity for _track, _channel, pitch, _start, _end, velocity
+        in _note_tuples(result.result)
+        if pitch == 40
+    ] == [118, 55, 61, 69]
+
+
+def test_drums_accented_roll_density_zero_disables_technique():
+    source = _midi_with_notes("Drums", 9, [
+        (120 * index, 120 * index + 60, 38, 60)
+        for index in range(4)
+    ])
+
+    result = apply_technique(
+        "drums.accented_roll",
+        source,
+        seed=56,
+        parameters={"density": 0.0},
+    )
+
+    assert _midi_bytes(result) == _midi_bytes(source)
+
+
+def test_drums_accented_roll_is_seed_deterministic_byte_for_byte():
+    same_a = apply_technique(
+        "drums.accented_roll",
+        _midi_with_notes("Drums", 9, [
+            (120 * index, 120 * index + 60, 38, 60)
+            for index in range(8)
+        ]),
+        seed=57,
+    )
+    same_b = apply_technique(
+        "drums.accented_roll",
+        _midi_with_notes("Drums", 9, [
+            (120 * index, 120 * index + 60, 38, 60)
+            for index in range(8)
+        ]),
+        seed=57,
+    )
+
+    assert _midi_bytes(same_a) == _midi_bytes(same_b)
 
 
 def test_apply_uses_requested_tool_recipe_without_warning():

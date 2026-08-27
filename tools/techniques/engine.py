@@ -1528,6 +1528,185 @@ def _apply_drums_flam(
     return mid
 
 
+@register_technique("drums.accented_roll", "humanize")
+def _apply_drums_accented_roll(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
+
+    params = {param.name: param for param in technique.parameters}
+
+    def parameter_value(name, fallback=None):
+        value = context.parameters.get(name)
+        if value is not None:
+            if (
+                isinstance(value, (list, tuple))
+                and len(value) == 2
+                and all(isinstance(item, (int, float)) for item in value)
+            ):
+                return (float(value[0]) + float(value[1])) / 2
+            if isinstance(value, (int, float)):
+                return float(value)
+        parameter = params.get(name)
+        if parameter is None:
+            return fallback
+        if isinstance(parameter.value, (int, float)):
+            return float(parameter.value)
+        if parameter.range is not None:
+            return (float(parameter.range[0]) + float(parameter.range[1])) / 2
+        return fallback
+
+    density = context.parameters.get("density")
+    if isinstance(density, (int, float)) and float(density) <= 0.0:
+        return mid
+
+    accent_velocity = parameter_value("velocity_acento")
+    soft_velocity = parameter_value("velocity_suave")
+    dominant_delta = parameter_value("delta_mao_dominante")
+    pre_accent_delta = parameter_value("delta_lift_pre_acento")
+    if (
+        accent_velocity is None
+        or soft_velocity is None
+        or dominant_delta is None
+        or pre_accent_delta is None
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar velocity_acento, "
+            "velocity_suave, delta_mao_dominante e delta_lift_pre_acento"
+        )
+
+    target_notes = recipe.get("notes")
+    if target_notes is not None and (
+        not isinstance(target_notes, list)
+        or not target_notes
+        or not all(isinstance(note, int) for note in target_notes)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar notes como lista "
+            "de inteiros na receita"
+        )
+    target_note_set = None if target_notes is None else set(target_notes)
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    max_gap_ticks = max(1, ticks_per_beat // 4)
+    top_pressure_floor = 105
+    low_layer_ceiling = 79
+
+    def note_pairs(track):
+        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append((
+                    tick,
+                    msg.velocity,
+                    msg_index,
+                ))
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity, note_on_index = stack.pop(0)
+                yield {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": start_tick,
+                    "end": tick,
+                    "velocity": velocity,
+                    "note_on_index": note_on_index,
+                }
+
+    def roll_sequences(notes):
+        sequences = []
+        current = []
+        previous = None
+        for note in notes:
+            if (
+                previous is not None
+                and note["start"] - previous["start"] <= max_gap_ticks
+                and note["channel"] == previous["channel"]
+            ):
+                current.append(note)
+            else:
+                if len(current) >= 4:
+                    sequences.append(current)
+                current = [note]
+            previous = note
+        if len(current) >= 4:
+            sequences.append(current)
+        return sequences
+
+    def contour_velocity(position, original_velocity):
+        cycle_pos = position % 4
+        cycle_index = position // 4
+        if cycle_pos == 0:
+            target = int(round(float(accent_velocity) - (cycle_index % 2) * 2))
+        else:
+            target = float(soft_velocity)
+            if cycle_pos == 2:
+                target += float(dominant_delta)
+            if cycle_pos == 3:
+                target += float(pre_accent_delta)
+            target = int(round(target))
+
+        if original_velocity >= top_pressure_floor:
+            target = max(target, top_pressure_floor)
+        if original_velocity >= top_pressure_floor and target <= low_layer_ceiling:
+            target = top_pressure_floor
+        return max(1, min(126, target))
+
+    def rebuild_track(track, velocity_by_index):
+        rebuilt = _mido.MidiTrack()
+        for msg_index, msg in enumerate(track):
+            if msg_index in velocity_by_index:
+                rebuilt.append(msg.copy(velocity=velocity_by_index[msg_index]))
+            else:
+                rebuilt.append(msg.copy())
+        track[:] = rebuilt
+
+    for track in mid.tracks:
+        notes = [
+            note for note in note_pairs(track)
+            if note["channel"] == 9
+            and (target_note_set is None or note["pitch"] in target_note_set)
+        ]
+        if not notes:
+            continue
+
+        velocity_by_index = {}
+        for sequence in roll_sequences(sorted(notes, key=lambda item: item["start"])):
+            for position, note in enumerate(sequence):
+                velocity_by_index[note["note_on_index"]] = contour_velocity(
+                    position,
+                    note["velocity"],
+                )
+        if velocity_by_index:
+            rebuild_track(track, velocity_by_index)
+
+    return mid
+
+
 @register_technique("drums.microtiming", "humanize")
 def _apply_drums_microtiming(
     mid: mido.MidiFile,
