@@ -116,6 +116,27 @@ O bloco é estruturalmente anticópia: chaves ou formas que carreguem notas, tem
 frases, melodias, motivos ou sequências musicais são erro. Quando um parâmetro casa com uma técnica
 citada e o manual declara `range`, valor fora da faixa é erro, nunca clamp silencioso.
 
+No render, `style.<familia>.techniques[]` é aplicado pelo motor determinístico de
+`tools/techniques/engine.py` em dois alvos: (a) tracks recém-geradas para aquela família e (b)
+tracks copiadas do MIDI de origem que estão nomeadas em `plan.edits`, mapeando `profile` para
+família (`bass`→`bass`, `drums`→`drums`, `keys`→`keys`). `profile: generic` não tem família e não
+recebe técnica; é documentado, não é erro. Track de origem que não está em `plan.edits` continua
+saindo nota a nota idêntica. Sobre a track editada, toda nota vinda do MIDI de origem é estrutural
+por definição — o nível `technique` só pode acrescentar ornamento sobre ela. Ordem inviolável do
+pipeline: primeiro `apply_edits` (humanização por profile), depois o motor de técnicas de estilo
+sobre as tracks editadas, depois o render por elemento (que também roda o motor sobre as tracks que
+acabou de gerar), e por último os carimbos de plugin/preset. O motor tem dois níveis com contratos
+centrais: `humanize` pode alterar timing, velocity e duração sem mudar contagem, pitches ou ordem
+de notas; `technique` pode acrescentar ornamentos, CC e pitch bend, mas preserva pitch e posição
+das notas estruturais. Nota estrutural é o material de entrada ou de gerador; nota ornamental é a
+nota adicionada pela técnica.
+
+A idempotência também fica no despacho central: ao reaplicar uma técnica, ornamentos com a mesma
+assinatura de track/canal/pitch/início/fim já presentes são descartados antes da validação do
+contrato, assim como CC e pitch bend com a mesma assinatura de track/canal/tick/valor. Depois que as
+técnicas rodam, o render reconstrói as notas renderizadas a partir do MIDI final dessas tracks, para
+que harmonia, placement, artificialidade e persona validem também os ornamentos.
+
 Exemplo mínimo válido:
 
 ```json
@@ -140,6 +161,38 @@ Exemplo mínimo válido:
   }
 }
 ```
+
+### Carimbo de plugin/preset em toda track tocada pelo arranjador
+
+Toda track de saída que o arranjador criou ou editou carrega, além do nome
+(`meta 0x03 track_name`), um **carimbo** em `meta 0x01 text` no tick 0. O
+carimbo é ASCII puro (o meta-evento SMF de texto não carrega encoding) e usa
+`|` como separador entre `chave=valor`:
+
+```
+midi-arranger v1|role=drums|plugin=Superior Drummer|preset=Metal Kit|verified=true|techniques=[drums.ghost_notes]
+```
+
+Campos, sempre nessa ordem quando presentes:
+
+- `role`: role do elemento (para elemento gerado) ou `profile` da edit
+  (para track de `plan.edits`).
+- `plugin`, `preset`, `verified`: instrumento do elemento gerado.
+- `techniques`: canônicos das técnicas de `style.<familia>` aplicadas.
+- `suggested_plugin`, `suggested_preset`, `suggested_verified`: sugestão
+  declarada em `plan.edits[].suggested_instrument` para uma track que já
+  existia no MIDI de origem. É metadado puro — nunca altera nota alguma.
+
+Regras:
+
+- Track de origem **não** declarada em `plan.edits` sai byte-idêntica: sem
+  carimbo. O carimbo aparece apenas em tracks que o arranjador tocou.
+- O carimbo nunca substitui o nome da track — os dois coexistem.
+- A sugestão passa pelas mesmas regras de `tools/tracks.py`: plugin em
+  `FORBIDDEN_PLUGINS` (Trigger_2, Addictive Trigger) é recusado; plugin
+  default por FR-24 é respeitado; Serum só pode aparecer em roles do FR-14.
+- O formato é determinístico: mesmo plano, mesma origem, mesma seed → mesmos
+  bytes.
 
 ### Conclusão
 

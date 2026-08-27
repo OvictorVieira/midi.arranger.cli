@@ -120,9 +120,10 @@ Se a levada chega com tudo em 127 (caso comum), a primeira coisa é redistribuir
 
 | Camada | Velocity | Onde |
 |---|---|---|
-| Acento | 105–120 | backbeat da caixa, crash, acento de virada |
-| Normal | 80–100 | kick, ride, hat no tempo |
-| Suave | 55–79 | hat contratempo, tom de preenchimento |
+| Acento | 105–120 | backbeat da caixa (tempos 2 e 4), crash de chegada, acento de virada |
+| Primario | 100–115 | bumbo em tempo forte (1 e 3), ride bell |
+| Normal | 80–100 | bumbo secundario off-beat, ride, hi-hat no tempo |
+| Suave | 55–79 | hi-hat contratempo, tom de preenchimento |
 | Ghost | 20–45 | ghosts de caixa |
 
 **Nunca escreva 127.** O teto é ~115: a camada mais alta da biblioteca é o hit mais duro e mais
@@ -429,6 +430,24 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
 
 ### 7.1 Hierarquia de acento
 
+> **NÃO IMPLEMENTADA NO MOTOR — ver issue #50.** A técnica continua documentada aqui porque o
+> conhecimento está certo; o que estava errado era a implementação. Ela decidia a camada **só pela
+> posição métrica**, sem nenhuma noção de virada, então dentro de uma virada — onde quase toda nota
+> é contratempo — rebaixava tudo. Medido sobre `tests/fixtures/corpus_drums/DEIXE IR.mid`: 63 das 65
+> caixas em contratempo com velocity de origem ≥ 110 saíam ≤ 45, e a mediana dos toms caía de 127
+> para 67. A hierarquia invertia a intenção: quem escreve 127 não está escrevendo ghost note.
+>
+> Note que a tabela de camadas da §2.2 já distingue **"acento de virada"** (105–120) de **"tom de
+> preenchimento"** (55–79). O motor nunca implementou a primeira e jogava todo tom na segunda —
+> era leitura errada deste manual, não falta de informação.
+>
+> Reimplementar exige separar contexto de groove de contexto de virada, e o limiar quantitativo de
+> virada é **lacuna declarada** na §11. Qualquer limiar adotado entra como `CONVENÇÃO`, com
+> justificativa, nunca como número solto no dispatch.
+>
+> Enquanto isso, plano que declare `drums.accent_hierarchy` recebe `PlanValidationError` explícito.
+> Não vira no-op silencioso.
+
 ```technique
 {
   "name": "accent_hierarchy",
@@ -438,6 +457,7 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
   "description": "Primeiro passo antes de qualquer outro. Levada em 127 chapada colapsa a hierarquia — mova para os quatro clusters abaixo. Teto pratico ~115 (a camada mais alta ja e o hit mais duro e comprimido). Programar tudo em 100 faz o pool de round robin ficar audivel em uma unica camada de sample.",
   "parameters": [
     {"name": "accent",     "range": [105, 120], "source": "Toontrack — how to program drums"},
+    {"name": "primary",    "range": [100, 115], "source": "Toontrack — how to program drums"},
     {"name": "normal",     "range": [80, 100],  "source": "Toontrack"},
     {"name": "soft",       "range": [55, 79],   "source": "Toontrack"},
     {"name": "ghost",      "range": [20, 45],   "source": "Toontrack"},
@@ -466,9 +486,9 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
     {"name": "timing_offset_ms_urgent",   "range": [-5, -2], "source": "Sample Focus"}
   ],
   "tools": {
-    "generic": {"notes": [38]},
-    "superior_drummer": {"notes": [38], "note": "use a nota central de caixa; velocity <45 vira ghost automaticamente"},
-    "addictive_drums": {"notes": [38, 40], "note": "alterne entre 38 e 40 (Snare Open dbl) para nao roubar voz entre ghosts consecutivas"}
+    "generic": {"notes": [38], "velocity": [20, 45]},
+    "superior_drummer": {"notes": [38], "velocity": [20, 45], "note": "use a nota central de caixa; velocity <45 vira ghost automaticamente"},
+    "addictive_drums": {"notes": [38, 40], "velocity": [20, 45], "note": "alterne entre 38 e 40 (Snare Open dbl) para nao roubar voz entre ghosts consecutivas"}
   }
 }
 ```

@@ -29,13 +29,14 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 
 import mido
 import pretty_midi
 
 from .analyze import Analysis, analyze
-from .edits import EditReport, apply_edits, collect_track_names
+from .edits import EditReport, apply_edits, collect_track_names, track_name
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
@@ -62,9 +63,11 @@ from .palette.rhythmic import (
     generate_shadow,
 )
 from .plan import (
+    ROLE_STYLE_FAMILIES,
     STYLE_FAMILIES,
     ArrangementPlan,
     Element,
+    FamilyStyle,
     PlanSection,
     load,
     normalize_style_defaults,
@@ -73,7 +76,19 @@ from .plan import (
 from .plan import (
     validate as validate_plan,
 )
-from .tracks import name_for_element
+from .techniques import (
+    TechniqueApplyResult,
+    TechniqueContractError,
+    TechniqueIndex,
+    TechniquePhysicalError,
+    TechniqueRecipeError,
+    UnknownTechniqueError,
+    apply_technique_with_warnings,
+)
+from .techniques import (
+    build_index as build_techniques_index,
+)
+from .tracks import is_ascii_safe, name_for_element
 from .validators.artifice import ArtificeIssue, validate_artifice
 from .validators.artifice import format_issues as format_artifice_issues
 from .validators.collision import CollisionReport, validate_collisions
@@ -118,6 +133,13 @@ SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
     "octave_shift", "tail_notes", "phrase_end_gap_s", "velocity_offset",
     "note_duration_s",
 })
+
+# Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
+# Exemplo literal (documentado em docs/arquitetura.md):
+#   "midi-arranger v1|role=drums|plugin=Superior Drummer|preset=Metal Kit|
+#    verified=true|techniques=[drums.accent_hierarchy,drums.ghost_notes]"
+# Coexiste com meta 0x03 (track_name); nunca substitui.
+STAMP_PREFIX = "midi-arranger v1"
 
 
 # --- excecoes ---------------------------------------------------------------
@@ -266,6 +288,445 @@ def _style_confidence_warnings(plan: ArrangementPlan) -> list[str]:
     return warnings
 
 
+def _style_family_for_role(role: str) -> str | None:
+    """Mapeia role renderizavel para a familia de `style` correspondente."""
+
+    if role in STYLE_FAMILIES:
+        return role
+    return ROLE_STYLE_FAMILIES.get(role)
+
+
+def _style_technique_seed(
+    plan_seed: int,
+    family: str,
+    canonical: str,
+    tool_target: str | None,
+    *,
+    edit_track: str | None = None,
+) -> int:
+    parts = [str(plan_seed), "style", family, canonical, tool_target or ""]
+    if edit_track is not None:
+        parts.extend(["edit", edit_track])
+    payload = "|".join(parts).encode()
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+
+
+# Mapa profile -> familia de style, exposto para o motor de edits. `generic`
+# nao tem familia e nao recebe tecnica de estilo (por design; documentado em
+# AGENTS.md).
+_EDIT_PROFILE_STYLE_FAMILIES = {
+    "bass": "bass",
+    "drums": "drums",
+    "keys": "keys",
+}
+
+
+def _style_family_for_edit(profile: str) -> str | None:
+    return _EDIT_PROFILE_STYLE_FAMILIES.get(profile)
+
+
+def _tool_target_for_element(element: Element) -> str | None:
+    """Converte `instrument.plugin` em chave de receita do manual.
+
+    Ex.: "Superior Drummer" -> "superior_drummer". Ausencia de plugin deixa
+    o motor usar `generic` sem emitir fallback artificial.
+    """
+
+    plugin = (element.instrument or {}).get("plugin")
+    if not isinstance(plugin, str) or not plugin.strip():
+        return None
+    chars: list[str] = []
+    previous_sep = False
+    for ch in plugin.strip().lower():
+        if ch.isalnum():
+            chars.append(ch)
+            previous_sep = False
+        elif not previous_sep:
+            chars.append("_")
+            previous_sep = True
+    normalized = "".join(chars).strip("_")
+    return normalized or None
+
+
+def _canonical_style_technique(
+    index: TechniqueIndex,
+    family: str,
+    name: str,
+) -> str:
+    """Resolve nome simples/canonico do plano para canonico da familia.
+
+    `plan.validate()` ja rejeitou nomes invalidos; aqui mantemos a resolucao
+    centralizada no indice para o render nao depender da forma escolhida pelo
+    agente no JSON.
+    """
+
+    for technique in index.candidates(name):
+        if technique.family == family:
+            return technique.canonical
+    raise RenderError(
+        f"style.{family}: technique {name!r} is not available for family {family!r}"
+    )
+
+
+def _style_technique_parameters(
+    style_parameters: dict[str, float | list[float]],
+    density: float | None,
+) -> dict[str, float | list[float]]:
+    parameters = dict(style_parameters)
+    if density is not None:
+        parameters["density"] = float(density)
+    return parameters
+
+
+def _format_engine_warning(warning: dict) -> str:
+    code = str(warning.get("code", "W_TECHNIQUE"))
+    message = str(warning.get("message", "")).strip()
+    path = str(warning.get("path", "")).strip()
+    suffix = f" ({path})" if path else ""
+    return f"{code}: {message}{suffix}" if message else f"{code}{suffix}"
+
+
+def _tracks_as_midi(
+    tracks: list[mido.MidiTrack],
+    *,
+    ticks_per_beat: int,
+    midi_type: int,
+) -> mido.MidiFile:
+    mid = mido.MidiFile(ticks_per_beat=ticks_per_beat, type=midi_type)
+    mid.tracks.extend(tracks)
+    return mid
+
+
+def _tempo_track_from_pretty_midi(pm: pretty_midi.PrettyMIDI) -> mido.MidiTrack:
+    track = mido.MidiTrack()
+    previous_tick = 0
+    tempo_times, tempi = pm.get_tempo_changes()
+    for time_s, bpm in zip(tempo_times, tempi, strict=True):
+        tick = int(round(pm.time_to_tick(float(time_s))))
+        track.append(mido.MetaMessage(
+            "set_tempo",
+            tempo=mido.bpm2tempo(float(bpm)),
+            time=tick - previous_tick,
+        ))
+        previous_tick = tick
+    return track
+
+
+def _run_style_pipeline(
+    current: mido.MidiFile,
+    *,
+    plan: ArrangementPlan,
+    family: str,
+    style: FamilyStyle,
+    tool_target: str | None,
+    index: TechniqueIndex,
+    edit_track: str | None = None,
+) -> tuple[mido.MidiFile, list[str]]:
+    """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
+
+    Comum aos dois caminhos que aplicam estilo: tracks recem-renderizadas por
+    elemento e tracks do MIDI de origem nomeadas em `plan.edits`. Warnings
+    ganham prefixo com o nome da track quando o alvo e uma edit, para o
+    relatorio identificar de qual track de origem partiu o aviso.
+    """
+
+    warnings: list[str] = []
+    warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
+    for technique in style.techniques:
+        canonical = _canonical_style_technique(index, family, technique.name)
+        try:
+            applied: TechniqueApplyResult = apply_technique_with_warnings(
+                canonical,
+                current,
+                seed=_style_technique_seed(
+                    plan.seed, family, canonical, tool_target,
+                    edit_track=edit_track,
+                ),
+                parameters=_style_technique_parameters(
+                    style.parameters,
+                    technique.density,
+                ),
+                tool=tool_target,
+                index=index,
+            )
+        except (
+            TechniqueContractError,
+            TechniquePhysicalError,
+            TechniqueRecipeError,
+            UnknownTechniqueError,
+        ) as exc:
+            context = f" (edit {edit_track!r})" if edit_track is not None else ""
+            raise RenderError(
+                f"style.{family}.techniques{context}: {exc}"
+            ) from None
+        current = applied.result if isinstance(applied.result, mido.MidiFile) else current
+        warnings.extend(
+            f"{warning_prefix}{_format_engine_warning(w)}"
+            for w in applied.warnings
+        )
+    return current, warnings
+
+
+def _apply_style_techniques_to_tracks(
+    tracks: list[mido.MidiTrack],
+    *,
+    plan: ArrangementPlan,
+    family: str | None,
+    tool_target: str | None,
+    ticks_per_beat: int,
+    midi_type: int,
+    index: TechniqueIndex | None,
+) -> tuple[list[mido.MidiTrack], list[str], bool]:
+    """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
+
+    As tracks do MIDI de origem nao entram aqui — quando uma edit aponta para
+    uma track existente, o caminho e `_apply_style_techniques_to_edit_tracks`,
+    que roda depois de `apply_edits` e antes do render por elemento.
+    """
+
+    if family is None or not tracks or not plan.style:
+        return tracks, [], False
+    style = plan.style.get(family)
+    if style is None or not style.techniques:
+        return tracks, [], False
+    if index is None:
+        raise RenderError("internal error: missing techniques index for style render")
+
+    current = _tracks_as_midi(
+        tracks,
+        ticks_per_beat=ticks_per_beat,
+        midi_type=midi_type,
+    )
+    current, warnings = _run_style_pipeline(
+        current,
+        plan=plan,
+        family=family,
+        style=style,
+        tool_target=tool_target,
+        index=index,
+    )
+    return list(current.tracks), warnings, True
+
+
+def _apply_style_techniques_to_edit_tracks(
+    out_mid: mido.MidiFile,
+    *,
+    plan: ArrangementPlan,
+    index: TechniqueIndex | None,
+) -> list[str]:
+    """Aplica `style.<family>` sobre as tracks da origem nomeadas em `plan.edits`.
+
+    Ordem inviolavel: `apply_edits` (humanizacao por profile) ja rodou; agora
+    o motor de tecnicas atua sobre as mesmas tracks. Como toda nota vinda da
+    origem e ESTRUTURAL por definicao, o contrato do nivel `technique` garante
+    que o motor so acrescente ornamento; o nivel `humanize` pode mexer em
+    velocity/timing/duracao das mesmas notas estruturais. Track nao nomeada em
+    `plan.edits` continua saindo byte-identica: nao aparece aqui.
+
+    Profile `generic` nao tem familia e nao recebe tecnica; isso e por design,
+    nao erro. Familia sem `style` declarado (nem defaults) ou sem `techniques`
+    tambem sai sem tocar na track.
+    """
+
+    if not plan.edits or not plan.style:
+        return []
+
+    name_to_indices: dict[str, list[int]] = {}
+    for idx, tr in enumerate(out_mid.tracks):
+        name = track_name(tr)
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
+
+    warnings: list[str] = []
+    for edit in plan.edits:
+        family = _style_family_for_edit(edit.profile)
+        if family is None:
+            continue
+        style = plan.style.get(family)
+        if style is None or not style.techniques:
+            continue
+        target_indices = name_to_indices.get(edit.track)
+        if not target_indices:
+            continue
+        if index is None:
+            raise RenderError(
+                "internal error: missing techniques index for style render"
+            )
+        target_tracks = [out_mid.tracks[i] for i in target_indices]
+        working = _tracks_as_midi(
+            target_tracks,
+            ticks_per_beat=out_mid.ticks_per_beat,
+            midi_type=out_mid.type,
+        )
+        working, edit_warnings = _run_style_pipeline(
+            working,
+            plan=plan,
+            family=family,
+            style=style,
+            tool_target=None,
+            index=index,
+            edit_track=edit.track,
+        )
+        warnings.extend(edit_warnings)
+        for slot, new_track in zip(
+            target_indices, working.tracks, strict=True,
+        ):
+            out_mid.tracks[slot] = new_track
+    return warnings
+
+
+# --- carimbo de plugin/preset em meta text ---------------------------------
+
+def _bool_stamp(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _format_stamp(
+    *,
+    role: str,
+    plugin: str | None,
+    preset: str | None,
+    verified: bool,
+    techniques: tuple[str, ...] = (),
+    suggested_plugin: str | None = None,
+    suggested_preset: str | None = None,
+    suggested_verified: bool = False,
+) -> str:
+    """Formata o carimbo em `<prefixo>|k=v|k=v...`, com todos os valores ASCII.
+
+    Ordem estavel dos campos: `role`, `plugin`, `preset`, `verified`,
+    `techniques`, `suggested_plugin`, `suggested_preset`, `suggested_verified`.
+    Campos vazios sao omitidos. Nunca inclui campo cujo valor nao passe pela
+    checagem ASCII do `tools.tracks`; o meta-evento SMF de texto nao carrega
+    encoding, entao bytes >127 ficam a merce do decoder do DAW.
+    """
+
+    def _guarded(field_name: str, value: str) -> str:
+        if not is_ascii_safe(value):
+            raise RenderError(
+                f"stamp field {field_name!r} must be ASCII, got {value!r}"
+            )
+        if "|" in value:
+            raise RenderError(
+                f"stamp field {field_name!r} must not contain '|' — "
+                f"separador reservado do carimbo (got {value!r})"
+            )
+        return value
+
+    parts: list[str] = [STAMP_PREFIX, f"role={_guarded('role', role)}"]
+    if plugin:
+        parts.append(f"plugin={_guarded('plugin', plugin)}")
+    if preset:
+        parts.append(f"preset={_guarded('preset', preset)}")
+    if plugin or preset:
+        parts.append(f"verified={_bool_stamp(verified)}")
+    if techniques:
+        for i, name in enumerate(techniques):
+            _guarded(f"techniques[{i}]", name)
+        parts.append(f"techniques=[{','.join(techniques)}]")
+    if suggested_plugin or suggested_preset:
+        if suggested_plugin:
+            parts.append(
+                f"suggested_plugin={_guarded('suggested_plugin', suggested_plugin)}"
+            )
+        if suggested_preset:
+            parts.append(
+                f"suggested_preset={_guarded('suggested_preset', suggested_preset)}"
+            )
+        parts.append(f"suggested_verified={_bool_stamp(suggested_verified)}")
+    return "|".join(parts)
+
+
+def _insert_stamp(track: mido.MidiTrack, stamp: str) -> None:
+    """Insere o carimbo como meta text logo apos o `track_name` em tick 0.
+
+    Coexiste com o `track_name` — nunca substitui. Delta 0 preserva o tick
+    absoluto de todas as mensagens seguintes.
+    """
+    text = mido.MetaMessage("text", text=stamp, time=0)
+    for i, msg in enumerate(track):
+        if msg.is_meta and msg.type == "track_name":
+            track.insert(i + 1, text)
+            return
+    track.insert(0, text)
+
+
+def _stamp_element_tracks(
+    tracks: list[mido.MidiTrack],
+    element: Element,
+    *,
+    techniques: tuple[str, ...],
+) -> None:
+    inst = element.instrument or {}
+    plugin = str(inst.get("plugin", "")) or None
+    preset = str(inst.get("preset", "")) or None
+    verified = bool(inst.get("verified", False))
+    stamp = _format_stamp(
+        role=element.role,
+        plugin=plugin,
+        preset=preset,
+        verified=verified,
+        techniques=techniques,
+    )
+    for track in tracks:
+        _insert_stamp(track, stamp)
+
+
+def _stamp_edit_tracks(
+    out_mid: mido.MidiFile,
+    *,
+    plan: ArrangementPlan,
+    index: TechniqueIndex | None,
+) -> None:
+    """Carimba plugin/preset/role/verified/techniques em cada track de `plan.edits`.
+
+    Faz o mapa `edit.track` -> tracks do MIDI final apenas para as tracks
+    nomeadas em `plan.edits` — tracks nao declaradas ficam byte-identicas ao
+    source por definicao (ver AGENTS.md), e nao recebem carimbo.
+    """
+    if not plan.edits:
+        return
+    name_to_indices: dict[str, list[int]] = {}
+    for idx, tr in enumerate(out_mid.tracks):
+        name = track_name(tr)
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
+
+    for edit in plan.edits:
+        target_indices = name_to_indices.get(edit.track)
+        if not target_indices:
+            continue
+        family = _style_family_for_edit(edit.profile)
+        techniques: tuple[str, ...] = ()
+        if family is not None and plan.style is not None:
+            style = plan.style.get(family)
+            if style is not None and style.techniques:
+                if index is None:
+                    raise RenderError(
+                        "internal error: missing techniques index for stamp"
+                    )
+                techniques = tuple(
+                    _canonical_style_technique(index, family, tech.name)
+                    for tech in style.techniques
+                )
+        suggested = edit.suggested_instrument or {}
+        suggested_plugin = suggested.get("plugin") if suggested else None
+        suggested_preset = suggested.get("preset") if suggested else None
+        suggested_verified = bool(suggested.get("verified", False)) if suggested else False
+        stamp = _format_stamp(
+            role=edit.profile,
+            plugin=None,
+            preset=None,
+            verified=False,
+            techniques=techniques,
+            suggested_plugin=suggested_plugin,
+            suggested_preset=suggested_preset,
+            suggested_verified=suggested_verified,
+        )
+        for idx in target_indices:
+            _insert_stamp(out_mid.tracks[idx], stamp)
+
+
 # --- conversao note -> mido -------------------------------------------------
 
 def _notes_to_track(
@@ -329,6 +790,48 @@ def _notes_to_track(
             ))
         prev_tick = tick
     return tr
+
+
+def _rendered_tracks_from_midi_tracks(
+    element: Element,
+    tracks: list[mido.MidiTrack],
+    pm: pretty_midi.PrettyMIDI,
+    *,
+    ticks_per_beat: int,
+    midi_type: int,
+) -> list[RenderedTrack]:
+    """Reconstroi notas renderizadas a partir do MIDI final do elemento.
+
+    O motor de tecnicas pode acrescentar ornamentos depois do gerador de role;
+    os validadores precisam enxergar essas notas reais, nao apenas a lista
+    original retornada pela paleta.
+    """
+
+    temp_mid = mido.MidiFile(ticks_per_beat=ticks_per_beat, type=midi_type)
+    temp_mid.tracks.append(_tempo_track_from_pretty_midi(pm))
+    temp_mid.tracks.extend(tracks)
+    payload = BytesIO()
+    temp_mid.save(file=payload)
+    payload.seek(0)
+    parsed = pretty_midi.PrettyMIDI(payload)
+
+    rendered: list[RenderedTrack] = []
+    for fallback_index, instrument in enumerate(parsed.instruments):
+        track_name = instrument.name or f"{element.id} L{fallback_index + 1}"
+        rendered.append(RenderedTrack(
+            element_id=element.id,
+            track_name=track_name,
+            notes=tuple(
+                RenderedNote(
+                    pitch=int(note.pitch),
+                    velocity=int(note.velocity),
+                    start_s=float(note.start),
+                    end_s=float(note.end),
+                )
+                for note in instrument.notes
+            ),
+        ))
+    return rendered
 
 
 def _clone_source_tracks(src: mido.MidiFile) -> list[mido.MidiTrack]:
@@ -871,6 +1374,20 @@ def render(
 
     element_reports: list[ElementRationale] = []
     rendered_tracks: list[RenderedTrack] = []
+    style_index = (
+        build_techniques_index()
+        if plan.style and any(style.techniques for style in plan.style.values())
+        else None
+    )
+    # Ordem: primeiro `apply_edits` (humanizacao por profile), depois o motor
+    # de tecnicas nas mesmas tracks da origem. Assim as tecnicas de estilo
+    # alcancam a bateria real do usuario — sem esse passo, `style.<familia>`
+    # so afeta elemento gerado, e o produto nao entrega o que promete.
+    warnings.extend(
+        _apply_style_techniques_to_edit_tracks(
+            out_mid, plan=plan, index=style_index,
+        )
+    )
     for e in plan.elements:
         warnings.extend(_unsupported_pattern_warnings(e))
         layer_warning = _strings_tutti_layer_warning(e)
@@ -893,8 +1410,49 @@ def render(
             midi_tracks, rendered = role_renderer.render(
                 e, plan, analysis, pm, role_renderer.channel,
             )
+            (
+                midi_tracks,
+                technique_warnings,
+                technique_applied,
+            ) = _apply_style_techniques_to_tracks(
+                midi_tracks,
+                plan=plan,
+                family=_style_family_for_role(e.role),
+                tool_target=_tool_target_for_element(e),
+                ticks_per_beat=out_mid.ticks_per_beat,
+                midi_type=out_mid.type,
+                index=style_index,
+            )
+            warnings.extend(technique_warnings)
+            element_family = _style_family_for_role(e.role)
+            element_techniques: tuple[str, ...] = ()
+            if (
+                technique_applied
+                and element_family is not None
+                and plan.style is not None
+                and style_index is not None
+            ):
+                family_style = plan.style.get(element_family)
+                if family_style is not None:
+                    element_techniques = tuple(
+                        _canonical_style_technique(
+                            style_index, element_family, tech.name,
+                        )
+                        for tech in family_style.techniques
+                    )
+            _stamp_element_tracks(midi_tracks, e, techniques=element_techniques)
             out_mid.tracks.extend(midi_tracks)
-            rendered_tracks.extend(rendered)
+            rendered_tracks.extend(
+                _rendered_tracks_from_midi_tracks(
+                    e,
+                    midi_tracks,
+                    pm,
+                    ticks_per_beat=out_mid.ticks_per_beat,
+                    midi_type=out_mid.type,
+                )
+                if technique_applied
+                else rendered
+            )
             report_entry.rendered = True
         else:
             msg = (
@@ -904,6 +1462,12 @@ def render(
             report_entry.note = msg
             warnings.append(f"{e.id}: {msg}")
         element_reports.append(report_entry)
+
+    # Carimba as tracks de `plan.edits` com role, tecnicas aplicadas e
+    # (quando declarada) sugestao de plugin/preset. Depois de `apply_edits` e
+    # do motor de tecnicas — assim o carimbo reflete o que o arranjador de
+    # fato fez naquela track.
+    _stamp_edit_tracks(out_mid, plan=plan, index=style_index)
 
     warnings.extend(check_tutti_uniqueness(plan))
 

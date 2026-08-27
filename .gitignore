@@ -7,6 +7,7 @@ venv/
 htmlcov/
 .ruff_cache/
 .jscpd/
+.jscpd-debug*/
 .jscpd_manual/
 .worktrees/
 .ralph/

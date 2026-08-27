@@ -29,6 +29,7 @@ from tools.plan import (
     validate,
     validate_edits_against_midi,
 )
+from tools.techniques import SUPPORTED_TECHNIQUES, build_index
 
 # --- fixture ----------------------------------------------------------------
 
@@ -220,7 +221,7 @@ def _complete_style() -> dict[str, FamilyStyle]:
             researched_at="2026-08-24",
             sources=["https://example.test/bass"],
             confidence="high",
-            techniques=[StyleTechnique(name="ghost_notes", density=0.2)],
+            techniques=[],
             parameters={"ghost_note_velocity": 35.0},
         ),
         "drums": FamilyStyle(
@@ -321,16 +322,64 @@ def test_validate_resolves_simple_style_technique_name_by_family():
 def test_validate_accepts_canonical_style_technique_name():
     plan = _valid_plan()
     plan.style = {
-        "guitar": FamilyStyle(
-            reference="Tom Morello",
+        "drums": FamilyStyle(
+            reference="Steve Jordan",
             researched_at="2026-08-24",
-            sources=["https://example.test/guitar"],
+            sources=["https://example.test/drums"],
             confidence="high",
-            techniques=[StyleTechnique(name="guitar.palm_mute")],
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
             parameters={},
         )
     }
     validate(plan)  # nao levanta
+
+
+def test_validate_rejects_documented_but_unimplemented_style_technique():
+    plan = _valid_plan()
+    plan.style = {
+        "keys": FamilyStyle(
+            reference="Pianist research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/keys"],
+            confidence="high",
+            techniques=[StyleTechnique(name="keys.hand_asynchrony")],
+            parameters={},
+        )
+    }
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "style.keys.techniques[0].name"
+    assert "exists in techniques index" in exc.value.message
+    assert "not implemented by the engine" in exc.value.message
+    assert "drums.ghost_notes" in exc.value.message
+
+
+def test_validate_accepts_only_supported_style_techniques_from_manual_index():
+    index = build_index()
+
+    for technique in index.techniques:
+        plan = _valid_plan()
+        plan.style = {
+            technique.family: FamilyStyle(
+                reference="Style research",
+                researched_at="2026-08-24",
+                sources=["https://example.test/style"],
+                confidence="high",
+                techniques=[StyleTechnique(name=technique.canonical)],
+                parameters={},
+            )
+        }
+
+        if technique.canonical in SUPPORTED_TECHNIQUES:
+            validate(plan)
+            continue
+
+        with pytest.raises(PlanValidationError) as exc:
+            validate(plan)
+        assert exc.value.path == f"style.{technique.family}.techniques[0].name"
+        assert "not implemented by the engine" in exc.value.message
 
 
 def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates():
@@ -554,15 +603,19 @@ def test_validate_accepts_style_parameter_without_manual_range():
             researched_at="2026-08-24",
             sources=["https://example.test/drums"],
             confidence="medium",
-            techniques=[StyleTechnique(name="microtiming")],
-            parameters={"hihat_timing_sigma_ms": 999},
+            techniques=[StyleTechnique(name="ghost_notes")],
+            parameters={"hard_ceiling": 999},
         )
     }
     warnings = validate(plan)
-    assert not any("style.drums.parameters.hihat_timing_sigma_ms" in w for w in warnings)
+    assert not any("style.drums.parameters.hard_ceiling" in w for w in warnings)
 
 
-def test_validate_warns_for_style_parameter_source_gap():
+def test_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        "tools.techniques.SUPPORTED_TECHNIQUES",
+        (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
+    )
     plan = _valid_plan()
     plan.style = {
         "guitar": FamilyStyle(

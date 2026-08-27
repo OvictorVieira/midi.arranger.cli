@@ -198,10 +198,15 @@ class PlanEdit:
     - `profile`: um de EDIT_PROFILES; determina os ranges dos motores.
     - `intensity`: 0.0 (intocado) ate 1.0 (ranges cheios) — escala a
       amplitude aplicada pelos motores.
+    - `suggested_instrument`: sugestao de plugin/preset para a track existente,
+      metadado puro (nao altera nota nenhuma). Chaves aceitas:
+      `plugin` (str nao vazio), `preset` (str nao vazio), `verified` (bool,
+      default False). Passa pelas mesmas regras de `tools/tracks.py`.
     """
     track: str
     profile: str
     intensity: float
+    suggested_instrument: dict[str, Any] | None = None
 
 
 @dataclass
@@ -289,10 +294,27 @@ def _build_techniques_index_for_style():
 def _resolve_style_technique(index, family: str, name: str, path: str):
     import difflib
 
+    from .techniques import SUPPORTED_TECHNIQUES
+
     found = index.candidates(name)
     in_family = tuple(t for t in found if t.family == family)
     if in_family:
-        return in_family[0]
+        technique = in_family[0]
+        if technique.canonical in SUPPORTED_TECHNIQUES:
+            return technique
+        listing = (
+            ", ".join(SUPPORTED_TECHNIQUES)
+            if SUPPORTED_TECHNIQUES
+            else "(nenhuma tecnica implementada)"
+        )
+        raise PlanValidationError(
+            path,
+            (
+                f"technique {technique.canonical!r} exists in techniques index "
+                "but is not implemented by the engine; implemented techniques: "
+                f"{listing}"
+            ),
+        )
 
     if found:
         raise PlanValidationError(
@@ -576,6 +598,80 @@ def normalize_style_defaults(plan: ArrangementPlan) -> ArrangementPlan:
     return normalized
 
 
+SUGGESTED_INSTRUMENT_FIELDS = ("plugin", "preset", "verified")
+
+
+def _validate_suggested_instrument(
+    data: Any, profile: str, path: str,
+) -> None:
+    """Regras de `tools/tracks.py` aplicadas a sugestao de instrumento em edit.
+
+    Recusa plugin em `FORBIDDEN_PLUGINS`, exige plugin default de `SAMPLER_ROUTING`
+    quando o profile tem um, e recusa Serum fora do escopo de FR-14.
+    """
+    from .tracks import (
+        FORBIDDEN_PLUGINS,
+        SERUM_ALLOWED_ROLES,
+        SERUM_PLUGIN_NAME,
+        default_plugin_for_role,
+        is_ascii_safe,
+    )
+
+    if not isinstance(data, dict):
+        raise PlanValidationError(
+            path, f"must be object, got {type(data).__name__}",
+        )
+    extra = [k for k in data if k not in SUGGESTED_INSTRUMENT_FIELDS]
+    if extra:
+        raise PlanValidationError(
+            path, f"unknown fields {extra}; allowed {list(SUGGESTED_INSTRUMENT_FIELDS)}",
+        )
+    plugin = data.get("plugin")
+    preset = data.get("preset")
+    verified = data.get("verified", False)
+    if not isinstance(plugin, str) or not plugin.strip():
+        raise PlanValidationError(f"{path}.plugin", "must be non-empty string")
+    if not isinstance(preset, str) or not preset.strip():
+        raise PlanValidationError(f"{path}.preset", "must be non-empty string")
+    if not isinstance(verified, bool):
+        raise PlanValidationError(
+            f"{path}.verified", f"must be bool, got {type(verified).__name__}",
+        )
+    if not is_ascii_safe(plugin):
+        raise PlanValidationError(
+            f"{path}.plugin",
+            f"must be ASCII (meta-evento SMF nao carrega encoding), got {plugin!r}",
+        )
+    if not is_ascii_safe(preset):
+        raise PlanValidationError(
+            f"{path}.preset",
+            f"must be ASCII (meta-evento SMF nao carrega encoding), got {preset!r}",
+        )
+    if "|" in plugin or "|" in preset:
+        raise PlanValidationError(
+            path,
+            "plugin/preset must not contain '|' — separador reservado do carimbo",
+        )
+    if plugin in FORBIDDEN_PLUGINS:
+        raise PlanValidationError(
+            f"{path}.plugin",
+            f"plugin {plugin!r} is forbidden by FR-24 "
+            "(Trigger_2/Addictive Trigger nunca sao sugeridos)",
+        )
+    default = default_plugin_for_role(profile)
+    if default is not None and plugin != default:
+        raise PlanValidationError(
+            f"{path}.plugin",
+            f"profile {profile!r} must use {default!r} per FR-24, got {plugin!r}",
+        )
+    if plugin == SERUM_PLUGIN_NAME and profile not in SERUM_ALLOWED_ROLES:
+        raise PlanValidationError(
+            f"{path}.plugin",
+            f"Serum is not allowed for profile {profile!r} per FR-14 "
+            f"(allowed: {sorted(SERUM_ALLOWED_ROLES)})",
+        )
+
+
 def validate(plan: ArrangementPlan) -> list[str]:
     """Valida um `ArrangementPlan` e devolve avisos nao-bloqueantes.
 
@@ -715,6 +811,10 @@ def validate(plan: ArrangementPlan) -> list[str]:
                 f"must be in {EDIT_INTENSITY_MIN}-{EDIT_INTENSITY_MAX}, "
                 f"got {ed.intensity}",
             )
+        if ed.suggested_instrument is not None:
+            _validate_suggested_instrument(
+                ed.suggested_instrument, ed.profile, f"{base}.suggested_instrument",
+            )
 
     # AVISO: todos os 5 eixos sobem simultaneamente entre secoes consecutivas.
     for i in range(len(plan.sections) - 1):
@@ -783,11 +883,14 @@ def _element_to_dict(e: Element) -> dict[str, Any]:
 
 
 def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
-    return {
+    data: dict[str, Any] = {
         "track": e.track,
         "profile": e.profile,
         "intensity": float(e.intensity),
     }
+    if e.suggested_instrument is not None:
+        data["suggested_instrument"] = dict(e.suggested_instrument)
+    return data
 
 
 def _style_technique_to_dict(t: StyleTechnique) -> dict[str, Any]:
@@ -895,10 +998,12 @@ def _element_from_dict(data: dict[str, Any], path: str) -> Element:
 
 
 def _edit_from_dict(data: dict[str, Any]) -> PlanEdit:
+    suggested = data.get("suggested_instrument")
     return PlanEdit(
         track=data["track"],
         profile=data["profile"],
         intensity=float(data["intensity"]),
+        suggested_instrument=dict(suggested) if suggested is not None else None,
     )
 
 

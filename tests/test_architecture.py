@@ -17,6 +17,7 @@ from pathlib import Path
 import tools
 
 TOOLS_ROOT = Path(tools.__file__).parent
+TECHNIQUES_ROOT = TOOLS_ROOT / "techniques"
 
 FORBIDDEN_ROOTS = frozenset({"bin"})
 
@@ -49,6 +50,17 @@ def _iter_tools_py_files() -> list[Path]:
     return files
 
 
+def _iter_techniques_py_files() -> list[Path]:
+    files: list[Path] = []
+    for root, _, filenames in os.walk(TECHNIQUES_ROOT):
+        if "__pycache__" in root:
+            continue
+        for name in filenames:
+            if name.endswith(".py"):
+                files.append(Path(root) / name)
+    return files
+
+
 def _iter_import_roots(path: Path):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for node in ast.walk(tree):
@@ -70,6 +82,35 @@ def test_tools_never_imports_from_bin():
             if root in FORBIDDEN_ROOTS:
                 offenders.append((str(path.relative_to(TOOLS_ROOT.parent)), module))
     assert offenders == [], f"tools/ nao pode importar de bin/: {offenders}"
+
+
+def test_techniques_never_imports_from_bin():
+    offenders: list[tuple[str, str]] = []
+    for path in _iter_techniques_py_files():
+        for module in _iter_import_roots(path):
+            root = module.split(".", 1)[0]
+            if root in FORBIDDEN_ROOTS:
+                offenders.append((str(path.relative_to(TOOLS_ROOT.parent)), module))
+    assert offenders == [], f"tools/techniques/ nao pode importar de bin/: {offenders}"
+
+
+def test_techniques_random_and_clock_usage_stays_centralized():
+    allowed_random_imports = {TECHNIQUES_ROOT / "engine.py"}
+    forbidden_modules = frozenset({"datetime", "time"})
+    offenders: list[tuple[str, str]] = []
+
+    for path in _iter_techniques_py_files():
+        for module in _iter_import_roots(path):
+            if module == "random" and path not in allowed_random_imports:
+                offenders.append((str(path.relative_to(TOOLS_ROOT.parent)), module))
+            root = module.split(".", 1)[0]
+            if root in forbidden_modules:
+                offenders.append((str(path.relative_to(TOOLS_ROOT.parent)), module))
+
+    assert offenders == [], (
+        "tools/techniques/ deve derivar variacao de TechniqueContext.seed, "
+        f"sem RNG global nem relogio: {offenders}"
+    )
 
 
 def test_tools_never_imports_llm_libraries():
