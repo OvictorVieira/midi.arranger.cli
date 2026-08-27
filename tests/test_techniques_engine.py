@@ -181,6 +181,7 @@ def test_supported_techniques_is_derived_from_the_registry():
     assert SUPPORTED_TECHNIQUES == (
         "drums.accented_roll",
         "drums.articulation_diff",
+        "drums.buzz_roll",
         "drums.cymbal_choke",
         "drums.flam",
         "drums.ghost_notes",
@@ -197,6 +198,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     assert exc.value.available == (
         "drums.accented_roll",
         "drums.articulation_diff",
+        "drums.buzz_roll",
         "drums.cymbal_choke",
         "drums.flam",
         "drums.ghost_notes",
@@ -1775,6 +1777,111 @@ def test_drums_cymbal_choke_is_idempotent_and_seed_deterministic():
         "drums.cymbal_choke",
         source_b,
         seed=70,
+        tool="superior_drummer",
+    )
+
+    assert _midi_bytes(twice) == _midi_bytes(once)
+    assert _midi_bytes(same) == _midi_bytes(once)
+
+
+def test_drums_buzz_roll_adds_dense_ramp_before_structural_snare():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 110)])
+
+    result = apply_technique(
+        "drums.buzz_roll",
+        source,
+        seed=71,
+        tool="superior_drummer",
+    )
+
+    new_notes = _new_note_tuples(source, result)
+    assert len(new_notes) >= 8
+    assert (1, 9, 38, 480, 600, 110) in _note_tuples(result)
+    assert all(note[2] == 38 for note in new_notes)
+    assert all(note[4] <= 480 for note in new_notes)
+    assert [note[5] for note in new_notes] == sorted(note[5] for note in new_notes)
+    assert new_notes[0][3] == 0
+
+
+def test_drums_buzz_roll_uses_addictive_drums_recipe_notes():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 41, 100)])
+
+    result = apply_technique_with_warnings(
+        "drums.buzz_roll",
+        source,
+        seed=72,
+        tool="addictive_drums",
+        index=_technique_index(
+            "drums.buzz_roll",
+            {
+                "addictive_drums": {"notes": [41]},
+            },
+        ),
+    )
+
+    assert result.warnings == ()
+    assert _new_note_tuples(source, result.result)
+    assert {note[2] for note in _new_note_tuples(source, result.result)} == {41}
+
+
+def test_drums_buzz_roll_rejects_tool_without_recipe_before_apply():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 110)])
+
+    with pytest.raises(TechniqueRecipeError, match="nem fallback generic"):
+        apply_technique_with_warnings(
+            "drums.buzz_roll",
+            source,
+            seed=73,
+            tool="generic",
+            index=_technique_index(
+                "drums.buzz_roll",
+                {
+                    "superior_drummer": {"notes": [38]},
+                },
+            ),
+        )
+
+
+def test_drums_buzz_roll_density_zero_disables_technique():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 110)])
+
+    result = apply_technique(
+        "drums.buzz_roll",
+        source,
+        seed=74,
+        tool="superior_drummer",
+        parameters={"density": 0.0},
+    )
+
+    assert _midi_bytes(result) == _midi_bytes(source)
+
+
+def test_drums_buzz_roll_is_idempotent_and_seed_deterministic():
+    source_a = _midi_with_notes("Drums", 9, [
+        (480, 600, 38, 110),
+        (1440, 1560, 38, 112),
+    ])
+    source_b = _midi_with_notes("Drums", 9, [
+        (480, 600, 38, 110),
+        (1440, 1560, 38, 112),
+    ])
+
+    once = apply_technique(
+        "drums.buzz_roll",
+        source_a,
+        seed=75,
+        tool="superior_drummer",
+    )
+    twice = apply_technique(
+        "drums.buzz_roll",
+        once,
+        seed=75,
+        tool="superior_drummer",
+    )
+    same = apply_technique(
+        "drums.buzz_roll",
+        source_b,
+        seed=75,
         tool="superior_drummer",
     )
 

@@ -1890,6 +1890,290 @@ def _apply_drums_articulation_diff(
 
 
 @register_technique(
+    "drums.buzz_roll",
+    "technique",
+)
+def _apply_drums_buzz_roll(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        available = sorted(technique.tools.keys())
+        raise ValueError(
+            f"tecnica {context.canonical!r} exige ferramenta-alvo; "
+            f"receitas disponiveis: {available!r}"
+        )
+
+    def notes_for(name):
+        values = recipe.get(name)
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(note, int) for note in values)
+        ):
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} "
+                "como lista de MIDI ints"
+            )
+        return tuple(int(note) for note in values)
+
+    params = {param.name: param for param in technique.parameters}
+
+    def manual_value(name):
+        parameter = params.get(name)
+        if parameter is None or parameter.value is None:
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
+            )
+        return parameter.value
+
+    grid = manual_value("grid")
+    if grid != "32nd/64th":
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar grid='32nd/64th'"
+        )
+
+    ramp = manual_value("velocity_ramp")
+    if not isinstance(ramp, dict):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar velocity_ramp "
+            "como objeto no manual"
+        )
+
+    def positive_float(name):
+        value = ramp.get(name)
+        if not isinstance(value, (int, float)) or float(value) <= 0:
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar "
+                f"velocity_ramp.{name} como numero positivo"
+            )
+        return float(value)
+
+    if ramp.get("shape") != "linear":
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar velocity_ramp.shape='linear'"
+        )
+    start_ratio = positive_float("start_ratio")
+    end_ratio = positive_float("end_ratio")
+    gate_ratio = positive_float("gate_ratio")
+    window_beats = positive_float("window_beats")
+    if start_ratio > end_ratio:
+        return mid
+
+    target_notes = notes_for("notes")
+    density = context.parameters.get("density")
+    if isinstance(density, (int, float)) and float(density) <= 0.0:
+        return mid
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    grid_ticks = (
+        max(1, int(round(ticks_per_beat * 4 / 32))),
+        max(1, int(round(ticks_per_beat * 4 / 64))),
+    )
+    roll_window_ticks = max(grid_ticks[0], int(round(ticks_per_beat * window_beats)))
+    target_velocity_floor = 90
+
+    def note_pairs(track):
+        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append((
+                    tick,
+                    msg.velocity,
+                    msg_index,
+                ))
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity, note_on_index = stack.pop(0)
+                yield {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": start_tick,
+                    "end": tick,
+                    "duration": tick - start_tick,
+                    "velocity": velocity,
+                    "note_on_index": note_on_index,
+                }
+
+    def target_count(size):
+        if size <= 0:
+            return 0
+        if isinstance(density, (int, float)):
+            requested = float(density)
+            if requested <= 0.0:
+                return 0
+            return max(1, min(size, int(round(size * requested))))
+        return size
+
+    def select_targets(candidates):
+        wanted = target_count(len(candidates))
+        if wanted == 0:
+            return []
+        shuffled = list(candidates)
+        context.rng("targets").shuffle(shuffled)
+        return sorted(shuffled[:wanted], key=lambda item: (
+            item["track_index"],
+            item["start"],
+            item["pitch"],
+        ))
+
+    def hand_starts(notes, tick):
+        foot_notes = {35, 36, 44}
+        return sum(
+            1
+            for note in notes
+            if note["channel"] == 9
+            and note["start"] == tick
+            and note["pitch"] not in foot_notes
+        )
+
+    def build_ornaments(note, existing):
+        end_tick = int(note["start"])
+        start_tick = max(0, end_tick - roll_window_ticks)
+        if end_tick - start_tick < grid_ticks[0] * 2:
+            return ()
+
+        ticks = []
+        tick = start_tick
+        step_index = 0
+        while tick < end_tick:
+            step = grid_ticks[step_index % len(grid_ticks)]
+            next_tick = min(end_tick, tick + step)
+            if next_tick >= end_tick:
+                break
+            ticks.append((tick, next_tick, step))
+            tick = next_tick
+            step_index += 1
+
+        if len(ticks) < 3:
+            return ()
+
+        ornaments = []
+        for position, (start, next_tick, step) in enumerate(ticks):
+            if hand_starts(existing, start) >= 2:
+                continue
+            ratio_span = end_ratio - start_ratio
+            ramp_position = position / max(1, len(ticks) - 1)
+            velocity_ratio = start_ratio + ratio_span * ramp_position
+            velocity = max(1, min(126, int(round(note["velocity"] * velocity_ratio))))
+            ornaments.append({
+                "track_index": int(note["track_index"]),
+                "channel": int(note["channel"]),
+                "pitch": int(note["pitch"]),
+                "start": int(start),
+                "end": int(min(next_tick, start + max(1, int(round(step * gate_ratio))))),
+                "velocity": velocity,
+            })
+        return tuple(ornaments)
+
+    def rebuild_track(track, ornaments):
+        absolute = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, order, msg))
+            order += 1
+
+        for ornament in ornaments:
+            absolute.append((
+                ornament["start"],
+                order,
+                _mido.Message(
+                    "note_on",
+                    channel=ornament["channel"],
+                    note=ornament["pitch"],
+                    velocity=ornament["velocity"],
+                ),
+            ))
+            order += 1
+            absolute.append((
+                ornament["end"],
+                order,
+                _mido.Message(
+                    "note_off",
+                    channel=ornament["channel"],
+                    note=ornament["pitch"],
+                    velocity=0,
+                ),
+            ))
+            order += 1
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _order, msg in sorted(
+            absolute,
+            key=lambda item: (item[0], item[1]),
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    candidates = []
+    target_note_set = set(target_notes)
+    for track_index, track in enumerate(mid.tracks):
+        existing = [
+            {
+                "track_index": track_index,
+                "channel": int(note["channel"]),
+                "pitch": int(note["pitch"]),
+                "start": int(note["start"]),
+                "end": int(note["end"]),
+                "duration": int(note["duration"]),
+                "velocity": int(note["velocity"]),
+            }
+            for note in note_pairs(track)
+        ]
+        for note in existing:
+            if (
+                note["channel"] != 9
+                or note["pitch"] not in target_note_set
+                or note["velocity"] < target_velocity_floor
+                or note["start"] <= 0
+            ):
+                continue
+            ornaments = build_ornaments(note, existing)
+            if ornaments:
+                candidates.append({
+                    "track_index": track_index,
+                    "start": int(note["start"]),
+                    "pitch": int(note["pitch"]),
+                    "ornaments": ornaments,
+                })
+
+    by_track: dict[int, list[dict[str, int]]] = {}
+    for candidate in select_targets(candidates):
+        by_track.setdefault(candidate["track_index"], []).extend(candidate["ornaments"])
+
+    for track_index, ornaments in by_track.items():
+        rebuild_track(mid.tracks[track_index], ornaments)
+
+    return mid
+
+
+@register_technique(
     "drums.cymbal_choke",
     "technique",
     allow_structural_duration_change=True,

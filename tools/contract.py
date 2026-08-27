@@ -2047,7 +2047,16 @@ _TECHNIQUE_PARAMETER_SCHEMA = {
     "type": "object",
     "properties": {
         "name": {"type": "string"},
-        "value": {},
+        "value": {
+            "anyOf": [
+                {"type": "null"},
+                {"type": "number"},
+                {"type": "string"},
+                {"type": "boolean"},
+                {"type": "array"},
+                {"type": "object", "additionalProperties": True},
+            ],
+        },
         "range": {
             "oneOf": [
                 {"type": "null"},

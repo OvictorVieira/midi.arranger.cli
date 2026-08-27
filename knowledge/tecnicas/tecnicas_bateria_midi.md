@@ -575,10 +575,10 @@ tutoriais dá número.
   "family": "drums",
   "summary": "Repeticoes densas em velocity baixa; NENHUMA das duas ferramentas tem articulacao de buzz roll.",
   "verified": false,
-  "description": "Represente como 32as/64as em velocity subindo devagar. NAO use nota longa sustentada. NAO confunda com Snare Backward/Forward Swirl (SD3 66/67) nem com a familia Sweep do AD2 (26-35) — aquilo e vassoura, nao rufo.",
+  "description": "Represente como 32as/64as em velocity subindo devagar. NAO use nota longa sustentada. NAO confunda com Snare Backward/Forward Swirl (SD3 66/67) nem com a familia Sweep do AD2 (26-35) — aquilo e vassoura, nao rufo. [NAO VERIFICADO] CONVENCAO operacional: a rampa linear entra no compasso como preparacao curta para a nota estrutural, porque o manual so documenta a direcao musical da rampa e nao a sua forma exata.",
   "parameters": [
     {"name": "grid", "value": "32nd/64th", "source": null},
-    {"name": "velocity_ramp", "value": null, "range": null, "source": null}
+    {"name": "velocity_ramp", "value": {"shape": "linear", "start_ratio": 0.35, "end_ratio": 0.78, "gate_ratio": 0.72, "window_beats": 1.0, "convention": "[NAO VERIFICADO] CONVENCAO: rampa linear curta ate a nota estrutural para evitar semicolcheia mecanica e nota sustentada falsa"}, "range": null, "source": null}
   ],
   "tools": {
     "superior_drummer": {"engine": ["ligar Smoothing na caixa antes"], "notes": [38], "note": "sem Smoothing cada repeticao redispara ataque duro"},
