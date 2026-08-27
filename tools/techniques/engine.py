@@ -1373,6 +1373,8 @@ def _apply_drums_accented_roll(
         parameter_value,
         rebuild_track,
         recipe_from_context,
+        select_by_density,
+        sort_by_track_start_pitch,
         technique_from_manual,
     )
 
@@ -1381,6 +1383,9 @@ def _apply_drums_accented_roll(
 
     if density_disabled(context):
         return mid
+
+    density = context.parameters.get("density")
+    select_rng = context.rng("accented_roll_density")
 
     accent_velocity = parameter_value(context, technique, "velocity_acento")
     soft_velocity = parameter_value(context, technique, "velocity_suave")
@@ -1449,13 +1454,17 @@ def _apply_drums_accented_roll(
                 target += float(pre_accent_delta)
             target = int(round(target))
 
-        if original_velocity >= top_pressure_floor:
-            target = max(target, top_pressure_floor)
-        if original_velocity >= top_pressure_floor and target <= low_layer_ceiling:
-            target = top_pressure_floor
+        # INVARIANTE DE PRESSAO: nota que a origem escreveu ACIMA da faixa
+        # suave nunca pode sair NA faixa suave ou abaixo dela. O gate
+        # antigo comparava contra `top_pressure_floor` (105) em vez de
+        # `low_layer_ceiling` (79) — uma nota de origem 104 passava direto
+        # pelo `>= 105` e saia esmagada a 55. E o mesmo defeito que tirou
+        # `drums.accent_hierarchy` do motor, uma oitava acima.
+        if original_velocity > low_layer_ceiling and target <= low_layer_ceiling:
+            target = min(top_pressure_floor, max(target, original_velocity))
         return max(1, min(126, target))
 
-    for track in mid.tracks:
+    for track_index, track in enumerate(mid.tracks):
         notes = [
             note for note in iter_note_dicts(track)
             if note["channel"] == 9
@@ -1464,9 +1473,30 @@ def _apply_drums_accented_roll(
         if not notes:
             continue
 
+        sequences = roll_sequences(sorted(notes, key=lambda item: item["start"]))
+        # `density` seleciona QUAIS rulos recebem o contorno humano — nao
+        # nota a nota dentro de um rulo, o que embaralharia a sequencia
+        # posicional que da sentido a mao dominante/lift pre-acento.
+        # Sequencia nao selecionada mantem a velocity da origem intacta.
+        candidates = [
+            {
+                "track_index": track_index,
+                "start": sequence[0]["start"],
+                "pitch": sequence[0]["pitch"],
+                "sequence": sequence,
+            }
+            for sequence in sequences
+        ]
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=sort_by_track_start_pitch,
+        )
+
         velocity_by_index = {}
-        for sequence in roll_sequences(sorted(notes, key=lambda item: item["start"])):
-            for position, note in enumerate(sequence):
+        for candidate in selected:
+            for position, note in enumerate(candidate["sequence"]):
                 velocity_by_index[note["note_on_index"]] = contour_velocity(
                     position,
                     note["velocity"],
@@ -1493,11 +1523,16 @@ def _apply_drums_articulation_diff(
         notes_for,
         rebuild_track,
         recipe_from_context,
+        select_by_density,
+        sort_by_track_start_pitch,
         technique_from_manual,
     )
 
     technique = technique_from_manual(context)
     recipe = recipe_from_context(context, technique, require_explicit_tool=True)
+
+    density = context.parameters.get("density")
+    select_rng = context.rng("articulation_diff_density")
 
     hat_tip = notes_for(recipe, "hat_tip", context.canonical)
     hat_edge = notes_for(recipe, "hat_edge", context.canonical)
@@ -1541,16 +1576,38 @@ def _apply_drums_articulation_diff(
 
         return pitch
 
-    for track in mid.tracks:
-        pitch_by_index = {}
+    for track_index, track in enumerate(mid.tracks):
+        candidates = []
         for note in iter_note_dicts(track, include_note_off_index=True):
             if note["channel"] != 9:
                 continue
             replacement = replacement_for(note)
             if replacement == note["pitch"]:
                 continue
-            pitch_by_index[note["note_on_index"]] = replacement
-            pitch_by_index[note["note_off_index"]] = replacement
+            candidates.append({
+                "track_index": track_index,
+                "start": note["start"],
+                "pitch": note["pitch"],
+                "note_on_index": note["note_on_index"],
+                "note_off_index": note["note_off_index"],
+                "replacement": replacement,
+            })
+
+        # `density` seleciona QUAIS batidas trocam de articulacao; as nao
+        # selecionadas mantem a nota original. Sem isso, `density` era
+        # aceito pelo schema e ignorado — 0.1 e 1.0 produziam saida
+        # identica.
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=sort_by_track_start_pitch,
+        )
+
+        pitch_by_index = {}
+        for candidate in selected:
+            pitch_by_index[candidate["note_on_index"]] = candidate["replacement"]
+            pitch_by_index[candidate["note_off_index"]] = candidate["replacement"]
         if pitch_by_index:
             rebuild_track(track, note_by_index=pitch_by_index)
 
@@ -1628,11 +1685,42 @@ def _apply_drums_buzz_roll(
     )
     roll_window_ticks = max(grid_ticks[0], int(round(ticks_per_beat * window_beats)))
     target_velocity_floor = 90
+    # Mesma convencao de borda de pausa usada em `drums.ghost_notes`: mais
+    # de um compasso sem atividade e silencio estrutural, nao groove. Sem
+    # isso o rufo nasce do nada antes de uma caixa isolada depois de uma
+    # pausa longa.
+    max_silence_ticks = ticks_per_beat * 4
 
     def build_ornaments(note, existing):
         end_tick = int(note["start"])
         start_tick = max(0, end_tick - roll_window_ticks)
         if end_tick - start_tick < grid_ticks[0] * 2:
+            return ()
+
+        # Nao semear em silencio: precisa haver atividade de bateria ate
+        # `max_silence_ticks` antes da janela do rufo.
+        has_recent_activity = any(
+            other is not note
+            and other["channel"] == 9
+            and other["end"] <= start_tick
+            and start_tick - other["end"] <= max_silence_ticks
+            for other in existing
+        )
+        if start_tick > 0 and not has_recent_activity:
+            return ()
+
+        # Nao sobrepor nota estrutural existente na mesma pitch: sobrepor
+        # reembaralha o pareamento FIFO note_on/note_off e o contrato
+        # explode com "duracao de nota estrutural mudou". Rufo so ocupa
+        # espaco realmente vazio na mesma pitch.
+        if any(
+            other is not note
+            and other["channel"] == note["channel"]
+            and other["pitch"] == note["pitch"]
+            and other["start"] < end_tick
+            and other["end"] > start_tick
+            for other in existing
+        ):
             return ()
 
         ticks = []
