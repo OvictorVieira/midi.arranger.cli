@@ -8,13 +8,16 @@ testes cobrem esse caminho ponta-a-ponta pelo `render`.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import mido
 import pretty_midi
 
+from tools.brief_ref import brief_sha256
 from tools.plan import (
     ArrangementPlan,
+    BriefRef,
     Element,
     FamilyStyle,
     PlanEdit,
@@ -27,6 +30,18 @@ from tools.render import render
 
 def _sha256_bytes(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _attach_authorized_brief(plan: ArrangementPlan, tmp_path: Path) -> None:
+    authorized: dict[str, dict[str, list[str]]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            names = [t.name for t in entry.techniques if isinstance(t, StyleTechnique)]
+            if names:
+                authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": authorized}, indent=2), encoding="utf-8")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
 
 
 def _build_flat_drum_source(tmp_path: Path) -> Path:
@@ -159,6 +174,7 @@ def test_ghost_notes_adds_ornaments_between_backbeats_on_source_track(tmp_path):
         src, profile="drums",
         techniques=["drums.ghost_notes"],
     )
+    _attach_authorized_brief(plan, tmp_path)
     out = tmp_path / "out.mid"
     render(plan, out)
 
@@ -180,6 +196,7 @@ def test_neighbor_track_stays_byte_identical_when_drums_gets_style(tmp_path):
         src, profile="drums",
         techniques=["drums.ghost_notes"],
     )
+    _attach_authorized_brief(plan, tmp_path)
     out = tmp_path / "out.mid"
     render(plan, out)
 
@@ -198,6 +215,7 @@ def test_generic_profile_does_not_receive_style_technique(tmp_path):
     plan = _plan_with_drum_edit(
         src, profile="generic", techniques=["drums.ghost_notes"],
     )
+    _attach_authorized_brief(plan, tmp_path)
     out = tmp_path / "out.mid"
     render(plan, out)
 
@@ -217,6 +235,8 @@ def test_style_on_edits_is_deterministic_byte_for_byte(tmp_path):
         src, profile="drums",
         techniques=["drums.ghost_notes"],
     )
+    _attach_authorized_brief(plan_a, tmp_path)
+    _attach_authorized_brief(plan_b, tmp_path)
     out_a = tmp_path / "a.mid"
     out_b = tmp_path / "b.mid"
     render(plan_a, out_a)

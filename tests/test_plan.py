@@ -143,6 +143,28 @@ def test_brief_sha256_hashes_exact_file_bytes(tmp_path: Path):
     assert brief_sha256(brief) == hashlib.sha256(content).hexdigest()
 
 
+def _attach_authorized_brief(plan: ArrangementPlan, tmp_path: Path) -> None:
+    """Anexa `plan.brief_ref` autorizando exatamente as tecnicas em `plan.style`.
+
+    Depois de US-003, plano sem `brief_ref` e com `style.<fam>.techniques[]`
+    nao vazia e erro de validacao. Este helper e o atalho para os testes que
+    declaram tecnicas para exercitar OUTRA regra (parametro, apelido,
+    idempotencia, ...) e nao a autorizacao em si.
+    """
+    authorized: dict[str, list[str]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            if not isinstance(entry, FamilyStyle):
+                continue
+            names = [
+                t.name for t in entry.techniques if isinstance(t, StyleTechnique)
+            ]
+            if names:
+                authorized[family] = names
+    brief_path, sha = _write_brief(tmp_path, authorized)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+
 def _write_brief(
     tmp_path: Path,
     authorized: dict[str, list[str]] | None = None,
@@ -268,6 +290,54 @@ def test_validate_accepts_short_name_when_canonical_is_authorized(tmp_path: Path
     validate(plan)
 
 
+@pytest.mark.parametrize("family", ["bass", "drums", "guitar", "keys"])
+def test_validate_rejects_style_technique_without_brief_ref(family: str):
+    """Sem `brief_ref` nenhuma tecnica pode ser aplicada — vale para as 4 familias."""
+    plan = _valid_plan()
+    plan.brief_ref = None
+    canonical_by_family = {
+        "bass": "bass.ghost_notes",
+        "drums": "drums.ghost_notes",
+        "guitar": "guitar.palm_mute",
+        "keys": "keys.arpeggio_broken_chord",
+    }
+    canonical = canonical_by_family[family]
+    plan.style = {
+        family: FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name=canonical)],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == f"style.{family}.techniques[0].name"
+    assert canonical in exc.value.message
+    assert family in exc.value.message
+    assert "no brief_ref" in exc.value.message
+
+
+def test_validate_accepts_style_without_techniques_and_without_brief_ref():
+    """Plano sem `brief_ref` e sem tecnica em qualquer familia continua valido."""
+    plan = _valid_plan()
+    plan.brief_ref = None
+    plan.style = {
+        family: FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[],
+            parameters={},
+        )
+        for family in ("bass", "drums", "guitar", "keys")
+    }
+    validate(plan)  # caminho de quem so usa plan.edits
+
+
 @pytest.mark.parametrize(
     ("field", "path"),
     [
@@ -351,9 +421,10 @@ def _complete_style() -> dict[str, FamilyStyle]:
     }
 
 
-def test_validate_accepts_complete_style_for_all_four_families():
+def test_validate_accepts_complete_style_for_all_four_families(tmp_path: Path):
     plan = _valid_plan()
     plan.style = _complete_style()
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # nao levanta
 
 
@@ -404,7 +475,7 @@ def test_normalize_style_defaults_only_fills_used_families_missing_from_style():
     assert any("keys" in assumption for assumption in normalized.assumptions)
 
 
-def test_validate_resolves_simple_style_technique_name_by_family():
+def test_validate_resolves_simple_style_technique_name_by_family(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -416,10 +487,11 @@ def test_validate_resolves_simple_style_technique_name_by_family():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # `ghost_notes` existe em drums e bass; o path desambigua.
 
 
-def test_validate_accepts_canonical_style_technique_name():
+def test_validate_accepts_canonical_style_technique_name(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -431,10 +503,11 @@ def test_validate_accepts_canonical_style_technique_name():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # nao levanta
 
 
-def test_validate_rejects_documented_but_unimplemented_style_technique():
+def test_validate_rejects_documented_but_unimplemented_style_technique(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "keys": FamilyStyle(
@@ -446,6 +519,7 @@ def test_validate_rejects_documented_but_unimplemented_style_technique():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
@@ -456,7 +530,7 @@ def test_validate_rejects_documented_but_unimplemented_style_technique():
     assert "drums.ghost_notes" in exc.value.message
 
 
-def test_validate_accepts_only_supported_style_techniques_from_manual_index():
+def test_validate_accepts_only_supported_style_techniques_from_manual_index(tmp_path: Path):
     index = build_index()
 
     for technique in index.techniques:
@@ -471,6 +545,7 @@ def test_validate_accepts_only_supported_style_techniques_from_manual_index():
                 parameters={},
             )
         }
+        _attach_authorized_brief(plan, tmp_path)
 
         if technique.canonical in SUPPORTED_TECHNIQUES:
             validate(plan)
@@ -482,7 +557,7 @@ def test_validate_accepts_only_supported_style_techniques_from_manual_index():
         assert "not implemented by the engine" in exc.value.message
 
 
-def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates():
+def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -494,13 +569,14 @@ def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.techniques[0].name"
     assert "drums.flam" in exc.value.message
 
 
-def test_validate_rejects_style_technique_from_other_family():
+def test_validate_rejects_style_technique_from_other_family(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "bass": FamilyStyle(
@@ -512,6 +588,7 @@ def test_validate_rejects_style_technique_from_other_family():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.bass.techniques[0].name"
@@ -558,9 +635,10 @@ def _style_technique_to_dict_for_test(technique: StyleTechnique) -> dict[str, ob
     return data
 
 
-def test_validate_rejects_invalid_style_confidence():
+def test_validate_rejects_invalid_style_confidence(tmp_path: Path):
     plan = _valid_plan()
     plan.style = _complete_style()
+    _attach_authorized_brief(plan, tmp_path)
     plan.style["drums"].confidence = "bastante"
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
@@ -642,7 +720,7 @@ def test_validate_accepts_style_parameter_range_pair():
     validate(plan)  # par [min, max] e parametro de tecnica, nao conteudo.
 
 
-def test_validate_accepts_style_parameter_inside_manual_range():
+def test_validate_accepts_style_parameter_inside_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -654,10 +732,11 @@ def test_validate_accepts_style_parameter_inside_manual_range():
             parameters={"velocity": 35},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # velocity de drums.ghost_notes aceita 20-45.
 
 
-def test_validate_rejects_style_parameter_below_manual_range():
+def test_validate_rejects_style_parameter_below_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -669,6 +748,7 @@ def test_validate_rejects_style_parameter_below_manual_range():
             parameters={"velocity": 19},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.parameters.velocity"
@@ -676,7 +756,7 @@ def test_validate_rejects_style_parameter_below_manual_range():
     assert "[20, 45]" in exc.value.message
 
 
-def test_validate_rejects_style_parameter_above_manual_range():
+def test_validate_rejects_style_parameter_above_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -688,6 +768,7 @@ def test_validate_rejects_style_parameter_above_manual_range():
             parameters={"velocity": 46},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.parameters.velocity"
@@ -695,7 +776,7 @@ def test_validate_rejects_style_parameter_above_manual_range():
     assert "[20, 45]" in exc.value.message
 
 
-def test_validate_accepts_style_parameter_without_manual_range():
+def test_validate_accepts_style_parameter_without_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -707,11 +788,14 @@ def test_validate_accepts_style_parameter_without_manual_range():
             parameters={"hard_ceiling": 999},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     warnings = validate(plan)
     assert not any("style.drums.parameters.hard_ceiling" in w for w in warnings)
 
 
-def test_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.MonkeyPatch):
+def test_validate_warns_for_style_parameter_source_gap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
     monkeypatch.setattr(
         "tools.techniques.SUPPORTED_TECHNIQUES",
         (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
@@ -727,6 +811,7 @@ def test_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.Monke
             parameters={"gate_absoluto_ms": 999},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     warnings = validate(plan)
     assert any(
         "style.guitar.parameters.gate_absoluto_ms" in warning
@@ -800,13 +885,11 @@ def test_validate_rejects_style_that_is_not_mapping():
     assert "must be dict" in exc.value.message
 
 
-def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.MonkeyPatch):
+def test_validate_reports_technique_index_build_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
     from tools.techniques import TechniqueError
 
-    def fail_build_index():
-        raise TechniqueError("manual quebrado")
-
-    monkeypatch.setattr("tools.techniques.build_index", fail_build_index)
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -818,6 +901,15 @@ def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.Monk
             parameters={},
         )
     }
+    # Anexa o brief antes do monkeypatch: `_load_brief_authorized_techniques`
+    # tambem chama `build_index()`, e o teste so quer exercitar a rota do
+    # validador de style.
+    _attach_authorized_brief(plan, tmp_path)
+
+    def fail_build_index():
+        raise TechniqueError("manual quebrado")
+
+    monkeypatch.setattr("tools.techniques.build_index", fail_build_index)
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
@@ -850,7 +942,7 @@ def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.Monk
         (lambda entry: entry.parameters.update({"timing": "late"}), "style.drums.parameters.timing"),
     ],
 )
-def test_validate_rejects_malformed_style_family_values(mutate, path: str):
+def test_validate_rejects_malformed_style_family_values(mutate, path: str, tmp_path: Path):
     entry = FamilyStyle(
         reference="Steve Jordan",
         researched_at="2026-08-24",
@@ -862,6 +954,10 @@ def test_validate_rejects_malformed_style_family_values(mutate, path: str):
     mutate(entry)
     plan = _valid_plan()
     plan.style = {"drums": entry}
+    # Autoriza `ghost_notes` para que o teste exercite a validacao de
+    # tipo/densidade/rationale, e nao a de "sem brief_ref".
+    brief_path, sha = _write_brief(tmp_path, {"drums": ["ghost_notes"]})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)

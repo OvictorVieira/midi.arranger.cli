@@ -198,6 +198,28 @@ def _valid_plan_from_skeleton() -> dict:
     return env["data"]["plan"]
 
 
+def _attach_brief_authorizing_all(plan: dict, tmp_path: Path) -> None:
+    """Anexa `brief_ref` autorizando todas as tecnicas em `plan['style']`.
+
+    Depois de US-003, plan sem brief_ref com techniques nao vazia falha na
+    validacao. Este helper e o atalho para os testes de fachada que
+    exercitam outras regras (parametro, apelido, mensagem de erro).
+    """
+    from tools.brief_ref import brief_sha256
+
+    authorized: dict[str, dict[str, list[str]]] = {}
+    for family, entry in (plan.get("style") or {}).items():
+        names = [t["name"] for t in entry.get("techniques") or []]
+        if names:
+            authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": authorized}), encoding="utf-8")
+    plan["brief_ref"] = {
+        "path": str(brief_path),
+        "sha256": brief_sha256(brief_path),
+    }
+
+
 def test_plan_validate_accepts_skeleton_output():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
@@ -277,10 +299,32 @@ def _complete_style_dict() -> dict:
     }
 
 
-def test_plan_validate_accepts_complete_style_in_all_four_families():
+def test_plan_validate_accepts_complete_style_in_all_four_families(tmp_path: Path):
+    from tools.brief_ref import brief_sha256
+
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps(
+            {
+                "style": {
+                    family: {
+                        "authorized_techniques": [
+                            t["name"] for t in entry["techniques"]
+                        ],
+                    }
+                    for family, entry in plan["style"].items()
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan["brief_ref"] = {
+        "path": str(brief_path),
+        "sha256": brief_sha256(brief_path),
+    }
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
@@ -346,21 +390,23 @@ def test_plan_validate_rejects_partial_brief_ref_in_schema(field: str, path: str
     assert env["error"]["path"] == path
 
 
-def test_plan_validate_resolves_simple_style_technique_name_by_family():
+def test_plan_validate_resolves_simple_style_technique_name_by_family(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_rejects_unknown_style_technique_with_exact_path():
+def test_plan_validate_rejects_unknown_style_technique_with_exact_path(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "flanm"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -369,11 +415,12 @@ def test_plan_validate_rejects_unknown_style_technique_with_exact_path():
     assert "drums.flam" in err["message"]
 
 
-def test_plan_validate_rejects_documented_but_unimplemented_style_technique():
+def test_plan_validate_rejects_documented_but_unimplemented_style_technique(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["keys"]["techniques"] = [{"name": "keys.hand_asynchrony"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -383,11 +430,12 @@ def test_plan_validate_rejects_documented_but_unimplemented_style_technique():
     assert "drums.ghost_notes" in err["message"]
 
 
-def test_plan_validate_rejects_style_technique_from_other_family():
+def test_plan_validate_rejects_style_technique_from_other_family(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["bass"]["techniques"] = [{"name": "drums.flam"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -459,22 +507,24 @@ def test_plan_validate_rejects_musical_content_key_inside_style_schema():
     assert "nunca conteudo musical" in env["error"]["message"]
 
 
-def test_plan_validate_accepts_style_parameter_range_pair_schema():
+def test_plan_validate_accepts_style_parameter_range_pair_schema(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["parameters"] = {"velocity": [20, 45]}
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_rejects_style_parameter_outside_manual_range():
+def test_plan_validate_rejects_style_parameter_outside_manual_range(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
     plan["style"]["drums"]["parameters"] = {"velocity": 46}
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -484,7 +534,9 @@ def test_plan_validate_rejects_style_parameter_outside_manual_range():
     assert "[20, 45]" in err["message"]
 
 
-def test_plan_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.MonkeyPatch):
+def test_plan_validate_warns_for_style_parameter_source_gap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
     monkeypatch.setattr(
         "tools.techniques.SUPPORTED_TECHNIQUES",
         (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
@@ -494,6 +546,7 @@ def test_plan_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.
     plan["style"] = _complete_style_dict()
     plan["style"]["guitar"]["techniques"] = [{"name": "palm_mute"}]
     plan["style"]["guitar"]["parameters"] = {"gate_absoluto_ms": 999}
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True

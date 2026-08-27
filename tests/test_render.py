@@ -9,8 +9,10 @@ import mido
 import pretty_midi
 import pytest
 
+from tools.brief_ref import brief_sha256
 from tools.plan import (
     ArrangementPlan,
+    BriefRef,
     Element,
     FamilyStyle,
     PlanSection,
@@ -111,6 +113,30 @@ def _build_plan(source: Path, *, layers: int = 1) -> ArrangementPlan:
             ),
         ],
     )
+
+
+def _attach_brief_authorizing_techniques(plan: ArrangementPlan, tmp_path: Path) -> None:
+    """Anexa `plan.brief_ref` autorizando as tecnicas declaradas em `plan.style`.
+
+    Depois de US-003 o render (via `plan.validate`) exige brief_ref quando
+    ha tecnica declarada. Helper enxuto para os testes que ja tinham essa
+    forma antes da mudanca.
+    """
+    import json as _json
+
+    authorized: dict[str, dict[str, list[str]]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            names = [
+                t.name for t in entry.techniques if isinstance(t, StyleTechnique)
+            ]
+            if names:
+                authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        _json.dumps({"style": authorized}, indent=2), encoding="utf-8"
+    )
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
 
 
 def _family_style(confidence: str, *, reference: str = "Style Reference") -> FamilyStyle:
@@ -378,6 +404,7 @@ def test_render_applies_style_techniques_to_generated_tracks(
             parameters={"sem_sinal_tipico_ms": [25, 40]},
         ),
     }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
     calls: list[dict] = []
 
     def fake_apply_technique_with_warnings(
@@ -462,6 +489,7 @@ def test_render_accepts_plan_validated_with_supported_style_technique(tmp_path):
             parameters={},
         ),
     }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
 
     report = render(plan, tmp_path / "out.mid")
 
@@ -536,6 +564,7 @@ def test_render_wraps_style_technique_engine_errors(tmp_path, monkeypatch):
             parameters={},
         ),
     }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
 
     def boom(*_args, **_kwargs):
         raise UnknownTechniqueError("keys.hand_asynchrony", ("drums.ghost_notes",))

@@ -2369,20 +2369,32 @@ def test_accent_hierarchy_esta_documentada_mas_fora_do_motor():
     )
 
 
-def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito():
+def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito(tmp_path):
     """Declarar a tecnica parada tem que dar erro, nunca no-op silencioso.
 
     Tecnica documentada que o motor aceita e ignora e o vicio que esta base
     ja rejeitou duas vezes (`_identity_apply` e o gerador de bateria de
     andaime). O usuario precisa saber que pediu algo que nao vai acontecer.
     """
+    import json as _json
+
+    from tools.brief_ref import brief_sha256
     from tools.plan import (
         ArrangementPlan,
+        BriefRef,
         FamilyStyle,
         PlanValidationError,
         SourceMidi,
         StyleTechnique,
         validate,
+    )
+
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        _json.dumps(
+            {"style": {"drums": {"authorized_techniques": ["drums.accent_hierarchy"]}}},
+        ),
+        encoding="utf-8",
     )
 
     plan = ArrangementPlan(
@@ -2392,6 +2404,7 @@ def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito():
         route="cinematica_emocional",
         sections=[],
         elements=[],
+        brief_ref=BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path)),
     )
     plan.style = {
         "drums": FamilyStyle(

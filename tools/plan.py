@@ -385,6 +385,39 @@ def _load_brief_authorized_techniques(
     return authorized
 
 
+def _reject_style_techniques_without_brief(plan_style: Any) -> None:
+    """Sem `brief_ref` nenhuma tecnica pode ser autorizada.
+
+    A regra e simetrica a `_load_brief_authorized_techniques`: a autorizacao
+    vive no brief; sem brief nao ha autorizacao, logo qualquer
+    `style.<familia>.techniques[]` nao vazia e erro. Falhar cedo aqui evita
+    que `_validate_style` peca autorizacao para uma lista que nunca podera
+    passar.
+    """
+    if not isinstance(plan_style, dict):
+        return
+    for family, entry in plan_style.items():
+        if family not in STYLE_FAMILIES:
+            continue
+        if not isinstance(entry, FamilyStyle):
+            continue
+        techniques = entry.techniques
+        if not isinstance(techniques, list) or not techniques:
+            continue
+        for i, technique in enumerate(techniques):
+            name = getattr(technique, "name", None)
+            path = f"style.{family}.techniques[{i}].name"
+            raise PlanValidationError(
+                path,
+                (
+                    f"technique {name!r} declared for family {family!r} but "
+                    "plan has no brief_ref; sem brief_ref nao ha autorizacao "
+                    "e nenhuma tecnica pode ser aplicada — tecnica so se "
+                    "aplica se o usuario autorizou"
+                ),
+            )
+
+
 def _resolve_style_technique(index, family: str, name: str, path: str):
     import difflib
 
@@ -798,9 +831,12 @@ def validate(
     diretorio corrente), confere que `brief_ref.sha256` casa com o hash real
     do arquivo (`tools.brief_ref.brief_sha256`) e exige que toda tecnica em
     `plan.style.<familia>.techniques[]` esteja em
-    `brief.style.<familia>.authorized_techniques`. Autorizacao ausente
-    significa NENHUMA tecnica — nunca "todas". Brief inexistente, ilegivel ou
-    com hash divergente e erro explicito, nunca fallback silencioso.
+    `brief.style.<familia>.authorized_techniques`. Ausencia de autorizacao
+    significa NENHUMA tecnica — nunca "todas". Isso vale tambem quando o
+    plano nao declara `brief_ref`: sem brief nao ha como saber o que o
+    usuario autorizou, entao qualquer `style.<familia>.techniques[]` nao
+    vazia e erro. Brief inexistente, ilegivel ou com hash divergente e erro
+    explicito, nunca fallback silencioso.
 
     Retorna lista de avisos (strings). Avisos NAO bloqueiam. Erros
     bloqueiam via `PlanValidationError`.
@@ -829,6 +865,8 @@ def validate(
         brief_authorized = _load_brief_authorized_techniques(
             plan, Path(plan_dir) if plan_dir is not None else None,
         )
+    else:
+        _reject_style_techniques_without_brief(plan.style)
     warnings.extend(_validate_style(plan.style, brief_authorized))
 
     section_labels: set[str] = set()

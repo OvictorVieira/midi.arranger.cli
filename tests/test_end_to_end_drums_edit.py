@@ -11,13 +11,16 @@ esta versionado) e simula o caso real: levada de rock chapada em 127.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import mido
 import pretty_midi
 
+from tools.brief_ref import brief_sha256
 from tools.plan import (
     ArrangementPlan,
+    BriefRef,
     Element,
     FamilyStyle,
     PlanEdit,
@@ -26,6 +29,19 @@ from tools.plan import (
     StyleTechnique,
 )
 from tools.render import render
+
+
+def _attach_authorized_brief(plan: ArrangementPlan, tmp_path: Path) -> None:
+    """Anexa `plan.brief_ref` autorizando as tecnicas em `plan.style`."""
+    authorized: dict[str, dict[str, list[str]]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            names = [t.name for t in entry.techniques if isinstance(t, StyleTechnique)]
+            if names:
+                authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": authorized}, indent=2), encoding="utf-8")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
 
 
 def _sha256_bytes(path: Path) -> str:
@@ -167,6 +183,7 @@ def test_end_to_end_edits_drums_with_real_registry(tmp_path):
 
     src = _build_flat_metal_drums_source(tmp_path)
     plan = _plan_with_full_drum_pipeline(src)
+    _attach_authorized_brief(plan, tmp_path)
     out = tmp_path / "out.mid"
 
     render(plan, out)
@@ -228,6 +245,8 @@ def test_end_to_end_edits_drums_is_idempotent_byte_for_byte(tmp_path):
     src = _build_flat_metal_drums_source(tmp_path)
     plan_a = _plan_with_full_drum_pipeline(src)
     plan_b = _plan_with_full_drum_pipeline(src)
+    _attach_authorized_brief(plan_a, tmp_path)
+    _attach_authorized_brief(plan_b, tmp_path)
     out_a = tmp_path / "a.mid"
     out_b = tmp_path / "b.mid"
 
