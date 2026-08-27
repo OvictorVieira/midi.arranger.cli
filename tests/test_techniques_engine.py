@@ -33,6 +33,7 @@ from tools.techniques import (
     TechniqueContext,
     TechniqueContractError,
     TechniqueIndex,
+    TechniqueParameter,
     TechniquePhysicalError,
     TechniqueRecipeError,
     TechniqueRegistrationError,
@@ -45,6 +46,20 @@ from tools.techniques import (
     register_technique,
     registered_techniques,
     validate_registry_against_index,
+)
+from tools.techniques._helpers import (
+    first_tempo,
+    manual_value,
+    parameter_value,
+)
+from tools.techniques.engine import (
+    _apply_drums_accented_roll,
+    _apply_drums_articulation_diff,
+    _apply_drums_buzz_roll,
+    _apply_drums_cymbal_choke,
+    _apply_drums_flam,
+    _apply_drums_ghost_notes,
+    _apply_drums_microtiming,
 )
 
 MANUALS_DIR = Path(__file__).resolve().parent.parent / "knowledge" / "tecnicas"
@@ -2650,6 +2665,443 @@ def test_every_registered_technique_exists_in_manual_index():
         assert idx.get(canonical) is not None
 
 
+def test_drums_ghost_notes_direct_apply_validates_recipe_notes():
+    with pytest.raises(ValueError, match="notes"):
+        _apply_drums_ghost_notes(
+            _midi_with_ghost_note_window(),
+            context=_context(
+                "drums.ghost_notes",
+                recipe={"notes": "38", "velocity": [20, 45]},
+            ),
+        )
+
+
+def test_drums_ghost_notes_direct_apply_uses_manual_velocity_range_fallback():
+    source = _midi_with_ghost_note_window()
+    result = _apply_drums_ghost_notes(
+        source,
+        context=_context("drums.ghost_notes", recipe={"notes": [38]}),
+    )
+
+    added = _new_note_tuples(_midi_with_ghost_note_window(), result)
+
+    assert added
+    assert all(20 <= velocity <= 45 for *_, velocity in added)
+
+
+def test_drums_ghost_notes_direct_apply_rejects_bad_velocity_range():
+    with pytest.raises(ValueError, match="velocity"):
+        _apply_drums_ghost_notes(
+            _midi_with_ghost_note_window(),
+            context=_context(
+                "drums.ghost_notes",
+                recipe={"notes": [38], "velocity": "baixo"},
+            ),
+        )
+
+
+def test_drums_flam_direct_apply_defensive_branches_keep_source_intact():
+    early_snare = _midi_with_notes("Drums", 9, [(0, 120, 38, 108)])
+    no_drum = _midi_with_notes("Keys", 0, [(480, 600, 38, 108)])
+    blocked_hand = _midi_with_notes(
+        "Drums",
+        9,
+        [
+            (480, 600, 38, 108),
+            (469, 490, 48, 70),
+            (469, 490, 59, 70),
+        ],
+    )
+
+    for source in (early_snare, no_drum, blocked_hand):
+        before = _midi_bytes(source)
+        result = _apply_drums_flam(
+            source,
+            context=_context("drums.flam", recipe=_flam_recipe()),
+        )
+
+        assert _midi_bytes(result) == before
+
+
+def test_drums_flam_direct_apply_validates_manual_parameters_and_recipe_notes():
+    impossible_gap = _midi_with_notes("Drums", 9, [(480, 600, 38, 108)])
+    before = _midi_bytes(impossible_gap)
+    result = _apply_drums_flam(
+        impossible_gap,
+        context=_context(
+            "drums.flam",
+            recipe=_flam_recipe(),
+            parameters={"gap_ms": 40, "reading_ceiling_ms": 20},
+        ),
+    )
+
+    assert _midi_bytes(result) == before
+
+    with pytest.raises(ValueError, match="notes_main"):
+        _apply_drums_flam(
+            _midi_with_notes("Drums", 9, [(480, 600, 38, 108)]),
+            context=_context(
+                "drums.flam",
+                recipe={"notes": [69], "notes_grace": [40], "tom_notes": [48]},
+                tool="superior_drummer",
+            ),
+        )
+    with pytest.raises(ValueError, match="notes/notes_grace"):
+        _apply_drums_flam(
+            _midi_with_notes("Drums", 9, [(480, 600, 38, 108)]),
+            context=_context(
+                "drums.flam",
+                recipe={
+                    "notes_main": [38],
+                    "notes_grace": "40",
+                    "tom_notes": [48],
+                },
+            ),
+        )
+
+
+def test_drums_accented_roll_direct_apply_validates_recipe_and_safe_exits():
+    with pytest.raises(ValueError, match="notes"):
+        _apply_drums_accented_roll(
+            _midi_with_notes("Drums", 9, [(0, 60, 38, 90)] * 4),
+            context=_context("drums.accented_roll", recipe={"notes": "38"}),
+        )
+
+    zero_resolution = _midi_with_notes("Drums", 9, [(0, 60, 38, 90)] * 4)
+    zero_resolution.ticks_per_beat = 0
+    before = _midi_bytes(zero_resolution)
+
+    result = _apply_drums_accented_roll(
+        zero_resolution,
+        context=_context("drums.accented_roll", recipe={"notes": [38]}),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_articulation_diff_direct_apply_requires_recipe_and_ignores_non_targets():
+    with pytest.raises(ValueError, match="ferramenta-alvo"):
+        _apply_drums_articulation_diff(
+            _midi_with_two_notes(),
+            context=_context("drums.articulation_diff"),
+        )
+
+    source = _midi_with_notes("Drums", 9, [(0, 120, 99, 90)])
+    before = _midi_bytes(source)
+    result = _apply_drums_articulation_diff(
+        source,
+        context=_context("drums.articulation_diff", recipe=_articulation_recipe()),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_articulation_diff_direct_apply_validates_recipe_aliases_and_resolution():
+    with pytest.raises(ValueError, match="hat_tip"):
+        _apply_drums_articulation_diff(
+            _midi_with_two_notes(),
+            context=_context("drums.articulation_diff", recipe={"hat_tip": []}),
+        )
+
+    zero_resolution = _midi_with_notes("Drums", 9, [(0, 120, 42, 90)])
+    zero_resolution.ticks_per_beat = 0
+    before = _midi_bytes(zero_resolution)
+
+    result = _apply_drums_articulation_diff(
+        zero_resolution,
+        context=_context("drums.articulation_diff", recipe=_articulation_recipe()),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_buzz_roll_direct_apply_requires_recipe_and_honors_safe_exits():
+    with pytest.raises(ValueError, match="ferramenta-alvo"):
+        _apply_drums_buzz_roll(
+            _midi_with_notes("Drums", 9, [(480, 600, 38, 108)]),
+            context=_context("drums.buzz_roll"),
+        )
+
+    source = _midi_with_notes("Drums", 9, [(0, 120, 38, 108)])
+    before = _midi_bytes(source)
+    result = _apply_drums_buzz_roll(
+        source,
+        context=_context("drums.buzz_roll", recipe={"notes": [38]}),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_cymbal_choke_direct_apply_validates_recipe_and_safe_exits():
+    with pytest.raises(ValueError, match="target_notes"):
+        _apply_drums_cymbal_choke(
+            _midi_with_notes("Drums", 9, [(0, 960, 49, 108)]),
+            context=_context("drums.cymbal_choke", recipe={"notes": [120]}),
+        )
+    with pytest.raises(ValueError, match="choke_after_beats"):
+        _apply_drums_cymbal_choke(
+            _midi_with_notes("Drums", 9, [(0, 960, 49, 108)]),
+            context=_context(
+                "drums.cymbal_choke",
+                recipe={
+                    "target_notes": [49],
+                    "notes": [120],
+                    "choke_after_beats": 0,
+                    "short_ceiling_beats": 0.5,
+                },
+            ),
+        )
+
+    zero_resolution = _midi_with_notes("Drums", 9, [(0, 960, 49, 108)])
+    zero_resolution.ticks_per_beat = 0
+    before = _midi_bytes(zero_resolution)
+
+    result = _apply_drums_cymbal_choke(
+        zero_resolution,
+        context=_context("drums.cymbal_choke", recipe=_choke_recipe()),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_microtiming_direct_apply_validates_recipe_and_safe_exits():
+    with pytest.raises(ValueError, match="hihat_notes"):
+        _apply_drums_microtiming(
+            _midi_hihat_ostinato(4),
+            context=_context("drums.microtiming", recipe={"hihat_notes": []}),
+        )
+
+    source = _midi_hihat_ostinato(4)
+    before = _midi_bytes(source)
+    result = _apply_drums_microtiming(
+        source,
+        context=_context(
+            "drums.microtiming",
+            parameters={"hihat_timing_sigma_ms": 0},
+        ),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_shared_technique_helpers_cover_fallbacks_and_tempo():
+    technique = Technique(
+        canonical="drums.test",
+        name="test",
+        family="drums",
+        summary="Teste.",
+        verified=True,
+        parameters=(
+            TechniqueParameter(name="empty", value=None, range=None),
+            TechniqueParameter(name="range", value=None, range=(2, 6)),
+        ),
+        tools={"generic": {}},
+        source_manual="manual_teste.md",
+    )
+    ctx = _context("drums.test")
+    mid = _midi_with_single_note()
+    mid.tracks[0].append(mido.MetaMessage("set_tempo", tempo=250_000, time=0))
+
+    assert parameter_value(ctx, technique, "missing", fallback=3) == 3
+    assert parameter_value(ctx, technique, "empty", fallback=4) == 4
+    assert parameter_value(ctx, technique, "range") == 4
+    assert first_tempo(mid) == 250_000
+    with pytest.raises(ValueError, match="missing"):
+        manual_value(ctx, technique, "missing")
+
+
+def test_drums_flam_direct_apply_rejects_invalid_tom_recipe_and_overlap():
+    with pytest.raises(ValueError, match="tom_notes"):
+        _apply_drums_flam(
+            _midi_with_notes("Drums", 9, [(480, 600, 38, 108)]),
+            context=_context(
+                "drums.flam",
+                recipe={"notes": [69], "notes_main": [38], "tom_notes": "48"},
+                tool="superior_drummer",
+            ),
+        )
+
+    source = _midi_with_notes(
+        "Drums",
+        9,
+        [
+            (480, 600, 38, 108),
+            (470, 490, 40, 70),
+        ],
+    )
+    before = _midi_bytes(source)
+    result = _apply_drums_flam(
+        source,
+        context=_context("drums.flam", recipe=_flam_recipe()),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_accented_roll_reports_missing_manual_parameters(monkeypatch):
+    monkeypatch.setattr(
+        "tools.techniques._helpers.build_index",
+        lambda: _technique_index(
+            "drums.accented_roll",
+            {"generic": {"notes": [38]}},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="velocity_acento"):
+        _apply_drums_accented_roll(
+            _midi_with_notes("Drums", 9, [(index * 60, index * 60 + 30, 38, 90) for index in range(4)]),
+            context=_context("drums.accented_roll"),
+        )
+
+
+def test_drums_accented_roll_keeps_top_pressure_with_low_plan_values():
+    source = _midi_with_notes(
+        "Drums",
+        9,
+        [(index * 60, index * 60 + 30, 38, 127) for index in range(4)],
+    )
+
+    result = _apply_drums_accented_roll(
+        source,
+        context=_context(
+            "drums.accented_roll",
+            recipe={"notes": [38]},
+            parameters={
+                "velocity_acento": 70,
+                "velocity_suave": 30,
+                "delta_mao_dominante": 1,
+                "delta_lift_pre_acento": 2,
+            },
+        ),
+    )
+
+    assert min(note[-1] for note in _note_tuples(result)) == 105
+
+
+def test_drums_articulation_diff_handles_low_snare_and_non_drum_channels():
+    source = _midi_with_notes(
+        "Drums",
+        9,
+        [
+            (480, 600, 40, 70),
+        ],
+    )
+    _insert_note(
+        source.tracks[1],
+        channel=0,
+        note=42,
+        velocity=90,
+        start_tick=960,
+        end_tick=1080,
+    )
+
+    result = _apply_drums_articulation_diff(
+        source,
+        context=_context("drums.articulation_diff", recipe=_articulation_recipe()),
+    )
+
+    assert _note_tuples(result) == [
+        (1, 9, 38, 480, 600, 70),
+        (1, 0, 42, 960, 1080, 90),
+    ]
+
+
+def test_drums_buzz_roll_direct_apply_covers_small_windows_and_blocked_hands():
+    short_window = _midi_with_notes("Drums", 9, [(60, 120, 38, 108)])
+    before = _midi_bytes(short_window)
+
+    result = _apply_drums_buzz_roll(
+        short_window,
+        context=_context("drums.buzz_roll", recipe={"notes": [38]}),
+    )
+
+    assert _midi_bytes(result) == before
+
+    blocked = _midi_with_notes(
+        "Drums",
+        9,
+        [
+            (480, 600, 38, 108),
+            (0, 60, 48, 70),
+            (0, 60, 59, 70),
+        ],
+    )
+    before_blocked = _midi_with_notes(
+        "Drums",
+        9,
+        [
+            (480, 600, 38, 108),
+            (0, 60, 48, 70),
+            (0, 60, 59, 70),
+        ],
+    )
+
+    result = _apply_drums_buzz_roll(
+        blocked,
+        context=_context("drums.buzz_roll", recipe={"notes": [38]}),
+    )
+
+    assert _new_note_tuples(before_blocked, result)
+    assert all(note[3] != 0 for note in _new_note_tuples(before_blocked, result))
+
+
+def test_drums_buzz_roll_direct_apply_honors_zero_resolution():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 108)])
+    source.ticks_per_beat = 0
+    before = _midi_bytes(source)
+
+    result = _apply_drums_buzz_roll(
+        source,
+        context=_context("drums.buzz_roll", recipe={"notes": [38]}),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_cymbal_choke_direct_apply_honors_density_zero():
+    source = _midi_with_notes("Drums", 9, [(0, 960, 49, 108)])
+    before = _midi_bytes(source)
+
+    result = _apply_drums_cymbal_choke(
+        source,
+        context=_context(
+            "drums.cymbal_choke",
+            recipe=_choke_recipe(),
+            parameters={"density": 0.0},
+        ),
+    )
+
+    assert _midi_bytes(result) == before
+
+
+def test_drums_microtiming_reports_missing_manual_parameters(monkeypatch):
+    monkeypatch.setattr(
+        "tools.techniques._helpers.build_index",
+        lambda: _technique_index(
+            "drums.microtiming",
+            {"generic": {"hihat_notes": [42]}},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="hihat_timing_sigma_ms"):
+        _apply_drums_microtiming(
+            _midi_hihat_ostinato(4),
+            context=_context("drums.microtiming"),
+        )
+
+
+def test_drums_microtiming_direct_apply_honors_density_zero():
+    source = _midi_hihat_ostinato(4)
+    before = _midi_bytes(source)
+
+    result = _apply_drums_microtiming(
+        source,
+        context=_context("drums.microtiming", parameters={"density": 0.0}),
+    )
+
+    assert _midi_bytes(result) == before
+
+
 def _technique_index(
     canonical: str,
     tools: dict[str, dict[str, object]],
@@ -2666,6 +3118,52 @@ def _technique_index(
             source_manual="manual_teste.md",
         ),
     ))
+
+
+def _context(
+    canonical: str,
+    *,
+    recipe: dict[str, object] | None = None,
+    parameters: dict[str, object] | None = None,
+    tool: str = "generic",
+) -> TechniqueContext:
+    return TechniqueContext(
+        seed=1,
+        canonical=canonical,
+        parameters={} if parameters is None else parameters,
+        tool=tool,
+        recipe={} if recipe is None else recipe,
+    )
+
+
+def _flam_recipe() -> dict[str, object]:
+    return {
+        "notes": [69],
+        "notes_main": [38],
+        "notes_grace": [40],
+        "tom_notes": [48, 50],
+    }
+
+
+def _articulation_recipe() -> dict[str, object]:
+    return {
+        "hat_tip": [42],
+        "hat_edge": [46],
+        "ride_bow_tip": [51],
+        "ride_bow_shank": [59],
+        "ride_bell": [53],
+        "snare_center": [38],
+        "snare_rimshot": [40],
+    }
+
+
+def _choke_recipe() -> dict[str, object]:
+    return {
+        "target_notes": [49],
+        "notes": [120],
+        "choke_after_beats": 0.25,
+        "short_ceiling_beats": 0.5,
+    }
 
 
 def _midi_with_ghost_note_window(

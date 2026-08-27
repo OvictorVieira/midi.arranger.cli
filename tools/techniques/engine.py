@@ -749,32 +749,18 @@ def _iter_note_pairs(track: mido.MidiTrack):
     note_off_index)`. `note_on` com velocity 0 conta como `note_off`. Mesmo
     pareamento que `mido` grava na reconstrucao — nao troque por dict simples.
     """
-    pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-    tick = 0
-    for msg_index, msg in enumerate(track):
-        tick += msg.time
-        if msg.is_meta:
-            continue
-        if msg.type == "note_on" and msg.velocity > 0:
-            pending.setdefault((msg.channel, msg.note), []).append(
-                (tick, msg.velocity, msg_index),
-            )
-        elif msg.type == "note_off" or (
-            msg.type == "note_on" and msg.velocity == 0
-        ):
-            stack = pending.get((msg.channel, msg.note))
-            if not stack:
-                continue
-            start_tick, velocity, note_on_index = stack.pop(0)
-            yield (
-                msg.channel,
-                msg.note,
-                start_tick,
-                tick,
-                velocity,
-                note_on_index,
-                msg_index,
-            )
+    from ._helpers import iter_note_dicts
+
+    for note in iter_note_dicts(track, include_note_off_index=True):
+        yield (
+            note["channel"],
+            note["pitch"],
+            note["start"],
+            note["end"],
+            note["velocity"],
+            note["note_on_index"],
+            note["note_off_index"],
+        )
 
 
 def _indexed_notes(
@@ -1048,19 +1034,17 @@ def _apply_drums_ghost_notes(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    import mido as _mido
+    from ._helpers import (
+        iter_note_dicts,
+        overlaps_same_pitch,
+        rebuild_track,
+        recipe_from_context,
+        target_count,
+        technique_from_manual,
+    )
 
-    from .index import build_index
-
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    recipe = dict(context.recipe)
-    if not recipe:
-        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique)
 
     notes = recipe.get("notes")
     if (
@@ -1119,27 +1103,6 @@ def _apply_drums_ghost_notes(
     velocity_rng = context.rng("velocity")
     density = context.parameters.get("density")
 
-    def read_notes(track_index, track):
-        return [
-            {
-                "track_index": track_index,
-                "channel": channel,
-                "pitch": pitch,
-                "start": start_tick,
-                "end": end_tick,
-                "velocity": velocity,
-            }
-            for (
-                channel,
-                pitch,
-                start_tick,
-                end_tick,
-                velocity,
-                _note_on_index,
-                _note_off_index,
-            ) in _iter_note_pairs(track)
-        ]
-
     def simultaneous_count_at(existing, channel, tick):
         return sum(
             1
@@ -1155,42 +1118,6 @@ def _apply_drums_ghost_notes(
             and note["start"] == tick
             for note in existing
         )
-
-    def overlaps_same_pitch(existing, channel, pitch, start_tick, end_tick):
-        # FIFO pairing entre note_on/note_off do MIDI e agnostica a "ornamento":
-        # inserir uma ghost cuja janela cruze com uma nota estrutural na mesma
-        # (channel, pitch) reembaralha o pareamento e muda a duracao da nota
-        # estrutural — o que viola o contrato do nivel technique. Identidade
-        # exata e ignorada para preservar idempotencia (o ornamento anterior
-        # apenas se reconstroi no mesmo lugar).
-        for note in existing:
-            if note["channel"] != channel or note["pitch"] != pitch:
-                continue
-            if note["start"] == start_tick and note["end"] == end_tick:
-                continue
-            if note["start"] < end_tick and note["end"] > start_tick:
-                return True
-        return False
-
-    def target_count(size):
-        if size <= 0:
-            return 0
-        if isinstance(density, (int, float)):
-            requested = float(density)
-            # `density=0.0` significa ZERO ghost. Um `max(1, ...)` aqui fazia
-            # densidade zero ainda acrescentar uma nota, o que torna o
-            # parametro mentiroso: o plano pede para desligar a tecnica e ela
-            # continua escrevendo no MIDI. Piso de 1 so vale para densidade
-            # positiva que arredonda para baixo — ai o pedido foi "pouco",
-            # nao "nenhum".
-            if requested <= 0.0:
-                return 0
-            return max(1, min(size, int(round(size * requested))))
-        # Sem `density` explicita, aponte para o teto do manual (2 ghosts por
-        # intervalo entre backbeats) e deixe as regras de posicao — nao um cap
-        # global — decidir quem entra. Um cap global de 2 aqui zera a densidade
-        # sobre uma levada inteira: 158 compassos so ganhariam duas ghosts.
-        return size
 
     def violates_position_rules(candidate, selected, interval_counts):
         tick = candidate["tick"]
@@ -1220,7 +1147,7 @@ def _apply_drums_ghost_notes(
         rng.shuffle(shuffled)
         selected = []
         interval_counts = {}
-        wanted = target_count(len(shuffled))
+        wanted = target_count(len(shuffled), density)
         for candidate in shuffled:
             # Teto checado ANTES de acrescentar. Checar depois deixava
             # `wanted == 0` passar sempre por uma nota: a primeira candidata
@@ -1235,39 +1162,8 @@ def _apply_drums_ghost_notes(
             interval_counts[interval_start] = interval_counts.get(interval_start, 0) + 1
         return sorted(selected, key=lambda item: item["tick"])
 
-    def insert_note(track, channel, pitch, velocity, start_tick, end_tick):
-        absolute = []
-        tick = 0
-        order = 0
-        for msg in track:
-            tick += msg.time
-            absolute.append((tick, order, msg))
-            order += 1
-        absolute.append((
-            start_tick,
-            order,
-            _mido.Message(
-                "note_on",
-                channel=channel,
-                note=pitch,
-                velocity=velocity,
-            ),
-        ))
-        absolute.append((
-            end_tick,
-            order + 1,
-            _mido.Message("note_off", channel=channel, note=pitch, velocity=0),
-        ))
-
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
-
     for track_index, track in enumerate(mid.tracks):
-        existing = read_notes(track_index, track)
+        existing = list(iter_note_dicts(track, track_index=track_index))
         backbeats = sorted({
             note["start"]
             for note in existing
@@ -1304,13 +1200,15 @@ def _apply_drums_ghost_notes(
 
         for candidate in select_candidates(candidates):
             velocity = velocity_rng.randint(velocity_lo, velocity_hi)
-            insert_note(
+            rebuild_track(
                 track,
-                channel=candidate["channel"],
-                pitch=candidate["pitch"],
-                velocity=velocity,
-                start_tick=candidate["tick"],
-                end_tick=candidate["tick"] + gate,
+                added_notes=({
+                    "channel": candidate["channel"],
+                    "pitch": candidate["pitch"],
+                    "velocity": velocity,
+                    "start": candidate["tick"],
+                    "end": candidate["tick"] + gate,
+                },),
             )
     return mid
 
@@ -1321,45 +1219,24 @@ def _apply_drums_flam(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    import mido as _mido
+    from ._helpers import (
+        DRUM_HAND_FOOT_NOTES,
+        iter_note_dicts,
+        overlaps_same_pitch,
+        parameter_value,
+        rebuild_track,
+        recipe_from_context,
+        select_by_density,
+        technique_from_manual,
+        ticks_per_ms,
+    )
 
-    from .index import build_index
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique)
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    recipe = dict(context.recipe)
-    if not recipe:
-        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
-
-    params = {param.name: param for param in technique.parameters}
-
-    def parameter_value(name, fallback=None):
-        value = context.parameters.get(name)
-        if value is not None:
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) == 2
-                and all(isinstance(item, (int, float)) for item in value)
-            ):
-                return (float(value[0]) + float(value[1])) / 2
-            if isinstance(value, (int, float)):
-                return float(value)
-        parameter = params.get(name)
-        if parameter is None:
-            return fallback
-        if parameter.value is not None:
-            return float(parameter.value)
-        if parameter.range is not None:
-            return (float(parameter.range[0]) + float(parameter.range[1])) / 2
-        return fallback
-
-    gap_ms = parameter_value("gap_ms")
-    ratio = parameter_value("grace_velocity_ratio")
-    ceiling_ms = parameter_value("reading_ceiling_ms")
+    gap_ms = parameter_value(context, technique, "gap_ms")
+    ratio = parameter_value(context, technique, "grace_velocity_ratio")
+    ceiling_ms = parameter_value(context, technique, "reading_ceiling_ms")
     if gap_ms is None or ratio is None or ceiling_ms is None:
         raise ValueError(
             f"tecnica {context.canonical!r} precisa declarar gap_ms, "
@@ -1402,113 +1279,21 @@ def _apply_drums_flam(
             "na receita"
         )
 
-    tempo = 500_000
-    for track in mid.tracks:
-        absolute_tick = 0
-        for msg in track:
-            absolute_tick += msg.time
-            if msg.is_meta and msg.type == "set_tempo":
-                tempo = msg.tempo
-                break
-        if tempo != 500_000:
-            break
-    ticks_per_ms = mid.ticks_per_beat * 1000 / tempo
-    gap_ticks = max(1, int(round(gap_ms * ticks_per_ms)))
+    gap_ticks = max(1, int(round(gap_ms * ticks_per_ms(mid))))
     density = context.parameters.get("density")
 
-    def read_notes(track_index, track):
-        return [
-            {
-                "track_index": track_index,
-                "channel": channel,
-                "pitch": pitch,
-                "start": start_tick,
-                "end": end_tick,
-                "velocity": velocity,
-            }
-            for (
-                channel,
-                pitch,
-                start_tick,
-                end_tick,
-                velocity,
-                _note_on_index,
-                _note_off_index,
-            ) in _iter_note_pairs(track)
-        ]
-
-    def overlaps_same_pitch(existing, channel, pitch, start_tick, end_tick):
-        for note in existing:
-            if note["channel"] != channel or note["pitch"] != pitch:
-                continue
-            if note["start"] == start_tick and note["end"] == end_tick:
-                continue
-            if note["start"] < end_tick and note["end"] > start_tick:
-                return True
-        return False
-
     def simultaneous_hands(existing, channel, tick):
-        foot_notes = {35, 36, 44}
         return sum(
             1
             for note in existing
             if note["channel"] == channel
             and note["start"] == tick
-            and note["pitch"] not in foot_notes
+            and note["pitch"] not in DRUM_HAND_FOOT_NOTES
         )
-
-    def select_targets(candidates):
-        if not candidates:
-            return []
-        if isinstance(density, (int, float)):
-            requested = float(density)
-            if requested <= 0.0:
-                return []
-            wanted = max(1, min(len(candidates), int(round(len(candidates) * requested))))
-        else:
-            wanted = len(candidates)
-        shuffled = list(candidates)
-        context.rng("targets").shuffle(shuffled)
-        return sorted(shuffled[:wanted], key=lambda item: (
-            item["track_index"],
-            item["start"],
-            item["pitch"],
-        ))
-
-    def insert_note(track, channel, pitch, velocity, start_tick, end_tick):
-        absolute = []
-        tick = 0
-        order = 0
-        for msg in track:
-            tick += msg.time
-            absolute.append((tick, order, msg))
-            order += 1
-        absolute.append((
-            start_tick,
-            order,
-            _mido.Message(
-                "note_on",
-                channel=channel,
-                note=pitch,
-                velocity=velocity,
-            ),
-        ))
-        absolute.append((
-            end_tick,
-            order + 1,
-            _mido.Message("note_off", channel=channel, note=pitch, velocity=0),
-        ))
-
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
 
     candidates = []
     for track_index, track in enumerate(mid.tracks):
-        existing = read_notes(track_index, track)
+        existing = list(iter_note_dicts(track, track_index=track_index))
         by_start: dict[tuple[int, int], list[dict[str, int]]] = {}
         for note in existing:
             if note["channel"] != 9:
@@ -1559,14 +1344,19 @@ def _apply_drums_flam(
                 "velocity": max(1, min(126, int(round(note["velocity"] * ratio)))),
             })
 
-    for candidate in select_targets(candidates):
-        insert_note(
+    for candidate in select_by_density(
+        candidates,
+        density=density,
+        rng=context.rng("targets"),
+        sort_key=lambda item: (
+            item["track_index"],
+            item["start"],
+            item["pitch"],
+        ),
+    ):
+        rebuild_track(
             mid.tracks[candidate["track_index"]],
-            channel=candidate["channel"],
-            pitch=candidate["pitch"],
-            velocity=candidate["velocity"],
-            start_tick=candidate["start"],
-            end_tick=candidate["end"],
+            added_notes=(candidate,),
         )
     return mid
 
@@ -1577,50 +1367,25 @@ def _apply_drums_accented_roll(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    import mido as _mido
+    from ._helpers import (
+        density_disabled,
+        iter_note_dicts,
+        parameter_value,
+        rebuild_track,
+        recipe_from_context,
+        technique_from_manual,
+    )
 
-    from .index import build_index
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique)
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    recipe = dict(context.recipe)
-    if not recipe:
-        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
-
-    params = {param.name: param for param in technique.parameters}
-
-    def parameter_value(name, fallback=None):
-        value = context.parameters.get(name)
-        if value is not None:
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) == 2
-                and all(isinstance(item, (int, float)) for item in value)
-            ):
-                return (float(value[0]) + float(value[1])) / 2
-            if isinstance(value, (int, float)):
-                return float(value)
-        parameter = params.get(name)
-        if parameter is None:
-            return fallback
-        if isinstance(parameter.value, (int, float)):
-            return float(parameter.value)
-        if parameter.range is not None:
-            return (float(parameter.range[0]) + float(parameter.range[1])) / 2
-        return fallback
-
-    density = context.parameters.get("density")
-    if isinstance(density, (int, float)) and float(density) <= 0.0:
+    if density_disabled(context):
         return mid
 
-    accent_velocity = parameter_value("velocity_acento")
-    soft_velocity = parameter_value("velocity_suave")
-    dominant_delta = parameter_value("delta_mao_dominante")
-    pre_accent_delta = parameter_value("delta_lift_pre_acento")
+    accent_velocity = parameter_value(context, technique, "velocity_acento")
+    soft_velocity = parameter_value(context, technique, "velocity_suave")
+    dominant_delta = parameter_value(context, technique, "delta_mao_dominante")
+    pre_accent_delta = parameter_value(context, technique, "delta_lift_pre_acento")
     if (
         accent_velocity is None
         or soft_velocity is None
@@ -1650,35 +1415,6 @@ def _apply_drums_accented_roll(
     max_gap_ticks = max(1, ticks_per_beat // 4)
     top_pressure_floor = 105
     low_layer_ceiling = 79
-
-    def note_pairs(track):
-        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append((
-                    tick,
-                    msg.velocity,
-                    msg_index,
-                ))
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, velocity, note_on_index = stack.pop(0)
-                yield {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": start_tick,
-                    "end": tick,
-                    "velocity": velocity,
-                    "note_on_index": note_on_index,
-                }
 
     def roll_sequences(notes):
         sequences = []
@@ -1719,18 +1455,9 @@ def _apply_drums_accented_roll(
             target = top_pressure_floor
         return max(1, min(126, target))
 
-    def rebuild_track(track, velocity_by_index):
-        rebuilt = _mido.MidiTrack()
-        for msg_index, msg in enumerate(track):
-            if msg_index in velocity_by_index:
-                rebuilt.append(msg.copy(velocity=velocity_by_index[msg_index]))
-            else:
-                rebuilt.append(msg.copy())
-        track[:] = rebuilt
-
     for track in mid.tracks:
         notes = [
-            note for note in note_pairs(track)
+            note for note in iter_note_dicts(track)
             if note["channel"] == 9
             and (target_note_set is None or note["pitch"] in target_note_set)
         ]
@@ -1745,7 +1472,7 @@ def _apply_drums_accented_roll(
                     note["velocity"],
                 )
         if velocity_by_index:
-            rebuild_track(track, velocity_by_index)
+            rebuild_track(track, velocity_by_index=velocity_by_index)
 
     return mid
 
@@ -1760,82 +1487,33 @@ def _apply_drums_articulation_diff(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    import mido as _mido
+    from ._helpers import (
+        density_disabled,
+        iter_note_dicts,
+        notes_for,
+        rebuild_track,
+        recipe_from_context,
+        technique_from_manual,
+    )
 
-    from .index import build_index
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique, require_explicit_tool=True)
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
+    hat_tip = notes_for(recipe, "hat_tip", context.canonical)
+    hat_edge = notes_for(recipe, "hat_edge", context.canonical)
+    ride_bow_tip = notes_for(recipe, "ride_bow_tip", context.canonical)
+    ride_bow_shank = notes_for(recipe, "ride_bow_shank", context.canonical)
+    ride_bell = notes_for(recipe, "ride_bell", context.canonical)
+    snare_center = notes_for(recipe, "snare_center", context.canonical)
+    snare_rimshot = notes_for(recipe, "snare_rimshot", context.canonical)
 
-    recipe = dict(context.recipe)
-    if not recipe:
-        available = sorted(technique.tools.keys())
-        raise ValueError(
-            f"tecnica {context.canonical!r} exige ferramenta-alvo; "
-            f"receitas disponiveis: {available!r}"
-        )
-
-    def notes_for(name):
-        values = recipe.get(name)
-        if (
-            not isinstance(values, list)
-            or not values
-            or not all(isinstance(note, int) for note in values)
-        ):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} "
-                "como lista de MIDI ints"
-            )
-        return tuple(int(note) for note in values)
-
-    hat_tip = notes_for("hat_tip")
-    hat_edge = notes_for("hat_edge")
-    ride_bow_tip = notes_for("ride_bow_tip")
-    ride_bow_shank = notes_for("ride_bow_shank")
-    ride_bell = notes_for("ride_bell")
-    snare_center = notes_for("snare_center")
-    snare_rimshot = notes_for("snare_rimshot")
-
-    density = context.parameters.get("density")
-    if isinstance(density, (int, float)) and float(density) <= 0.0:
+    if density_disabled(context):
         return mid
 
     ticks_per_beat = mid.ticks_per_beat
     if ticks_per_beat <= 0:
         return mid
     bar_ticks = ticks_per_beat * 4
-
-    def note_pairs(track):
-        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append((
-                    tick,
-                    msg.velocity,
-                    msg_index,
-                ))
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, velocity, note_on_index = stack.pop(0)
-                yield {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": start_tick,
-                    "velocity": velocity,
-                    "note_on_index": note_on_index,
-                    "note_off_index": msg_index,
-                }
 
     def replacement_for(note):
         pitch = note["pitch"]
@@ -1863,19 +1541,9 @@ def _apply_drums_articulation_diff(
 
         return pitch
 
-    def rebuild_track(track, pitch_by_index):
-        rebuilt = _mido.MidiTrack()
-        for msg_index, msg in enumerate(track):
-            pitch = pitch_by_index.get(msg_index)
-            if pitch is not None and not msg.is_meta:
-                rebuilt.append(msg.copy(note=pitch))
-            else:
-                rebuilt.append(msg.copy())
-        track[:] = rebuilt
-
     for track in mid.tracks:
         pitch_by_index = {}
-        for note in note_pairs(track):
+        for note in iter_note_dicts(track, include_note_off_index=True):
             if note["channel"] != 9:
                 continue
             replacement = replacement_for(note)
@@ -1884,7 +1552,7 @@ def _apply_drums_articulation_diff(
             pitch_by_index[note["note_on_index"]] = replacement
             pitch_by_index[note["note_off_index"]] = replacement
         if pitch_by_index:
-            rebuild_track(track, pitch_by_index)
+            rebuild_track(track, note_by_index=pitch_by_index)
 
     return mid
 
@@ -1898,83 +1566,57 @@ def _apply_drums_buzz_roll(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    import mido as _mido
+    from ._helpers import (
+        density_disabled,
+        hand_starts,
+        iter_note_dicts,
+        manual_value,
+        notes_for,
+        positive_float,
+        rebuild_track,
+        recipe_from_context,
+        selected_by_track,
+        technique_from_manual,
+    )
 
-    from .index import build_index
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique, require_explicit_tool=True)
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    recipe = dict(context.recipe)
-    if not recipe:
-        available = sorted(technique.tools.keys())
-        raise ValueError(
-            f"tecnica {context.canonical!r} exige ferramenta-alvo; "
-            f"receitas disponiveis: {available!r}"
-        )
-
-    def notes_for(name):
-        values = recipe.get(name)
-        if (
-            not isinstance(values, list)
-            or not values
-            or not all(isinstance(note, int) for note in values)
-        ):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} "
-                "como lista de MIDI ints"
-            )
-        return tuple(int(note) for note in values)
-
-    params = {param.name: param for param in technique.parameters}
-
-    def manual_value(name):
-        parameter = params.get(name)
-        if parameter is None or parameter.value is None:
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
-            )
-        return parameter.value
-
-    grid = manual_value("grid")
+    grid = manual_value(context, technique, "grid")
     if grid != "32nd/64th":
         raise ValueError(
             f"tecnica {context.canonical!r} precisa declarar grid='32nd/64th'"
         )
 
-    ramp = manual_value("velocity_ramp")
+    ramp = manual_value(context, technique, "velocity_ramp")
     if not isinstance(ramp, dict):
         raise ValueError(
             f"tecnica {context.canonical!r} precisa declarar velocity_ramp "
             "como objeto no manual"
         )
 
-    def positive_float(name):
-        value = ramp.get(name)
-        if not isinstance(value, (int, float)) or float(value) <= 0:
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar "
-                f"velocity_ramp.{name} como numero positivo"
-            )
-        return float(value)
-
     if ramp.get("shape") != "linear":
         raise ValueError(
             f"tecnica {context.canonical!r} precisa declarar velocity_ramp.shape='linear'"
         )
-    start_ratio = positive_float("start_ratio")
-    end_ratio = positive_float("end_ratio")
-    gate_ratio = positive_float("gate_ratio")
-    window_beats = positive_float("window_beats")
+    start_ratio = positive_float(
+        ramp, "start_ratio", context.canonical, location="em velocity_ramp"
+    )
+    end_ratio = positive_float(
+        ramp, "end_ratio", context.canonical, location="em velocity_ramp"
+    )
+    gate_ratio = positive_float(
+        ramp, "gate_ratio", context.canonical, location="em velocity_ramp"
+    )
+    window_beats = positive_float(
+        ramp, "window_beats", context.canonical, location="em velocity_ramp"
+    )
     if start_ratio > end_ratio:
         return mid
 
-    target_notes = notes_for("notes")
+    target_notes = notes_for(recipe, "notes", context.canonical)
     density = context.parameters.get("density")
-    if isinstance(density, (int, float)) and float(density) <= 0.0:
+    if density_disabled(context):
         return mid
 
     ticks_per_beat = mid.ticks_per_beat
@@ -1986,68 +1628,6 @@ def _apply_drums_buzz_roll(
     )
     roll_window_ticks = max(grid_ticks[0], int(round(ticks_per_beat * window_beats)))
     target_velocity_floor = 90
-
-    def note_pairs(track):
-        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append((
-                    tick,
-                    msg.velocity,
-                    msg_index,
-                ))
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, velocity, note_on_index = stack.pop(0)
-                yield {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": start_tick,
-                    "end": tick,
-                    "duration": tick - start_tick,
-                    "velocity": velocity,
-                    "note_on_index": note_on_index,
-                }
-
-    def target_count(size):
-        if size <= 0:
-            return 0
-        if isinstance(density, (int, float)):
-            requested = float(density)
-            if requested <= 0.0:
-                return 0
-            return max(1, min(size, int(round(size * requested))))
-        return size
-
-    def select_targets(candidates):
-        wanted = target_count(len(candidates))
-        if wanted == 0:
-            return []
-        shuffled = list(candidates)
-        context.rng("targets").shuffle(shuffled)
-        return sorted(shuffled[:wanted], key=lambda item: (
-            item["track_index"],
-            item["start"],
-            item["pitch"],
-        ))
-
-    def hand_starts(notes, tick):
-        foot_notes = {35, 36, 44}
-        return sum(
-            1
-            for note in notes
-            if note["channel"] == 9
-            and note["start"] == tick
-            and note["pitch"] not in foot_notes
-        )
 
     def build_ornaments(note, existing):
         end_tick = int(note["start"])
@@ -2088,64 +1668,10 @@ def _apply_drums_buzz_roll(
             })
         return tuple(ornaments)
 
-    def rebuild_track(track, ornaments):
-        absolute = []
-        tick = 0
-        order = 0
-        for msg in track:
-            tick += msg.time
-            absolute.append((tick, order, msg))
-            order += 1
-
-        for ornament in ornaments:
-            absolute.append((
-                ornament["start"],
-                order,
-                _mido.Message(
-                    "note_on",
-                    channel=ornament["channel"],
-                    note=ornament["pitch"],
-                    velocity=ornament["velocity"],
-                ),
-            ))
-            order += 1
-            absolute.append((
-                ornament["end"],
-                order,
-                _mido.Message(
-                    "note_off",
-                    channel=ornament["channel"],
-                    note=ornament["pitch"],
-                    velocity=0,
-                ),
-            ))
-            order += 1
-
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _order, msg in sorted(
-            absolute,
-            key=lambda item: (item[0], item[1]),
-        ):
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
-
     candidates = []
     target_note_set = set(target_notes)
     for track_index, track in enumerate(mid.tracks):
-        existing = [
-            {
-                "track_index": track_index,
-                "channel": int(note["channel"]),
-                "pitch": int(note["pitch"]),
-                "start": int(note["start"]),
-                "end": int(note["end"]),
-                "duration": int(note["duration"]),
-                "velocity": int(note["velocity"]),
-            }
-            for note in note_pairs(track)
-        ]
+        existing = iter_note_dicts(track, track_index=track_index)
         for note in existing:
             if (
                 note["channel"] != 9
@@ -2163,12 +1689,15 @@ def _apply_drums_buzz_roll(
                     "ornaments": ornaments,
                 })
 
-    by_track: dict[int, list[dict[str, int]]] = {}
-    for candidate in select_targets(candidates):
-        by_track.setdefault(candidate["track_index"], []).extend(candidate["ornaments"])
+    by_track = selected_by_track(
+        candidates,
+        density=density,
+        rng=context.rng("targets"),
+        value=lambda candidate: candidate["ornaments"],
+    )
 
     for track_index, ornaments in by_track.items():
-        rebuild_track(mid.tracks[track_index], ornaments)
+        rebuild_track(mid.tracks[track_index], added_notes=ornaments)
 
     return mid
 
@@ -2183,54 +1712,32 @@ def _apply_drums_cymbal_choke(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    import mido as _mido
+    from ._helpers import (
+        density_disabled,
+        iter_note_dicts,
+        notes_for,
+        positive_float,
+        rebuild_track,
+        recipe_from_context,
+        selected_by_track,
+        technique_from_manual,
+    )
 
-    from .index import build_index
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique, require_explicit_tool=True)
 
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
+    target_notes = notes_for(recipe, "target_notes", context.canonical)
+    choke_notes = notes_for(recipe, "notes", context.canonical)
 
-    recipe = dict(context.recipe)
-    if not recipe:
-        available = sorted(technique.tools.keys())
-        raise ValueError(
-            f"tecnica {context.canonical!r} exige ferramenta-alvo; "
-            f"receitas disponiveis: {available!r}"
-        )
-
-    def notes_for(name):
-        values = recipe.get(name)
-        if (
-            not isinstance(values, list)
-            or not values
-            or not all(isinstance(note, int) for note in values)
-        ):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} "
-                "como lista de MIDI ints"
-            )
-        return tuple(int(note) for note in values)
-
-    target_notes = notes_for("target_notes")
-    choke_notes = notes_for("notes")
-
-    def positive_float(name):
-        value = recipe.get(name)
-        if not isinstance(value, (int, float)) or float(value) <= 0:
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} "
-                "como numero positivo na receita"
-            )
-        return float(value)
-
-    choke_after_beats = positive_float("choke_after_beats")
-    short_ceiling_beats = positive_float("short_ceiling_beats")
+    choke_after_beats = positive_float(
+        recipe, "choke_after_beats", context.canonical
+    )
+    short_ceiling_beats = positive_float(
+        recipe, "short_ceiling_beats", context.canonical
+    )
 
     density = context.parameters.get("density")
-    if isinstance(density, (int, float)) and float(density) <= 0.0:
+    if density_disabled(context):
         return mid
 
     ticks_per_beat = mid.ticks_per_beat
@@ -2240,107 +1747,14 @@ def _apply_drums_cymbal_choke(
     short_ceiling_ticks = max(1, int(round(ticks_per_beat * short_ceiling_beats)))
     choke_gate_ticks = max(1, min(choke_after_ticks, ticks_per_beat // 16))
 
-    def note_pairs(track):
-        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append((
-                    tick,
-                    msg.velocity,
-                    msg_index,
-                ))
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, velocity, note_on_index = stack.pop(0)
-                yield {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": start_tick,
-                    "end": tick,
-                    "duration": tick - start_tick,
-                    "velocity": velocity,
-                    "note_on_index": note_on_index,
-                    "note_off_index": msg_index,
-                }
-
-    def target_count(size):
-        if size <= 0:
-            return 0
-        if isinstance(density, (int, float)):
-            requested = float(density)
-            if requested <= 0.0:
-                return 0
-            return max(1, min(size, int(round(size * requested))))
-        return size
-
-    def select_targets(candidates):
-        wanted = target_count(len(candidates))
-        if wanted == 0:
-            return []
-        shuffled = list(candidates)
-        context.rng("targets").shuffle(shuffled)
-        return sorted(shuffled[:wanted], key=lambda item: (
-            item["track_index"],
-            item["start"],
-            item["pitch"],
-        ))
-
-    def rebuild_track(track, end_by_index, chokes):
-        absolute = []
-        tick = 0
-        order = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            absolute_tick = end_by_index.get(msg_index, tick)
-            absolute.append((absolute_tick, order, msg))
-            order += 1
-
-        for choke in chokes:
-            absolute.append((
-                choke["start"],
-                order,
-                _mido.Message(
-                    "note_on",
-                    channel=choke["channel"],
-                    note=choke["pitch"],
-                    velocity=choke["velocity"],
-                ),
-            ))
-            order += 1
-            absolute.append((
-                choke["end"],
-                order,
-                _mido.Message(
-                    "note_off",
-                    channel=choke["channel"],
-                    note=choke["pitch"],
-                    velocity=0,
-                ),
-            ))
-            order += 1
-
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _order, msg in sorted(
-            absolute,
-            key=lambda item: (item[0], item[1]),
-        ):
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
-
     candidates = []
     target_note_set = set(target_notes)
     for track_index, track in enumerate(mid.tracks):
-        for note in note_pairs(track):
+        for note in iter_note_dicts(
+            track,
+            track_index=track_index,
+            include_note_off_index=True,
+        ):
             if (
                 note["channel"] != 9
                 or note["pitch"] not in target_note_set
@@ -2361,9 +1775,12 @@ def _apply_drums_cymbal_choke(
                 "note_off_index": int(note["note_off_index"]),
             })
 
-    by_track: dict[int, list[dict[str, int]]] = {}
-    for candidate in select_targets(candidates):
-        by_track.setdefault(candidate["track_index"], []).append(candidate)
+    by_track = selected_by_track(
+        candidates,
+        density=density,
+        rng=context.rng("targets"),
+        value=lambda candidate: candidate,
+    )
 
     for track_index, track_candidates in by_track.items():
         end_by_index = {
@@ -2380,7 +1797,11 @@ def _apply_drums_cymbal_choke(
             }
             for position, candidate in enumerate(track_candidates)
         ]
-        rebuild_track(mid.tracks[track_index], end_by_index, chokes)
+        rebuild_track(
+            mid.tracks[track_index],
+            absolute_tick_by_index=end_by_index,
+            added_notes=chokes,
+        )
 
     return mid
 
@@ -2393,19 +1814,19 @@ def _apply_drums_microtiming(
 ) -> mido.MidiFile:
     import math as _math
 
-    import mido as _mido
+    from ._helpers import (
+        density_disabled,
+        iter_note_dicts,
+        note_on_events,
+        parameter_value,
+        rebuild_track,
+        recipe_from_context,
+        technique_from_manual,
+        ticks_per_ms,
+    )
 
-    from .index import build_index
-
-    technique = build_index().get(context.canonical)
-    if technique is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
-        )
-
-    recipe = dict(context.recipe)
-    if not recipe:
-        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
+    technique = technique_from_manual(context)
+    recipe = recipe_from_context(context, technique)
 
     hihat_notes = recipe.get("hihat_notes")
     if (
@@ -2418,37 +1839,14 @@ def _apply_drums_microtiming(
         )
     hihat_note_set = set(hihat_notes)
 
-    params = {param.name: param for param in technique.parameters}
-
-    def parameter_value(name, fallback=None):
-        value = context.parameters.get(name)
-        if value is not None:
-            if (
-                isinstance(value, (list, tuple))
-                and len(value) == 2
-                and all(isinstance(item, (int, float)) for item in value)
-            ):
-                return (float(value[0]) + float(value[1])) / 2
-            if isinstance(value, (int, float)):
-                return float(value)
-        parameter = params.get(name)
-        if parameter is None:
-            return fallback
-        if parameter.value is not None:
-            return float(parameter.value)
-        if parameter.range is not None:
-            return (float(parameter.range[0]) + float(parameter.range[1])) / 2
-        return fallback
-
-    density = context.parameters.get("density")
-    if isinstance(density, (int, float)) and float(density) <= 0.0:
+    if density_disabled(context):
         return mid
 
-    sigma_ms = parameter_value("hihat_timing_sigma_ms")
-    autocorr = parameter_value("hihat_autocorr_lag1")
-    perception_ms = parameter_value("perception_threshold_ms")
-    musical_hi_ms = parameter_value("musical_range_ms")
-    sloppy_ms = parameter_value("sloppy_threshold_ms")
+    sigma_ms = parameter_value(context, technique, "hihat_timing_sigma_ms")
+    autocorr = parameter_value(context, technique, "hihat_autocorr_lag1")
+    perception_ms = parameter_value(context, technique, "perception_threshold_ms")
+    musical_hi_ms = parameter_value(context, technique, "musical_range_ms")
+    sloppy_ms = parameter_value(context, technique, "sloppy_threshold_ms")
     if (
         sigma_ms is None
         or autocorr is None
@@ -2468,59 +1866,9 @@ def _apply_drums_microtiming(
     if max_abs_ms <= 0:
         return mid
 
-    tempo = 500_000
-    for track in mid.tracks:
-        absolute_tick = 0
-        for msg in track:
-            absolute_tick += msg.time
-            if msg.is_meta and msg.type == "set_tempo":
-                tempo = msg.tempo
-                break
-        if tempo != 500_000:
-            break
-    ticks_per_ms = mid.ticks_per_beat * 1000 / tempo
-    max_abs_ticks = max(1, int(_math.floor(max_abs_ms * ticks_per_ms)))
-    perception_ticks = max(1, int(round(float(perception_ms) * ticks_per_ms)))
-
-    def note_pairs(track):
-        pending = {}
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                pending.setdefault((msg.channel, msg.note), []).append(
-                    (tick, msg_index)
-                )
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if not stack:
-                    continue
-                start_tick, note_on_index = stack.pop(0)
-                yield {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": start_tick,
-                    "end": tick,
-                    "note_on_index": note_on_index,
-                    "note_off_index": msg_index,
-                }
-
-    def note_on_events(track):
-        events = []
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            if (
-                not msg.is_meta
-                and msg.type == "note_on"
-                and msg.velocity > 0
-            ):
-                events.append((msg_index, tick))
-        return events
+    ticks_ms = ticks_per_ms(mid)
+    max_abs_ticks = max(1, int(_math.floor(max_abs_ms * ticks_ms)))
+    perception_ticks = max(1, int(round(float(perception_ms) * ticks_ms)))
 
     def clamp_offset(offset, current_tick, previous_tick, next_tick):
         lower = -max_abs_ticks
@@ -2542,29 +1890,12 @@ def _apply_drums_microtiming(
             return perception_ticks if clamped > 0 else -perception_ticks
         return clamped
 
-    def rebuild_track(track, shifts):
-        absolute = []
-        tick = 0
-        for msg_index, msg in enumerate(track):
-            tick += msg.time
-            absolute.append((tick + shifts.get(msg_index, 0), msg_index, msg))
-
-        rebuilt = _mido.MidiTrack()
-        previous_tick = 0
-        for absolute_tick, _msg_index, msg in sorted(
-            absolute,
-            key=lambda item: (item[0], item[1]),
-        ):
-            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
-            previous_tick = absolute_tick
-        track[:] = rebuilt
-
     rng = context.rng("hihat-offsets")
     previous_series_ms = 0.0
     scale = _math.sqrt(max(0.0, 1.0 - autocorr * autocorr))
 
     for track in mid.tracks:
-        pairs = list(note_pairs(track))
+        pairs = list(iter_note_dicts(track, include_note_off_index=True))
         if not pairs:
             continue
         ons = note_on_events(track)
@@ -2581,7 +1912,7 @@ def _apply_drums_microtiming(
             innovation = rng.gauss(0.0, float(sigma_ms)) * scale
             series_ms = autocorr * previous_series_ms + innovation
             previous_series_ms = series_ms
-            raw_ticks = int(round(series_ms * ticks_per_ms))
+            raw_ticks = int(round(series_ms * ticks_ms))
             if raw_ticks == 0:
                 raw_ticks = 1 if series_ms >= 0 else -1
             offset = clamp_offset(
@@ -2596,7 +1927,12 @@ def _apply_drums_microtiming(
             shifts[pair["note_off_index"]] = offset
 
         if shifts:
-            rebuild_track(track, shifts)
+            absolute_tick_by_index = {}
+            tick = 0
+            for msg_index, msg in enumerate(track):
+                tick += msg.time
+                absolute_tick_by_index[msg_index] = tick + shifts.get(msg_index, 0)
+            rebuild_track(track, absolute_tick_by_index=absolute_tick_by_index)
 
     return mid
 
