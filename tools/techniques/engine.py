@@ -1272,6 +1272,116 @@ def _apply_drums_ghost_notes(
     return mid
 
 
+@register_technique("bass.velocity_contour", "humanize")
+def _apply_bass_velocity_contour(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Contorno dinamico para linha de baixo.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le os numeros do manual pelo indice dentro da aplicacao.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - INVARIANTE DE PRESSAO: nota da origem no topo (>= P75) nao pode sair na
+        faixa mais baixa (< P25) da propria origem — ordem por posicao original.
+      - A mediana de velocity da saida nunca cai abaixo da mediana da origem.
+      - Determinismo por seed atraves de `context.rng()`.
+    """
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    params_by_name = {p.name: p for p in technique.parameters}
+
+    def _pick(name: str) -> Any:
+        if name in context.parameters:
+            return context.parameters[name]
+        if name in context.recipe:
+            return context.recipe[name]
+        param = params_by_name.get(name)
+        if param is None:
+            return None
+        if param.value is not None:
+            return param.value
+        return param.range
+
+    def _as_int(value: Any, default: int) -> int:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, (list, tuple)) and len(value) == 2 and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+        ):
+            lo, hi = float(value[0]), float(value[1])
+            return int(round((lo + hi) / 2))
+        return default
+
+    span_tipico = max(1, _as_int(_pick("span_tipico"), 40))
+    accent = max(2, span_tipico // 6)
+    jitter_hi = max(1, span_tipico // 10)
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+
+    rng = context.rng("contour")
+
+    for track in mid.tracks:
+        note_positions: list[tuple[mido.Message, int]] = []
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                note_positions.append((msg, tick))
+
+        if not note_positions:
+            continue
+
+        original = [msg.velocity for msg, _ in note_positions]
+        sorted_orig = sorted(original)
+        n = len(sorted_orig)
+        p25 = sorted_orig[max(0, (n - 1) // 4)]
+        p75 = sorted_orig[min(n - 1, (3 * (n - 1)) // 4)]
+        median_orig = sorted_orig[n // 2]
+
+        proposed: list[int] = []
+        for msg, tick_pos in note_positions:
+            beat_index = tick_pos // ticks_per_beat
+            beat_offset = tick_pos % ticks_per_beat
+            if beat_offset == 0 and beat_index % 4 in (0, 2):
+                delta = +accent
+            elif beat_offset == 0:
+                delta = +max(1, accent // 2)
+            else:
+                delta = -max(1, accent // 3)
+            delta += rng.randint(0, jitter_hi)
+            proposed.append(max(1, min(127, msg.velocity + delta)))
+
+        sorted_new = sorted(proposed)
+        median_new = sorted_new[n // 2]
+        if median_new < median_orig:
+            offset = median_orig - median_new
+            proposed = [min(127, v + offset) for v in proposed]
+
+        for (msg, _), original_vel, new_vel in zip(
+            note_positions, original, proposed, strict=True,
+        ):
+            if original_vel >= p75 and new_vel < p25:
+                new_vel = max(new_vel, p25)
+            msg.velocity = new_vel
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

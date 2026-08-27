@@ -177,7 +177,7 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert SUPPORTED_TECHNIQUES == ("drums.ghost_notes",)
+    assert SUPPORTED_TECHNIQUES == ("bass.velocity_contour", "drums.ghost_notes")
 
 
 def test_global_dispatch_rejects_documented_but_unimplemented_technique():
@@ -186,7 +186,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError) as exc:
         apply_technique("drums.flam", payload, seed=1)
 
-    assert exc.value.available == ("drums.ghost_notes",)
+    assert exc.value.available == ("bass.velocity_contour", "drums.ghost_notes")
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
