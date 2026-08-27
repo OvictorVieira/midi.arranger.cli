@@ -1272,6 +1272,262 @@ def _apply_drums_ghost_notes(
     return mid
 
 
+@register_technique("drums.flam", "technique")
+def _apply_drums_flam(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    recipe = dict(context.recipe)
+    if not recipe:
+        recipe = dict(technique.tools.get(context.tool) or technique.tools["generic"])
+
+    params = {param.name: param for param in technique.parameters}
+
+    def parameter_value(name, fallback=None):
+        value = context.parameters.get(name)
+        if value is not None:
+            if (
+                isinstance(value, (list, tuple))
+                and len(value) == 2
+                and all(isinstance(item, (int, float)) for item in value)
+            ):
+                return (float(value[0]) + float(value[1])) / 2
+            if isinstance(value, (int, float)):
+                return float(value)
+        parameter = params.get(name)
+        if parameter is None:
+            return fallback
+        if parameter.value is not None:
+            return float(parameter.value)
+        if parameter.range is not None:
+            return (float(parameter.range[0]) + float(parameter.range[1])) / 2
+        return fallback
+
+    gap_ms = parameter_value("gap_ms")
+    ratio = parameter_value("grace_velocity_ratio")
+    ceiling_ms = parameter_value("reading_ceiling_ms")
+    if gap_ms is None or ratio is None or ceiling_ms is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar gap_ms, "
+            "grace_velocity_ratio e reading_ceiling_ms no manual ou no plano"
+        )
+    if gap_ms <= 0 or ceiling_ms <= 0 or gap_ms > ceiling_ms:
+        return mid
+    ratio = max(0.0, min(1.0, ratio))
+
+    snare_main_notes = recipe.get("notes_main")
+    if (
+        not isinstance(snare_main_notes, list)
+        or not snare_main_notes
+        or not all(isinstance(note, int) for note in snare_main_notes)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar notes_main na receita"
+        )
+    tom_notes = recipe.get("tom_notes")
+    if (
+        not isinstance(tom_notes, list)
+        or not tom_notes
+        or not all(isinstance(note, int) for note in tom_notes)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar tom_notes na receita"
+        )
+
+    if context.tool == "superior_drummer":
+        grace_notes = recipe.get("notes")
+    else:
+        grace_notes = recipe.get("notes_grace")
+    if (
+        not isinstance(grace_notes, list)
+        or not grace_notes
+        or not all(isinstance(note, int) for note in grace_notes)
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa declarar notes/notes_grace "
+            "na receita"
+        )
+
+    tempo = 500_000
+    for track in mid.tracks:
+        absolute_tick = 0
+        for msg in track:
+            absolute_tick += msg.time
+            if msg.is_meta and msg.type == "set_tempo":
+                tempo = msg.tempo
+                break
+        if tempo != 500_000:
+            break
+    ticks_per_ms = mid.ticks_per_beat * 1000 / tempo
+    gap_ticks = max(1, int(round(gap_ms * ticks_per_ms)))
+    density = context.parameters.get("density")
+
+    def read_notes(track_index, track):
+        return [
+            {
+                "track_index": track_index,
+                "channel": channel,
+                "pitch": pitch,
+                "start": start_tick,
+                "end": end_tick,
+                "velocity": velocity,
+            }
+            for (
+                channel,
+                pitch,
+                start_tick,
+                end_tick,
+                velocity,
+                _note_on_index,
+                _note_off_index,
+            ) in _iter_note_pairs(track)
+        ]
+
+    def overlaps_same_pitch(existing, channel, pitch, start_tick, end_tick):
+        for note in existing:
+            if note["channel"] != channel or note["pitch"] != pitch:
+                continue
+            if note["start"] == start_tick and note["end"] == end_tick:
+                continue
+            if note["start"] < end_tick and note["end"] > start_tick:
+                return True
+        return False
+
+    def simultaneous_hands(existing, channel, tick):
+        foot_notes = {35, 36, 44}
+        return sum(
+            1
+            for note in existing
+            if note["channel"] == channel
+            and note["start"] == tick
+            and note["pitch"] not in foot_notes
+        )
+
+    def select_targets(candidates):
+        if not candidates:
+            return []
+        if isinstance(density, (int, float)):
+            requested = float(density)
+            if requested <= 0.0:
+                return []
+            wanted = max(1, min(len(candidates), int(round(len(candidates) * requested))))
+        else:
+            wanted = len(candidates)
+        shuffled = list(candidates)
+        context.rng("targets").shuffle(shuffled)
+        return sorted(shuffled[:wanted], key=lambda item: (
+            item["track_index"],
+            item["start"],
+            item["pitch"],
+        ))
+
+    def insert_note(track, channel, pitch, velocity, start_tick, end_tick):
+        absolute = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, order, msg))
+            order += 1
+        absolute.append((
+            start_tick,
+            order,
+            _mido.Message(
+                "note_on",
+                channel=channel,
+                note=pitch,
+                velocity=velocity,
+            ),
+        ))
+        absolute.append((
+            end_tick,
+            order + 1,
+            _mido.Message("note_off", channel=channel, note=pitch, velocity=0),
+        ))
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    candidates = []
+    for track_index, track in enumerate(mid.tracks):
+        existing = read_notes(track_index, track)
+        by_start: dict[tuple[int, int], list[dict[str, int]]] = {}
+        for note in existing:
+            if note["channel"] != 9:
+                continue
+            by_start.setdefault((note["channel"], note["start"]), []).append(note)
+
+        for note in existing:
+            if note["channel"] != 9:
+                continue
+            is_snare = note["pitch"] in snare_main_notes and note["velocity"] > 45
+            simultaneous_toms = [
+                item for item in by_start.get((note["channel"], note["start"]), [])
+                if item["pitch"] in tom_notes
+            ]
+            is_tom_flam = (
+                note["pitch"] in tom_notes
+                and len(simultaneous_toms) >= 2
+                and note is not simultaneous_toms[0]
+            )
+            if not (is_snare or is_tom_flam):
+                continue
+
+            grace_start = note["start"] - gap_ticks
+            if grace_start < 0:
+                continue
+            grace_end = note["start"]
+            grace_pitch = (
+                int(grace_notes[len(candidates) % len(grace_notes)])
+                if is_snare
+                else int(note["pitch"])
+            )
+            if simultaneous_hands(existing, note["channel"], grace_start) >= 2:
+                continue
+            if overlaps_same_pitch(
+                existing,
+                int(note["channel"]),
+                grace_pitch,
+                grace_start,
+                grace_end,
+            ):
+                continue
+            candidates.append({
+                "track_index": track_index,
+                "channel": int(note["channel"]),
+                "pitch": grace_pitch,
+                "start": grace_start,
+                "end": grace_end,
+                "velocity": max(1, min(126, int(round(note["velocity"] * ratio)))),
+            })
+
+    for candidate in select_targets(candidates):
+        insert_note(
+            mid.tracks[candidate["track_index"]],
+            channel=candidate["channel"],
+            pitch=candidate["pitch"],
+            velocity=candidate["velocity"],
+            start_tick=candidate["start"],
+            end_tick=candidate["end"],
+        )
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

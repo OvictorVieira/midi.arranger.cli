@@ -177,16 +177,16 @@ def test_technique_context_rejects_non_integer_seed():
 def test_supported_techniques_is_derived_from_the_registry():
     assert tuple(t.canonical for t in registered_techniques()) == SUPPORTED_TECHNIQUES
     assert tuple(sorted(SUPPORTED_TECHNIQUES)) == SUPPORTED_TECHNIQUES
-    assert SUPPORTED_TECHNIQUES == ("drums.ghost_notes",)
+    assert SUPPORTED_TECHNIQUES == ("drums.flam", "drums.ghost_notes")
 
 
 def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     payload = {"notes": [38]}
 
     with pytest.raises(UnknownTechniqueError) as exc:
-        apply_technique("drums.flam", payload, seed=1)
+        apply_technique("drums.accent_hierarchy", payload, seed=1)
 
-    assert exc.value.available == ("drums.ghost_notes",)
+    assert exc.value.available == ("drums.flam", "drums.ghost_notes")
 
 
 def test_technique_level_accepts_non_midi_subject_without_snapshot():
@@ -1044,6 +1044,154 @@ def test_drums_ghost_notes_reaches_metal_density_on_realistic_backbeats():
             )
 
 
+def test_drums_flam_adds_grace_before_main_and_preserves_structure():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 100)])
+    before = _note_tuples(source)
+
+    result = apply_technique(
+        "drums.flam",
+        source,
+        seed=31,
+        parameters={
+            "gap_ms": 10,
+            "grace_velocity_ratio": 0.4,
+            "reading_ceiling_ms": 35,
+        },
+    )
+
+    assert all(note in _note_tuples(result) for note in before)
+    assert _new_note_tuples(source, result) == [(1, 9, 38, 470, 480, 40)]
+
+
+def test_drums_flam_uses_superior_drummer_recorded_articulation_recipe():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 100)])
+
+    applied = apply_technique_with_warnings(
+        "drums.flam",
+        source,
+        seed=32,
+        parameters={
+            "gap_ms": 10,
+            "grace_velocity_ratio": 0.4,
+            "reading_ceiling_ms": 35,
+        },
+        tool="superior_drummer",
+        index=_technique_index(
+            "drums.flam",
+            {
+                "generic": {
+                    "notes_main": [38],
+                    "notes_grace": [38],
+                    "tom_notes": [45, 48],
+                },
+                "superior_drummer": {
+                    "notes": [69],
+                    "notes_main": [38],
+                    "tom_notes": [45, 48],
+                },
+            },
+        ),
+    )
+
+    assert applied.warnings == ()
+    assert _new_note_tuples(source, applied.result) == [(1, 9, 69, 470, 480, 40)]
+
+
+def test_drums_flam_uses_addictive_drums_alternate_grace_note_recipe():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 100)])
+
+    applied = apply_technique_with_warnings(
+        "drums.flam",
+        source,
+        seed=33,
+        parameters={
+            "gap_ms": 10,
+            "grace_velocity_ratio": 0.4,
+            "reading_ceiling_ms": 35,
+        },
+        tool="addictive_drums",
+        index=_technique_index(
+            "drums.flam",
+            {
+                "generic": {
+                    "notes_main": [38],
+                    "notes_grace": [38],
+                    "tom_notes": [45, 48],
+                },
+                "addictive_drums": {
+                    "notes_main": [38],
+                    "notes_grace": [40],
+                    "tom_notes": [45, 48],
+                },
+            },
+        ),
+    )
+
+    assert applied.warnings == ()
+    assert _new_note_tuples(source, applied.result) == [(1, 9, 40, 470, 480, 40)]
+
+
+def test_drums_flam_flams_simultaneous_toms():
+    source = _midi_with_notes("Drums", 9, [
+        (960, 1080, 45, 104),
+        (960, 1080, 48, 96),
+    ])
+
+    result = apply_technique(
+        "drums.flam",
+        source,
+        seed=34,
+        parameters={
+            "gap_ms": 10,
+            "grace_velocity_ratio": 0.4,
+            "reading_ceiling_ms": 35,
+        },
+    )
+
+    assert _new_note_tuples(source, result) == [(1, 9, 48, 950, 960, 38)]
+
+
+def test_drums_flam_density_zero_disables_technique():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 100)])
+
+    result = apply_technique(
+        "drums.flam",
+        source,
+        seed=35,
+        parameters={"density": 0.0},
+    )
+
+    assert _midi_bytes(result) == _midi_bytes(source)
+
+
+def test_drums_flam_is_idempotent():
+    source = _midi_with_notes("Drums", 9, [(480, 600, 38, 100)])
+    once = apply_technique(
+        "drums.flam",
+        source,
+        seed=36,
+        parameters={
+            "gap_ms": 10,
+            "grace_velocity_ratio": 0.4,
+            "reading_ceiling_ms": 35,
+        },
+    )
+    once_bytes = _midi_bytes(once)
+
+    twice = apply_technique(
+        "drums.flam",
+        once,
+        seed=36,
+        parameters={
+            "gap_ms": 10,
+            "grace_velocity_ratio": 0.4,
+            "reading_ceiling_ms": 35,
+        },
+    )
+
+    assert _midi_bytes(twice) == once_bytes
+
+
 def test_apply_uses_requested_tool_recipe_without_warning():
     registry = TechniqueRegistry()
 
@@ -1157,12 +1305,12 @@ def test_apply_fails_without_target_or_generic_recipe_before_calling_function():
 def test_apply_technique_with_warnings_rejects_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError):
         apply_technique_with_warnings(
-            "drums.flam",
+            "drums.accent_hierarchy",
             {"ok": True},
             seed=1,
             tool="maschine",
             index=_technique_index(
-                "drums.flam",
+                "drums.accent_hierarchy",
                 {"generic": {"notes": [38]}},
             ),
         )

@@ -532,13 +532,13 @@ tutoriais dá número.
   "description": "DUAS ESTRATEGIAS, e ha desacordo documentado. A articulacao gravada do SD3 (nota 69) resolve com uma nota so, mas ha tutorial de producao que a considera larga demais e prefere montar a mao para apertar. Montando a mao: duas notas com o GRID DESLIGADO, senao a DAW gruda a graca na grade e o flam some. Gradacao de realismo, da pior para a melhor: articulacao gravada < duas notas na mesma altura < segunda batida numa amostra ou grupo LIGEIRAMENTE DIFERENTE, que imita como um baterista bate duas vezes seguidas. No AD2 nao ha articulacao gravada, entao a graca vai na alternada (40) para as duas nao roubarem voz. REGRA QUE VALE ALEM DO FLAM: dois toms atacados no mesmo tick nao existem em execucao real — num fill com toms simultaneos, flameie.",
   "parameters": [
     {"name": "gap_ms", "range": [8, 15], "source": "Moozix"},
-    {"name": "grace_velocity_ratio", "source": null},
-    {"name": "reading_ceiling_ms", "source": null}
+    {"name": "grace_velocity_ratio", "value": 0.38, "source": null},
+    {"name": "reading_ceiling_ms", "value": 35, "source": null}
   ],
   "tools": {
-    "generic": {"note": "grid DESLIGADO para arrastar a graca livre; segunda batida em amostra diferente quando a lib permitir"},
-    "superior_drummer": {"notes": [69], "note": "articulacao Snare Flams gravada — uma nota so. Alternativa: montar a mao em 38 se o espacamento gravado ficar largo demais", "fonte_do_desacordo": "https://www.youtube.com/watch?v=x-Fjokn-YI4"},
-    "addictive_drums": {"notes_main": [38], "notes_grace": [40], "note": "AD2 nao tem articulacao de flam gravada"}
+    "generic": {"notes_main": [38], "notes_grace": [38], "tom_notes": [41, 43, 45, 47, 48], "note": "grid DESLIGADO para arrastar a graca livre; segunda batida em amostra diferente quando a lib permitir"},
+    "superior_drummer": {"notes": [69], "notes_main": [38], "tom_notes": [41, 43, 45, 47, 48], "note": "articulacao Snare Flams gravada — uma nota so. Alternativa: montar a mao em 38 se o espacamento gravado ficar largo demais", "fonte_do_desacordo": "https://www.youtube.com/watch?v=x-Fjokn-YI4"},
+    "addictive_drums": {"notes_main": [38], "notes_grace": [40], "tom_notes": [65, 67, 69, 71], "note": "AD2 nao tem articulacao de flam gravada"}
   }
 }
 ```
