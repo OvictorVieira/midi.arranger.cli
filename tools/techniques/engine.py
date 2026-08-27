@@ -1835,6 +1835,209 @@ def _apply_bass_palm_mute(
     return mid
 
 
+@register_technique(
+    "bass.attack_style",
+    "technique",
+    allow_structural_velocity_change=True,
+)
+def _apply_bass_attack_style(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Estilo de ataque do baixo — dedo, palheta ou slap com keyswitch.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `keyswitch_dedo` (13), `keyswitch_palheta` (15), `keyswitch_slap` (18)
+        e `keyswitch_forcar_primeiro`/`_segundo` (1/3) do MODO BASS pelo indice.
+      - `context.parameters["style"]` COMANDA: `dedo`, `palheta` ou `slap`.
+        Sem `style` ou estilo desconhecido: NO-OP (nunca reescreve a linha por
+        default — estilo geral e ausencia de intencao musical).
+      - Picked (palheta) alterna downstroke/upstroke DETERMINISTICAMENTE pela
+        posicao na sequencia (par=down, impar=up); velocities lidas de
+        `picked_downstroke_velocity` e `picked_upstroke_velocity` do manual.
+      - `upstroke_atraso_ms` reposiciona so o keyswitch do upstroke, nunca a
+        nota estrutural.
+      - Keyswitch nao colide com nota musical: pitches 1, 3, 13, 15, 18 sao
+        muito abaixo do floor do baixo (~28) e ficam fora do contrato
+        estrutural via `_keyswitch_pitches_from_recipe`.
+      - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
+        dedup do dispatch descarta a duplicata.
+    """
+
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    params_by_name = {p.name: p for p in technique.parameters}
+    recipe = context.recipe
+
+    style_raw = context.parameters.get("style")
+    if not isinstance(style_raw, str):
+        return mid
+    style = style_raw.strip().lower()
+    style_key = {
+        "dedo": "keyswitch_dedo",
+        "fingered": "keyswitch_dedo",
+        "palheta": "keyswitch_palheta",
+        "picked": "keyswitch_palheta",
+        "slap": "keyswitch_slap",
+    }.get(style)
+    if style_key is None:
+        return mid
+
+    style_ks = recipe.get(style_key) if recipe else None
+    if not isinstance(style_ks, int) or isinstance(style_ks, bool):
+        # Receita generic nao tem keyswitch — no-op.
+        return mid
+
+    forcar_primeiro = recipe.get("keyswitch_forcar_primeiro") if recipe else None
+    forcar_segundo = recipe.get("keyswitch_forcar_segundo") if recipe else None
+    is_picked = style in {"palheta", "picked"}
+
+    # Pitches declarados como keyswitch na receita ficam fora do material
+    # estrutural: evitam que uma reaplicacao trate keyswitch previamente
+    # inserido como nota da linha e reembaralhe velocity.
+    keyswitch_pitches: set[int] = set()
+    for key, value in (recipe or {}).items():
+        if not isinstance(key, str):
+            continue
+        if key != "keyswitch" and not key.startswith("keyswitch_"):
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            keyswitch_pitches.add(value)
+
+    def _midrange(name: str, fallback: tuple[float, float]) -> int:
+        if name in context.parameters:
+            value = context.parameters[name]
+        elif name in recipe:
+            value = recipe[name]
+        else:
+            param = params_by_name.get(name)
+            if param is None:
+                value = fallback
+            elif param.value is not None:
+                value = param.value
+            elif param.range is not None:
+                value = param.range
+            else:
+                value = fallback
+        if isinstance(value, bool):
+            return int(round((fallback[0] + fallback[1]) / 2))
+        if isinstance(value, (int, float)):
+            return int(round(float(value)))
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+            )
+        ):
+            return int(round((float(value[0]) + float(value[1])) / 2))
+        return int(round((fallback[0] + fallback[1]) / 2))
+
+    downstroke_vel = max(1, min(127, _midrange("picked_downstroke_velocity", (85, 120))))
+    upstroke_vel = max(1, min(127, _midrange("picked_upstroke_velocity", (70, 100))))
+    atraso_ms = max(0, _midrange("upstroke_atraso_ms", (0, 8)))
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    # 120 BPM como baseline: 1 beat = 500 ms, entao 1 ms ~ ticks_per_beat/500.
+    atraso_ticks = int(round(atraso_ms * ticks_per_beat / 500))
+
+    for track in mid.tracks:
+        # Coleta note_on estruturais com tick absoluto para localizar os
+        # pontos de insercao e alterar velocity in-place.
+        structural: list[tuple[int, mido.Message]] = []
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if (
+                not msg.is_meta
+                and msg.type == "note_on"
+                and msg.velocity > 0
+                and msg.note not in keyswitch_pitches
+            ):
+                structural.append((tick, msg))
+        if not structural:
+            continue
+
+        channel = structural[0][1].channel
+
+        # Coleta absoluta de todas as mensagens da track — vamos reconstruir.
+        absolute: list[tuple[int, int, int, mido.Message | mido.MetaMessage]] = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, 0, order, msg))
+            order += 1
+
+        # Keyswitch de estilo, uma vez por track, antes da primeira nota.
+        first_tick = structural[0][0]
+        style_tick = max(0, first_tick - 1)
+        absolute.append((
+            style_tick, -2, order,
+            _mido.Message("note_on", channel=channel, note=style_ks, velocity=127),
+        ))
+        order += 1
+        absolute.append((
+            style_tick, -1, order,
+            _mido.Message("note_off", channel=channel, note=style_ks, velocity=0),
+        ))
+        order += 1
+
+        if is_picked:
+            # Alternancia deterministica por posicao: even=down, odd=up.
+            for idx, (_start, msg) in enumerate(structural):
+                target = downstroke_vel if idx % 2 == 0 else upstroke_vel
+                msg.velocity = target
+
+            if isinstance(forcar_primeiro, int) and isinstance(forcar_segundo, int) \
+                    and not isinstance(forcar_primeiro, bool) \
+                    and not isinstance(forcar_segundo, bool):
+                for idx, (start_tick, msg) in enumerate(structural):
+                    is_upstroke = idx % 2 == 1
+                    ks_pitch = forcar_segundo if is_upstroke else forcar_primeiro
+                    delay = atraso_ticks if is_upstroke else 0
+                    ks_tick = max(0, start_tick - 1 - delay)
+                    absolute.append((
+                        ks_tick, -2, order,
+                        _mido.Message(
+                            "note_on", channel=msg.channel, note=ks_pitch,
+                            velocity=127,
+                        ),
+                    ))
+                    order += 1
+                    absolute.append((
+                        ks_tick, -1, order,
+                        _mido.Message(
+                            "note_off", channel=msg.channel, note=ks_pitch,
+                            velocity=0,
+                        ),
+                    ))
+                    order += 1
+
+        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in absolute:
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

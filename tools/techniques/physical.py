@@ -117,14 +117,26 @@ def validate_physical_plausibility(
 
 
 def _keyswitch_pitches_from_recipe(recipe: Mapping[str, Any]) -> frozenset[int]:
-    """Pitches de keyswitch declarados na receita — fora da regiao tocavel."""
+    """Pitches de keyswitch declarados na receita — fora da regiao tocavel.
+
+    Reconhece a chave canonica `keyswitch` (int ou lista) e qualquer chave que
+    comece com `keyswitch_` (int), para receitas como `bass.attack_style` do
+    MODO BASS, que declara `keyswitch_dedo`, `keyswitch_palheta`,
+    `keyswitch_slap`, `keyswitch_forcar_primeiro` e `keyswitch_forcar_segundo`.
+    """
 
     pitches: set[int] = set()
-    keyswitch = recipe.get("keyswitch")
-    if isinstance(keyswitch, int):
-        pitches.add(keyswitch)
-    elif isinstance(keyswitch, Sequence) and not isinstance(keyswitch, str):
-        pitches.update(p for p in keyswitch if isinstance(p, int))
+    for key, value in recipe.items():
+        if not isinstance(key, str):
+            continue
+        if key != "keyswitch" and not key.startswith("keyswitch_"):
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            pitches.add(value)
+        elif isinstance(value, Sequence) and not isinstance(value, str):
+            pitches.update(p for p in value if isinstance(p, int) and not isinstance(p, bool))
     return frozenset(pitches)
 
 
