@@ -30,6 +30,7 @@ from .style_schema import (
     ISO_DATE_RE,
     MIDI_PITCH_MAX,
     MIDI_PITCH_MIN,
+    STYLE_TECHNIQUE_STYLE_VALUES,
     find_style_musical_content,
     is_style_parameter_pair,
 )
@@ -72,7 +73,7 @@ STYLE_FAMILY_REQUIRED_FIELDS = (
     "techniques",
     "parameters",
 )
-STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale")
+STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale", "style")
 DEFAULT_STYLE_REFERENCE = "persona base"
 DEFAULT_STYLE_RESEARCHED_AT = "0001-01-01"
 DEFAULT_STYLE_SOURCE = "knowledge/persona/persona_produtor_metal_moderno.md"
@@ -214,6 +215,10 @@ class StyleTechnique:
     name: str
     density: float | None = None
     rationale: str | None = None
+    style: str | None = None
+    """Selecao de tecnica de execucao (dedo/palheta/slap em bass.attack_style
+    e afins). Vocabulario FECHADO — ver STYLE_TECHNIQUE_STYLE_VALUES em
+    style_schema.py. NAO e um campo de texto livre."""
 
 
 @dataclass
@@ -540,6 +545,7 @@ def _family_style_content_scan_dict(entry: FamilyStyle) -> dict[str, Any]:
                 "name": technique.name,
                 "density": technique.density,
                 "rationale": technique.rationale,
+                "style": technique.style,
             }
             if isinstance(technique, StyleTechnique)
             else technique
@@ -636,6 +642,12 @@ def _validate_style(
                 raise PlanValidationError(
                     f"{technique_base}.rationale",
                     f"must be string or null, got {type(technique.rationale).__name__}",
+                )
+            if technique.style is not None:
+                _require_in(
+                    technique.style,
+                    tuple(sorted(STYLE_TECHNIQUE_STYLE_VALUES)),
+                    f"{technique_base}.style",
                 )
             if technique_index is not None:
                 resolved = _resolve_style_technique(
@@ -1063,6 +1075,8 @@ def _style_technique_to_dict(t: StyleTechnique) -> dict[str, Any]:
         data["density"] = float(t.density)
     if t.rationale is not None:
         data["rationale"] = t.rationale
+    if t.style is not None:
+        data["style"] = t.style
     return data
 
 
@@ -1202,6 +1216,7 @@ def _style_technique_from_dict(data: dict[str, Any], path: str) -> StyleTechniqu
         name=_require_field(data, "name", path),
         density=data.get("density"),
         rationale=data.get("rationale"),
+        style=data.get("style"),
     )
 
 

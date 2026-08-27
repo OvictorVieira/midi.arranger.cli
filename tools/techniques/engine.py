@@ -244,6 +244,7 @@ class TechniqueRegistry:
                 before_technique.midi,
                 after_mid,
                 context.parameters,
+                context.recipe,
             )
             after = _StructuralSnapshot.from_midi(after_mid)
             _validate_technique_contract(
@@ -1269,6 +1270,1020 @@ def _apply_drums_ghost_notes(
                 start_tick=candidate["tick"],
                 end_tick=candidate["tick"] + gate,
             )
+    return mid
+
+
+@register_technique("bass.velocity_contour", "humanize")
+def _apply_bass_velocity_contour(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Contorno dinamico para linha de baixo.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le os numeros do manual pelo indice dentro da aplicacao.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - INVARIANTE DE PRESSAO: nota da origem no topo (>= P75) nao pode sair na
+        faixa mais baixa (< P25) da propria origem — ordem por posicao original.
+      - A mediana de velocity da saida nunca cai abaixo da mediana da origem.
+      - Determinismo por seed atraves de `context.rng()`.
+    """
+
+    from ._param_range import load_range_resolver
+
+    _, _range = load_range_resolver(context)
+
+    def _as_int(name: str, default: int) -> int:
+        rng = _range(name) or (default, default)
+        return int(round((rng[0] + rng[1]) / 2))
+
+    span_tipico = max(1, _as_int("span_tipico", 40))
+    accent = max(2, span_tipico // 6)
+    jitter_hi = max(1, span_tipico // 10)
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+
+    rng = context.rng("contour")
+
+    for track in mid.tracks:
+        note_positions: list[tuple[mido.Message, int]] = []
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                note_positions.append((msg, tick))
+
+        if not note_positions:
+            continue
+
+        original = [msg.velocity for msg, _ in note_positions]
+        sorted_orig = sorted(original)
+        n = len(sorted_orig)
+        p25 = sorted_orig[max(0, (n - 1) // 4)]
+        p75 = sorted_orig[min(n - 1, (3 * (n - 1)) // 4)]
+        median_orig = sorted_orig[n // 2]
+
+        proposed: list[int] = []
+        for msg, tick_pos in note_positions:
+            beat_index = tick_pos // ticks_per_beat
+            beat_offset = tick_pos % ticks_per_beat
+            if beat_offset == 0 and beat_index % 4 in (0, 2):
+                delta = +accent
+            elif beat_offset == 0:
+                delta = +max(1, accent // 2)
+            else:
+                delta = -max(1, accent // 3)
+            delta += rng.randint(0, jitter_hi)
+            proposed.append(max(1, min(127, msg.velocity + delta)))
+
+        sorted_new = sorted(proposed)
+        median_new = sorted_new[n // 2]
+        if median_new < median_orig:
+            offset = median_orig - median_new
+            proposed = [min(127, v + offset) for v in proposed]
+
+        for (msg, _), original_vel, new_vel in zip(
+            note_positions, original, proposed, strict=True,
+        ):
+            if original_vel >= p75 and new_vel < p25:
+                new_vel = max(new_vel, p25)
+            msg.velocity = new_vel
+
+    return mid
+
+
+@register_technique("bass.ghost_notes", "technique")
+def _apply_bass_ghost_notes(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Dead notes entre notas estruturais do baixo.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity`, `velocity_relativa_pct` e `gate_pct` pelo indice.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - `density = 0.0` DESLIGA — teto checado ANTES de acrescentar candidato.
+      - Nao semeia em silencio: intervalo entre notas estruturais > 1 compasso
+        e borda de pausa, nao groove.
+      - Ghost herda pitch da nota estrutural anterior (mesma corda que a mao ja
+        esta) — nunca inventa altura.
+      - Idempotente: reaplicar com a mesma seed dispara o dedup do dispatch.
+      - Receita `modo_bass` insere keyswitch A#-1 (10) simultaneo ao ghost;
+        keyswitch fica fora da regiao tocavel do baixo e o validador fisico
+        ignora pitches declarados como keyswitch na receita.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+
+    technique, _range = load_range_resolver(context)
+
+    velocity_range = _range("velocity") or (25.0, 50.0)
+    velocity_lo = max(1, int(velocity_range[0]))
+    velocity_hi = max(velocity_lo, int(velocity_range[1]))
+
+    relative_range = _range("velocity_relativa_pct") or (20.0, 40.0)
+    relative_hi = max(1.0, float(relative_range[1]))
+
+    gate_range = _range("gate_pct") or (10.0, 25.0)
+    gate_lo = max(1.0, float(gate_range[0]))
+    gate_hi = max(gate_lo, float(gate_range[1]))
+
+    density_raw = context.parameters.get("density")
+    density: float | None
+    if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
+        density = float(density_raw)
+    else:
+        density = None
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    sixteenth = max(1, ticks_per_beat // 4)
+    max_groove_interval = ticks_per_beat * 4
+
+    keyswitch_pitch: int | None = None
+    ks_raw = context.recipe.get("keyswitch") if context.recipe else None
+    if isinstance(ks_raw, int):
+        keyswitch_pitch = ks_raw
+
+    position_rng = context.rng("positions")
+    velocity_rng = context.rng("velocity")
+    gate_rng = context.rng("gate")
+
+    def target_count(size: int) -> int:
+        if density is None:
+            return size
+        if density <= 0.0:
+            return 0
+        return max(1, min(size, int(round(size * density))))
+
+    def read_pairs(track):
+        return [
+            (channel, pitch, start_tick, end_tick, velocity)
+            for (
+                channel,
+                pitch,
+                start_tick,
+                end_tick,
+                velocity,
+                _note_on_index,
+                _note_off_index,
+            ) in _iter_note_pairs(track)
+        ]
+
+    def overlaps_structural(existing, channel, pitch, start_tick, end_tick):
+        for chan, pit, start, end, _vel in existing:
+            if chan != channel or pit != pitch:
+                continue
+            if start < end_tick and end > start_tick:
+                return True
+        return False
+
+    def insert_events(track, events):
+        # events: list of (tick, order_bias, mido.Message)
+        absolute = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, 0, order, msg))
+            order += 1
+        for candidate_tick, bias, msg in events:
+            absolute.append((candidate_tick, bias, order, msg))
+            order += 1
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in sorted(
+            absolute, key=lambda item: (item[0], item[1], item[2])
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    for track in mid.tracks:
+        pairs = read_pairs(track)
+        if len(pairs) < 2:
+            continue
+
+        by_channel: dict[int, list[tuple[int, int, int, int, int]]] = {}
+        for pair in pairs:
+            by_channel.setdefault(pair[0], []).append(pair)
+        for channel_pairs in by_channel.values():
+            channel_pairs.sort(key=lambda item: (item[2], item[3]))
+
+        candidates: list[dict[str, int]] = []
+        for channel_pairs in by_channel.values():
+            for current, following in zip(
+                channel_pairs, channel_pairs[1:], strict=False,
+            ):
+                _chan, cur_pitch, cur_start, cur_end, cur_vel = current
+                _n_chan, _n_pitch, next_start, _n_end, _n_vel = following
+                if next_start - cur_start > max_groove_interval:
+                    continue
+                tick = cur_start + sixteenth
+                while tick < next_start:
+                    sixteenth_in_beat = (tick % ticks_per_beat) // sixteenth
+                    if sixteenth_in_beat in (1, 3):
+                        candidates.append({
+                            "tick": tick,
+                            "channel": current[0],
+                            "pitch": cur_pitch,
+                            "reference_velocity": cur_vel,
+                        })
+                    tick += sixteenth
+
+        if not candidates:
+            continue
+
+        shuffled = list(candidates)
+        position_rng.shuffle(shuffled)
+        wanted = target_count(len(shuffled))
+        selected: list[dict[str, int]] = []
+        seen_slots: set[tuple[int, int]] = set()
+        for candidate in shuffled:
+            if len(selected) >= wanted:
+                break
+            slot = (candidate["channel"], candidate["tick"])
+            if slot in seen_slots:
+                continue
+            gate_pct = gate_rng.uniform(gate_lo, gate_hi)
+            duration = max(1, int(round(sixteenth * gate_pct / 100.0)))
+            end_tick = candidate["tick"] + duration
+            if overlaps_structural(
+                pairs,
+                candidate["channel"],
+                candidate["pitch"],
+                candidate["tick"],
+                end_tick,
+            ):
+                continue
+            candidate["end_tick"] = end_tick
+            candidate["velocity"] = min(
+                velocity_hi,
+                max(
+                    velocity_lo,
+                    min(
+                        velocity_rng.randint(velocity_lo, velocity_hi),
+                        int(round(candidate["reference_velocity"] * relative_hi / 100.0)),
+                    ),
+                ),
+            )
+            selected.append(candidate)
+            seen_slots.add(slot)
+
+        if not selected:
+            continue
+
+        selected.sort(key=lambda item: item["tick"])
+        events = []
+        for candidate in selected:
+            channel = candidate["channel"]
+            events.append((
+                candidate["tick"],
+                1,
+                _mido.Message(
+                    "note_on",
+                    channel=channel,
+                    note=candidate["pitch"],
+                    velocity=candidate["velocity"],
+                ),
+            ))
+            events.append((
+                candidate["end_tick"],
+                3,
+                _mido.Message(
+                    "note_off",
+                    channel=channel,
+                    note=candidate["pitch"],
+                    velocity=0,
+                ),
+            ))
+            if keyswitch_pitch is not None:
+                events.append((
+                    candidate["tick"],
+                    0,
+                    _mido.Message(
+                        "note_on",
+                        channel=channel,
+                        note=keyswitch_pitch,
+                        velocity=127,
+                    ),
+                ))
+                events.append((
+                    candidate["end_tick"],
+                    4,
+                    _mido.Message(
+                        "note_off",
+                        channel=channel,
+                        note=keyswitch_pitch,
+                        velocity=0,
+                    ),
+                ))
+        insert_events(track, events)
+
+    return mid
+
+
+@register_technique("bass.palm_mute", "humanize")
+def _apply_bass_palm_mute(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Palm mute na linha de baixo — abafamento pontual, nao geral.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity` e `gate_pct` do manual via `build_index()`.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - Aplica so onde o plano pedir por `density` explicita. `density` ausente
+        ou <= 0 significa DESLIGAR — a tecnica nunca abafa a linha inteira por
+        default; palm mute geral e ausencia de intencao musical, nao "seguro".
+      - INVARIANTE DE PRESSAO: nota da origem no topo (>= P75) nao pode sair na
+        faixa mais baixa (< P25) da propria origem, mesmo abafada.
+      - Encurta pelo `gate_pct` do manual sobre a duracao original — nao inventa
+        numero.
+      - Determinismo por seed atraves de `context.rng()`.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+
+    technique, _range = load_range_resolver(context)
+
+    # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
+    # uma quantidade continua aplicada por cima do estilo ativo... NAO
+    # EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario
+    # atribuiu, ou a tecnica nao sai." A receita `modo_bass` carrega
+    # `cc: null` de proposito.
+    #
+    # Sem esta guarda, pedir `tool=modo_bass` sem declarar o CC caia no
+    # comportamento generic (so encurta duracao e ajusta velocity) SEM
+    # avisar — o usuario acharia que ganhou o palm mute continuo do plugin
+    # e recebeu outra coisa. FALHA ALTA em vez de fallback silencioso.
+    #
+    # A emissao real da curva de CC continua fora do escopo desta correcao:
+    # o manual pede "desenhe uma curva", nao um valor unico, e a FORMA dessa
+    # curva nao tem fonte — inventa-la aqui repetiria o erro que motivou a
+    # issue #53. Rastreado separadamente.
+    if context.tool == "modo_bass" and context.recipe.get("cc") is None:
+        cc_param = context.parameters.get("cc")
+        if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
+            raise ValueError(
+                f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
+                "de style.bass.parameters.cc (0-127) declarado no plano — o "
+                "MODO BASS nao tem CC de fabrica para palm mute"
+            )
+
+    velocity_range = _range("velocity") or (60.0, 100.0)
+    velocity_lo = max(1, int(velocity_range[0]))
+    velocity_hi = max(velocity_lo, int(velocity_range[1]))
+
+    gate_range = _range("gate_pct") or (25.0, 50.0)
+    gate_lo = max(1.0, float(gate_range[0]))
+    gate_hi = max(gate_lo, float(gate_range[1]))
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    if mid.ticks_per_beat <= 0:
+        return mid
+
+    selection_rng = context.rng("selection")
+    velocity_rng = context.rng("velocity")
+    gate_rng = context.rng("gate")
+
+    def collect_pairs(track):
+        return list(_iter_note_pairs(track))
+
+    for track in mid.tracks:
+        pairs = collect_pairs(track)
+        if not pairs:
+            continue
+
+        originals = [pair[4] for pair in pairs]
+        sorted_orig = sorted(originals)
+        n = len(sorted_orig)
+        p25 = sorted_orig[max(0, (n - 1) // 4)]
+        p75 = sorted_orig[min(n - 1, (3 * (n - 1)) // 4)]
+
+        indices = list(range(len(pairs)))
+        selection_rng.shuffle(indices)
+        wanted = max(1, min(len(pairs), int(round(len(pairs) * density))))
+        selected = set(indices[:wanted])
+
+        new_velocity_by_msg: dict[int, int] = {}
+        new_end_tick_by_msg: dict[int, int] = {}
+        for pair_index, pair in enumerate(pairs):
+            if pair_index not in selected:
+                continue
+            (
+                _channel,
+                _pitch,
+                start_tick,
+                end_tick,
+                original_velocity,
+                note_on_index,
+                note_off_index,
+            ) = pair
+            duration = max(1, end_tick - start_tick)
+            gate_pct = gate_rng.uniform(gate_lo, gate_hi)
+            new_duration = max(1, int(round(duration * gate_pct / 100.0)))
+            new_end_tick = start_tick + min(duration, new_duration)
+
+            proposed = velocity_rng.randint(velocity_lo, velocity_hi)
+            if original_velocity >= p75 and proposed < p25:
+                proposed = p25
+            proposed = max(1, min(127, proposed))
+
+            new_velocity_by_msg[note_on_index] = proposed
+            new_end_tick_by_msg[note_off_index] = new_end_tick
+
+        absolute = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            absolute_tick = new_end_tick_by_msg.get(msg_index, tick)
+            absolute.append((absolute_tick, msg_index, msg))
+
+        absolute.sort(key=lambda item: (item[0], item[1]))
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, msg_index, msg in absolute:
+            delta = absolute_tick - previous_tick
+            if msg_index in new_velocity_by_msg:
+                rebuilt.append(
+                    msg.copy(time=delta, velocity=new_velocity_by_msg[msg_index])
+                )
+            else:
+                rebuilt.append(msg.copy(time=delta))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
+@register_technique(
+    "bass.attack_style",
+    "technique",
+    allow_structural_velocity_change=True,
+)
+def _apply_bass_attack_style(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Estilo de ataque do baixo — dedo, palheta ou slap com keyswitch.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `keyswitch_dedo` (13), `keyswitch_palheta` (15), `keyswitch_slap` (18)
+        e `keyswitch_forcar_primeiro`/`_segundo` (1/3) do MODO BASS pelo indice.
+      - `context.parameters["style"]` COMANDA: `dedo`, `palheta` ou `slap`.
+        Sem `style` ou estilo desconhecido: NO-OP (nunca reescreve a linha por
+        default — estilo geral e ausencia de intencao musical).
+      - Picked (palheta) alterna downstroke/upstroke DETERMINISTICAMENTE pela
+        posicao na sequencia (par=down, impar=up); velocities lidas de
+        `picked_downstroke_velocity` e `picked_upstroke_velocity` do manual.
+      - `upstroke_atraso_ms` reposiciona so o keyswitch do upstroke, nunca a
+        nota estrutural.
+      - Keyswitch nao colide com nota musical: pitches 1, 3, 13, 15, 18 sao
+        muito abaixo do floor do baixo (~28) e ficam fora do contrato
+        estrutural via `_keyswitch_pitches_from_recipe`.
+      - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
+        dedup do dispatch descarta a duplicata.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import (
+        collect_absolute as _collect_absolute,
+    )
+    from ._track_rebuild import (
+        sort_and_flush as _sort_and_flush,
+    )
+
+    technique, _range = load_range_resolver(context)
+    recipe = context.recipe
+
+    style_raw = context.parameters.get("style")
+    if not isinstance(style_raw, str):
+        return mid
+    style = style_raw.strip().lower()
+    style_key = {
+        "dedo": "keyswitch_dedo",
+        "fingered": "keyswitch_dedo",
+        "palheta": "keyswitch_palheta",
+        "picked": "keyswitch_palheta",
+        "slap": "keyswitch_slap",
+    }.get(style)
+    if style_key is None:
+        return mid
+
+    style_ks = recipe.get(style_key) if recipe else None
+    if not isinstance(style_ks, int) or isinstance(style_ks, bool):
+        # Receita generic nao tem keyswitch — no-op.
+        return mid
+
+    forcar_primeiro = recipe.get("keyswitch_forcar_primeiro") if recipe else None
+    forcar_segundo = recipe.get("keyswitch_forcar_segundo") if recipe else None
+    is_picked = style in {"palheta", "picked"}
+
+    # Pitches declarados como keyswitch na receita ficam fora do material
+    # estrutural: evitam que uma reaplicacao trate keyswitch previamente
+    # inserido como nota da linha e reembaralhe velocity.
+    keyswitch_pitches: set[int] = set()
+    for key, value in (recipe or {}).items():
+        if key != "keyswitch" and not key.startswith("keyswitch_"):
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            keyswitch_pitches.add(value)
+
+    def _midrange(name: str, fallback: tuple[float, float]) -> int:
+        rng = _range(name) or fallback
+        return int(round((rng[0] + rng[1]) / 2))
+
+    downstroke_vel = max(1, min(127, _midrange("picked_downstroke_velocity", (85, 120))))
+    upstroke_vel = max(1, min(127, _midrange("picked_upstroke_velocity", (70, 100))))
+    atraso_ms = max(0, _midrange("upstroke_atraso_ms", (0, 8)))
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    # 120 BPM como baseline: 1 beat = 500 ms, entao 1 ms ~ ticks_per_beat/500.
+    atraso_ticks = int(round(atraso_ms * ticks_per_beat / 500))
+
+    for track in mid.tracks:
+        # Coleta note_on estruturais com tick absoluto para localizar os
+        # pontos de insercao e alterar velocity in-place.
+        structural: list[tuple[int, mido.Message]] = []
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if (
+                not msg.is_meta
+                and msg.type == "note_on"
+                and msg.velocity > 0
+                and msg.note not in keyswitch_pitches
+            ):
+                structural.append((tick, msg))
+        if not structural:
+            continue
+
+        channel = structural[0][1].channel
+
+        # IDEMPOTENCIA: o keyswitch de estilo e a assinatura do que ja foi
+        # aplicado. Se ele ja esta na track, a alternancia tambem ja esta —
+        # reaplicar deslocaria a velocity de novo e a linha afundaria a cada
+        # render. A checagem tem que vir ANTES de qualquer escrita.
+        already_applied = any(
+            not msg.is_meta
+            and msg.type == "note_on"
+            and msg.velocity > 0
+            and msg.note == style_ks
+            for msg in track
+        )
+        if already_applied:
+            continue
+
+        # Coleta absoluta de todas as mensagens da track — vamos reconstruir.
+        absolute = _collect_absolute(track)
+        order = len(absolute)
+
+        # Keyswitch de estilo, uma vez por track, antes da primeira nota.
+        first_tick = structural[0][0]
+        style_tick = max(0, first_tick - 1)
+        absolute.append((
+            style_tick, -2, order,
+            _mido.Message("note_on", channel=channel, note=style_ks, velocity=127),
+        ))
+        order += 1
+        absolute.append((
+            style_tick, -1, order,
+            _mido.Message("note_off", channel=channel, note=style_ks, velocity=0),
+        ))
+        order += 1
+
+        if is_picked:
+            # Alternancia deterministica por posicao: even=down, odd=up.
+            #
+            # O DELTA e relativo a velocity da ORIGEM, nunca valor absoluto.
+            # Sobrescrever com o alvo do manual destruia a dinamica escrita
+            # pelo usuario: uma nota em 127 saia em 85 (upstroke), abaixo do
+            # piso da propria origem. E o mesmo defeito que tirou
+            # `drums.accent_hierarchy` do motor — tecnica nao pode inverter a
+            # intencao da origem. Os numeros do manual definem a DIFERENCA
+            # entre golpe para baixo e para cima; e essa diferenca que
+            # caracteriza a alternancia, nao o valor absoluto.
+            half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
+            for idx, (_start, msg) in enumerate(structural):
+                shift = half_delta if idx % 2 == 0 else -half_delta
+                msg.velocity = max(1, min(127, msg.velocity + shift))
+
+            if isinstance(forcar_primeiro, int) and isinstance(forcar_segundo, int) \
+                    and not isinstance(forcar_primeiro, bool) \
+                    and not isinstance(forcar_segundo, bool):
+                for idx, (start_tick, msg) in enumerate(structural):
+                    is_upstroke = idx % 2 == 1
+                    ks_pitch = forcar_segundo if is_upstroke else forcar_primeiro
+                    delay = atraso_ticks if is_upstroke else 0
+                    ks_tick = max(0, start_tick - 1 - delay)
+                    absolute.append((
+                        ks_tick, -2, order,
+                        _mido.Message(
+                            "note_on", channel=msg.channel, note=ks_pitch,
+                            velocity=127,
+                        ),
+                    ))
+                    order += 1
+                    absolute.append((
+                        ks_tick, -1, order,
+                        _mido.Message(
+                            "note_off", channel=msg.channel, note=ks_pitch,
+                            velocity=0,
+                        ),
+                    ))
+                    order += 1
+
+        _sort_and_flush(absolute, track)
+
+    return mid
+
+
+@register_technique(
+    "bass.hammer_pull",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
+def _apply_bass_hammer_pull(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Hammer-on e pull-off do baixo — ligado sem reataque.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity_relativa` e `overlap_ms` do manual pelo indice.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - So aplica entre notas adjacentes fisicamente ligaveis: mesmo canal,
+        intervalo em semitons dentro do limite de ligado (<= 4), separacao
+        temporal curta (<= metade de um beat) e ambas alcancaveis na mesma
+        corda pela afinacao declarada.
+      - Ligada (segunda nota) sai mais fraca por `velocity_relativa`
+        (delta negativo); primeira estende note_off para sobrepor a segunda
+        por `overlap_ms` — sobreposicao e o que dispara o legato no MODO BASS.
+      - Nao altera pitch nem posicao (start_tick) de nota estrutural.
+      - Receita `modo_bass` insere keyswitch C0 (12), segurado do inicio da
+        primeira ao fim da segunda; keyswitch fica fora da regiao tocavel
+        via `_keyswitch_pitches_from_recipe`.
+      - Idempotente na receita com keyswitch: se ja ha keyswitch do canal
+        pendurado sobre a primeira nota da ligadura, pulamos o par.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import sort_and_flush as _sort_and_flush
+
+    technique, _resolve_range = load_range_resolver(context)
+    recipe = context.recipe
+
+    def _range(name: str, fallback: tuple[float, float]) -> tuple[float, float]:
+        return _resolve_range(name) or fallback
+
+    density_raw = context.parameters.get("density")
+    if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
+        density = float(density_raw)
+    else:
+        density = 0.0
+    if density <= 0.0:
+        # Ligado geral e ausencia de intencao musical: sem `density` positiva,
+        # a tecnica e NO-OP — mantem a linha original intocada por default.
+        return mid
+
+    velocity_rel_range = _range("velocity_relativa", (-30.0, -15.0))
+    overlap_range = _range("overlap_ms", (10.0, 40.0))
+
+    keyswitch_pitch: int | None = None
+    ks_raw = recipe.get("keyswitch") if recipe else None
+    if isinstance(ks_raw, int) and not isinstance(ks_raw, bool):
+        keyswitch_pitch = ks_raw
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+
+    # Ligadura so entre notas proximas: gap <= meia batida (colcheia).
+    max_gap_ticks = ticks_per_beat // 2
+    # Hammer-on/pull-off em baixo: ate um terco maior (4 semitons).
+    max_interval_semitones = 4
+
+    rng = context.rng("hammer_pull")
+
+    for track in mid.tracks:
+        # Pareia note_on/note_off preservando referencia das mensagens.
+        structural: list[dict] = []
+        pending: dict[tuple[int, int], list[dict]] = {}
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                entry = {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": tick,
+                    "end": None,
+                    "on_msg": msg,
+                    "off_msg": None,
+                }
+                structural.append(entry)
+                pending.setdefault((msg.channel, msg.note), []).append(entry)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if stack:
+                    entry = stack.pop(0)
+                    entry["end"] = tick
+                    entry["off_msg"] = msg
+
+        structural = [e for e in structural if e["end"] is not None]
+        if len(structural) < 2:
+            continue
+
+        # Keyswitches ja presentes por canal, com intervalo de vigencia
+        # (para idempotencia quando a receita usa keyswitch).
+        existing_keyswitches: dict[int, list[tuple[int, int]]] = {}
+        if keyswitch_pitch is not None:
+            ks_pending: dict[int, list[int]] = {}
+            ktick = 0
+            for msg in track:
+                ktick += msg.time
+                if msg.is_meta:
+                    continue
+                # Cheque o TIPO antes de tocar em `.note`: `control_change`,
+                # `pitchwheel` e afins nao tem esse atributo, e MIDI real de
+                # baixo carrega CC (let ring, expressao) no meio das notas.
+                # Ler `.note` cedo levantava AttributeError na primeira track
+                # de verdade.
+                if msg.type not in ("note_on", "note_off"):
+                    continue
+                if msg.note != keyswitch_pitch:
+                    continue
+                if msg.type == "note_on" and msg.velocity > 0:
+                    ks_pending.setdefault(msg.channel, []).append(ktick)
+                elif msg.type == "note_off" or (
+                    msg.type == "note_on" and msg.velocity == 0
+                ):
+                    stack = ks_pending.get(msg.channel)
+                    if stack:
+                        start = stack.pop(0)
+                        existing_keyswitches.setdefault(msg.channel, []).append(
+                            (start, ktick)
+                        )
+
+        by_channel: dict[int, list[dict]] = {}
+        for entry in structural:
+            by_channel.setdefault(entry["channel"], []).append(entry)
+        for lst in by_channel.values():
+            lst.sort(key=lambda e: (e["start"], e["end"]))
+
+        candidate_pairs: list[tuple[dict, dict]] = []
+        for lst in by_channel.values():
+            for a, b in zip(lst, lst[1:], strict=False):
+                interval = abs(b["pitch"] - a["pitch"])
+                if interval == 0 or interval > max_interval_semitones:
+                    continue
+                gap = b["start"] - a["end"]
+                if gap > max_gap_ticks:
+                    continue
+                if b["start"] <= a["start"]:
+                    continue
+                if a["end"] > b["start"] and keyswitch_pitch is None:
+                    # IDEMPOTENCIA no caminho `generic`: sem keyswitch para
+                    # reconhecer o que ja foi feito, a sobreposicao e a
+                    # UNICA assinatura disponivel. Sem esta guarda, reaplicar
+                    # `velocity_relativa` a cada passada afundava a segunda
+                    # nota a cada render (100 -> 71 -> 42).
+                    #
+                    # No MODO BASS a sobreposicao pode ser NATURAL — baixo
+                    # tocado por gente as vezes ja liga notas sem que a
+                    # tecnica tenha passado por ali. Nesse caminho a
+                    # idempotencia real e a checagem de keyswitch logo
+                    # abaixo, entao overlap sozinho nao basta para pular.
+                    continue
+                if keyswitch_pitch is not None and any(
+                    lo <= a["start"] <= hi
+                    for lo, hi in existing_keyswitches.get(a["channel"], ())
+                ):
+                    continue
+                candidate_pairs.append((a, b))
+
+        candidate_pairs.sort(key=lambda pair: (pair[0]["start"], pair[0]["channel"]))
+        select_rng = context.rng("select")
+        ligatures: list[tuple[dict, dict]] = []
+        if density >= 1.0:
+            ligatures = list(candidate_pairs)
+        else:
+            for pair in candidate_pairs:
+                if select_rng.random() < density:
+                    ligatures.append(pair)
+
+        if not ligatures:
+            continue
+
+        events_to_insert: list[tuple[int, int, mido.Message]] = []
+        new_end_by_id: dict[int, int] = {}
+        for a, b in ligatures:
+            overlap_ms = rng.uniform(overlap_range[0], overlap_range[1])
+            overlap_ticks = max(1, int(round(overlap_ms * ticks_per_beat / 500.0)))
+            new_end = b["start"] + overlap_ticks
+            if new_end > a["end"] and a["off_msg"] is not None:
+                new_end_by_id[id(a["off_msg"])] = new_end
+                a["end"] = new_end
+
+            vel_delta = rng.uniform(velocity_rel_range[0], velocity_rel_range[1])
+            b["on_msg"].velocity = max(
+                1, min(127, int(round(b["on_msg"].velocity + vel_delta))),
+            )
+
+            if keyswitch_pitch is not None:
+                ks_start_tick = max(0, a["start"] - 1)
+                ks_end_tick = b["end"] if b["end"] is not None else b["start"] + 1
+                events_to_insert.append((
+                    ks_start_tick, -2,
+                    _mido.Message(
+                        "note_on", channel=a["channel"],
+                        note=keyswitch_pitch, velocity=127,
+                    ),
+                ))
+                events_to_insert.append((
+                    ks_end_tick, 4,
+                    _mido.Message(
+                        "note_off", channel=a["channel"],
+                        note=keyswitch_pitch, velocity=0,
+                    ),
+                ))
+
+        # Reconstroi a track: reposiciona note_off estendidos e injeta keyswitches.
+        absolute: list[tuple[int, int, int, mido.Message]] = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            abs_tick = new_end_by_id.get(id(msg), tick)
+            absolute.append((abs_tick, 0, order, msg))
+            order += 1
+        for abs_tick, bias, msg in events_to_insert:
+            absolute.append((abs_tick, bias, order, msg))
+            order += 1
+
+        _sort_and_flush(absolute, track)
+
+    return mid
+
+
+@register_technique("bass.let_ring", "technique")
+def _apply_bass_let_ring(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Let-ring do baixo — sustentacao via CC declarado no manual.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `cc` do manual pelo indice; precedencia parameters > recipe > manual.
+      - Sem `density` (ou `density<=0`) => NO-OP. Let-ring geral e ausencia de
+        intencao musical, nao default seguro.
+      - Agrupa notas estruturais por canal em runs (gap entre notas
+        consecutivas <= 1 compasso). `density` seleciona a fracao dos runs
+        que recebe pedal.
+      - Emite CC de liga (127) e desliga (0) em pares por run — nunca deixa
+        CC pendurado no fim da track.
+      - Nao altera nota estrutural (nivel technique sem flags de mudanca).
+      - Idempotencia: reaplicar com a mesma seed produz eventos com mesma
+        assinatura (canal, tick, cc, valor) e o dedup do dispatch central
+        (`_drop_reapplied_continuous_events`) descarta as duplicatas.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import (
+        collect_absolute as _collect_absolute,
+    )
+    from ._track_rebuild import (
+        sort_and_flush as _sort_and_flush,
+    )
+
+    technique, _range = load_range_resolver(context)
+
+    cc_range = _range("cc")
+    cc_number = int(cc_range[0]) if cc_range else None
+    if cc_number is None or not (0 <= cc_number <= 127):
+        return mid
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    max_gap_ticks = ticks_per_beat * 4
+
+    select_rng = context.rng("let_ring_select")
+
+    def collect_pairs(track):
+        return [
+            (channel, pitch, start_tick, end_tick)
+            for channel, pitch, start_tick, end_tick, _vel, _on_idx, _off_idx
+            in _iter_note_pairs(track)
+        ]
+
+    def insert_events(track, events):
+        absolute = _collect_absolute(track)
+        order = len(absolute)
+        for event_tick, bias, msg in events:
+            absolute.append((event_tick, bias, order, msg))
+            order += 1
+        _sort_and_flush(absolute, track)
+
+    for track in mid.tracks:
+        pairs = collect_pairs(track)
+        if not pairs:
+            continue
+
+        by_channel: dict[int, list[tuple[int, int, int]]] = {}
+        for channel, _pitch, start, end in pairs:
+            by_channel.setdefault(channel, []).append((start, end, _pitch))
+        for lst in by_channel.values():
+            lst.sort(key=lambda item: (item[0], item[1]))
+
+        runs: list[tuple[int, int, int]] = []
+        for channel, lst in by_channel.items():
+            run_start = lst[0][0]
+            run_end = lst[0][1]
+            for start, end, _pitch in lst[1:]:
+                gap = start - run_end
+                if gap > max_gap_ticks:
+                    runs.append((channel, run_start, run_end))
+                    run_start = start
+                    run_end = end
+                else:
+                    if end > run_end:
+                        run_end = end
+            runs.append((channel, run_start, run_end))
+
+        selected: list[tuple[int, int, int]] = []
+        if density >= 1.0:
+            selected = list(runs)
+        else:
+            for run in runs:
+                if select_rng.random() < density:
+                    selected.append(run)
+
+        if not selected:
+            continue
+
+        events: list[tuple[int, int, mido.Message]] = []
+        for channel, run_start, run_end in selected:
+            events.append((
+                run_start, -1,
+                _mido.Message(
+                    "control_change", channel=channel,
+                    control=cc_number, value=127,
+                ),
+            ))
+            events.append((
+                run_end, 5,
+                _mido.Message(
+                    "control_change", channel=channel,
+                    control=cc_number, value=0,
+                ),
+            ))
+        insert_events(track, events)
+
     return mid
 
 
