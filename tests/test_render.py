@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import mido
 import pretty_midi
 import pytest
 
+from tools.brief_ref import brief_sha256
 from tools.plan import (
     ArrangementPlan,
+    BriefRef,
     Element,
     FamilyStyle,
+    PlanEdit,
     PlanSection,
     SourceMidi,
     StyleTechnique,
@@ -111,6 +115,30 @@ def _build_plan(source: Path, *, layers: int = 1) -> ArrangementPlan:
             ),
         ],
     )
+
+
+def _attach_brief_authorizing_techniques(plan: ArrangementPlan, tmp_path: Path) -> None:
+    """Anexa `plan.brief_ref` autorizando as tecnicas declaradas em `plan.style`.
+
+    Depois de US-003 o render (via `plan.validate`) exige brief_ref quando
+    ha tecnica declarada. Helper enxuto para os testes que ja tinham essa
+    forma antes da mudanca.
+    """
+    import json as _json
+
+    authorized: dict[str, dict[str, list[str]]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            names = [
+                t.name for t in entry.techniques if isinstance(t, StyleTechnique)
+            ]
+            if names:
+                authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        _json.dumps({"style": authorized}, indent=2), encoding="utf-8"
+    )
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
 
 
 def _family_style(confidence: str, *, reference: str = "Style Reference") -> FamilyStyle:
@@ -378,6 +406,7 @@ def test_render_applies_style_techniques_to_generated_tracks(
             parameters={"sem_sinal_tipico_ms": [25, 40]},
         ),
     }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
     calls: list[dict] = []
 
     def fake_apply_technique_with_warnings(
@@ -462,6 +491,7 @@ def test_render_accepts_plan_validated_with_supported_style_technique(tmp_path):
             parameters={},
         ),
     }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
 
     report = render(plan, tmp_path / "out.mid")
 
@@ -536,6 +566,7 @@ def test_render_wraps_style_technique_engine_errors(tmp_path, monkeypatch):
             parameters={},
         ),
     }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
 
     def boom(*_args, **_kwargs):
         raise UnknownTechniqueError("keys.hand_asynchrony", ("drums.ghost_notes",))
@@ -1355,3 +1386,212 @@ def test_render_shadow_octave_shift_from_pattern(tmp_path):
     out = tmp_path / "out.mid"
     report = render(plan, out)
     assert report.elements[0].rendered is True
+
+
+# --- US-004: barreira de autorizacao no render ------------------------------
+
+@pytest.mark.parametrize(
+    ("family", "authorized", "declared"),
+    [
+        ("drums", "drums.ghost_notes", "drums.flam"),
+        ("bass", "bass.ghost_notes", "bass.palm_mute"),
+        ("guitar", "guitar.palm_mute", "guitar.bend"),
+        ("keys", "keys.hand_asynchrony", "keys.rolled_chord"),
+    ],
+)
+def test_render_refuses_unauthorized_style_technique_per_family(
+    tmp_path, family, authorized, declared,
+):
+    """AC US-004: render recusa tecnica fora de `authorized_techniques` para
+    cada uma das quatro familias — RenderError explicito citando familia e
+    tecnica, sem arquivo de saida."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        family: FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/style"],
+            confidence="high",
+            techniques=[StyleTechnique(name=declared)],
+            parameters={},
+        ),
+    }
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({"style": {family: {"authorized_techniques": [authorized]}}}),
+        encoding="utf-8",
+    )
+    plan.brief_ref = BriefRef(
+        path=str(brief_path), sha256=brief_sha256(brief_path),
+    )
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError) as excinfo:
+        render(plan, out)
+    msg = str(excinfo.value)
+    assert f"style.{family}.techniques[0].name" in msg
+    assert declared in msg
+    assert family in msg
+    assert not out.exists(), (
+        "unauthorized technique must not produce an output file"
+    )
+
+
+def test_authorization_is_what_makes_the_difference_in_the_output(tmp_path):
+    """AC US-004, em forma DIFERENCIAL: a autorizacao tem que ser a unica
+    coisa que muda entre sair ornamentado e nao sair.
+
+    A versao anterior deste teste zerava `plan.elements` e nao declarava
+    tecnica nenhuma — passava mesmo que o render ignorasse
+    `authorized_techniques` por completo. Teste que passa com a barreira
+    desligada nao testa barreira. Aqui o MESMO plano roda duas vezes,
+    mudando so o brief:
+
+    - brief AUTORIZA `drums.ghost_notes` -> saida ganha ornamento
+    - brief com `authorized_techniques: []` -> render RECUSA, e o arquivo
+      de saida nem chega a existir
+    """
+    # Fonte propria: a sintetica compartilhada nao tem bateria no canal 9,
+    # entao `drums.ghost_notes` nao teria backbeat para ornamentar e os DOIS
+    # lados do teste sairiam iguais por falta de material, nao por barreira.
+    src = tmp_path / "drums_source.mid"
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    previous = 0
+    for tick in (480, 1440, 2400, 3360, 4320, 5280, 6240, 7200):
+        track.append(mido.Message(
+            "note_on", note=38, velocity=100, channel=9, time=tick - previous,
+        ))
+        track.append(mido.Message(
+            "note_off", note=38, velocity=0, channel=9, time=60,
+        ))
+        previous = tick + 60
+    mid.tracks.append(track)
+    mid.save(str(src))
+
+    def brief_with(authorized: list[str]) -> BriefRef:
+        path = tmp_path / f"brief_{len(authorized)}.json"
+        path.write_text(
+            json.dumps({
+                "style": {
+                    fam: {
+                        "authorized_techniques": (
+                            authorized if fam == "drums" else []
+                        ),
+                    }
+                    for fam in ("bass", "drums", "guitar", "keys")
+                },
+            }),
+            encoding="utf-8",
+        )
+        return BriefRef(path=str(path), sha256=brief_sha256(path))
+
+    def plan_declaring_ghost_notes(ref: BriefRef):
+        plan = _build_plan(src)
+        plan.brief_ref = ref
+        plan.elements = []
+        # A tecnica so alcanca track de origem que esteja em `plan.edits`.
+        plan.edits = [PlanEdit(track="Drums", profile="drums", intensity=0.0)]
+        plan.style = {
+            "drums": FamilyStyle(
+                reference="Research",
+                researched_at="2026-08-24",
+                sources=["https://example.test/drums"],
+                confidence="high",
+                techniques=[StyleTechnique(name="drums.ghost_notes")],
+                parameters={},
+            ),
+        }
+        return plan
+
+    # 1) autorizado: renderiza e ornamenta
+    autorizado = tmp_path / "autorizado.mid"
+    render(
+        plan_declaring_ghost_notes(brief_with(["drums.ghost_notes"])),
+        autorizado,
+    )
+    assert autorizado.exists()
+
+    def drum_note_count(path) -> int:
+        mid = mido.MidiFile(str(path))
+        return sum(
+            1
+            for tr in mid.tracks
+            for msg in tr
+            if msg.type == "note_on"
+            and msg.velocity > 0
+            and getattr(msg, "channel", -1) == 9
+        )
+
+    assert drum_note_count(autorizado) > drum_note_count(src), (
+        "com a tecnica autorizada o render tem que acrescentar ornamento — "
+        "sem isso o outro lado do teste nao prova nada"
+    )
+
+    # 2) nao autorizado: MESMO plano, so o brief muda -> recusa
+    negado = tmp_path / "negado.mid"
+    with pytest.raises(RenderError) as exc:
+        render(plan_declaring_ghost_notes(brief_with([])), negado)
+    assert "drums.ghost_notes" in str(exc.value)
+    assert not negado.exists(), (
+        "render recusado nao pode deixar arquivo de saida para tras"
+    )
+
+
+def test_render_refuses_style_technique_without_brief_ref(tmp_path):
+    """AC US-004: sem `brief_ref` a barreira do render tambem age como
+    `RenderError` — nao como `PlanValidationError` — porque render e a
+    ultima linha de defesa."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/style"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    plan.brief_ref = None
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError) as excinfo:
+        render(plan, out)
+    msg = str(excinfo.value)
+    assert "brief_ref" in msg
+    assert "drums" in msg
+    assert not out.exists()
+
+
+def test_render_refuses_when_brief_sha256_mismatches(tmp_path):
+    """AC US-004: brief editado apos aprovacao (sha divergente) tambem para
+    o render com `RenderError`."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/style"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {"drums": {"authorized_techniques": ["drums.ghost_notes"]}},
+        }),
+        encoding="utf-8",
+    )
+    plan.brief_ref = BriefRef(
+        path=str(brief_path),
+        sha256="0" * 64,  # sha propositalmente errado
+    )
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError, match="brief_ref.sha256"):
+        render(plan, out)
+    assert not out.exists()

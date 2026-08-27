@@ -9,14 +9,17 @@ track intocada NAO recebe carimbo.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import mido
 import pretty_midi
 import pytest
 
+from tools.brief_ref import brief_sha256
 from tools.plan import (
     ArrangementPlan,
+    BriefRef,
     Element,
     FamilyStyle,
     PlanEdit,
@@ -33,6 +36,18 @@ from tools.render import STAMP_PREFIX, render
 
 def _sha256_bytes(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _attach_authorized_brief(plan: ArrangementPlan, tmp_path: Path) -> None:
+    authorized: dict[str, dict[str, list[str]]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            names = [t.name for t in entry.techniques if isinstance(t, StyleTechnique)]
+            if names:
+                authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": authorized}, indent=2), encoding="utf-8")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
 
 
 def _build_source(tmp_path: Path) -> Path:
@@ -155,6 +170,7 @@ def test_edit_track_stamp_includes_applied_techniques(tmp_path):
             parameters={},
         ),
     }
+    _attach_authorized_brief(plan, tmp_path)
     out = tmp_path / "out.mid"
     render(plan, out)
 
@@ -254,6 +270,7 @@ def test_untouched_source_track_receives_no_stamp(tmp_path):
             parameters={},
         ),
     }
+    _attach_authorized_brief(plan, tmp_path)
     out = tmp_path / "out.mid"
     render(plan, out)
 
@@ -294,6 +311,7 @@ def test_stamp_is_deterministic_byte_for_byte(tmp_path):
                 parameters={},
             ),
         }
+        _attach_authorized_brief(plan, tmp_path)
         return plan
 
     out_a = tmp_path / "a.mid"

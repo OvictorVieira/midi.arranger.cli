@@ -1053,6 +1053,18 @@ def _load_plan_from_dict(data: dict[str, Any]) -> ArrangementPlan:
         ) from None
 
 
+def _plan_dir_from_payload(payload: dict[str, Any]) -> Path | None:
+    """Diretorio que ancora `brief_ref.path` relativo, quando ha `plan_path`.
+
+    Plano inline nao tem diretorio de origem: relativo ali resolve contra o
+    cwd, que e o unico ancoradouro que existe. Com `plan_path`, o brief mora
+    ao lado do plano — e e contra ele que o relativo tem que resolver, nao
+    contra o cwd de quem chamou a tool.
+    """
+    pp = payload.get("plan_path")
+    return Path(pp).expanduser().parent if pp else None
+
+
 def _read_plan_dict(payload: dict[str, Any]) -> dict[str, Any]:
     """Extrai plan_dict do payload: `plan` inline OU `plan_path`.
 
@@ -1103,6 +1115,9 @@ def _plan_validate_impl(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     plan_dict = _read_plan_dict(payload)
     src = _resolve_midi(payload["midi_path"])
+    plan_dir: Path | None = None
+    if "plan_path" in payload:
+        plan_dir = Path(payload["plan_path"]).expanduser().parent
 
     errors: list[dict[str, Any]] = []
     domain_warnings: list[str] = []
@@ -1110,7 +1125,7 @@ def _plan_validate_impl(
 
     try:
         plan_obj = _load_plan_from_dict(plan_dict)
-        domain_warnings = plan_mod.validate(plan_obj)
+        domain_warnings = plan_mod.validate(plan_obj, plan_dir=plan_dir)
     except PlanValidationError as exc:
         errors.append({"path": exc.path, "message": exc.message})
     except ToolError as exc:
@@ -1453,6 +1468,7 @@ def _render_impl(
             output_path=output_path,
             source_path=str(src),
             strict_persona=strict_persona,
+            plan_dir=_plan_dir_from_payload(payload),
         )
     except plan_mod.PlanValidationError as exc:
         raise ToolError(
@@ -1685,7 +1701,7 @@ def _validate_impl(
 
     try:
         plan_obj = plan_mod.from_dict(plan_dict)
-        plan_mod.validate(plan_obj)
+        plan_mod.validate(plan_obj, _plan_dir_from_payload(payload))
     except (KeyError, TypeError, ValueError, plan_mod.PlanValidationError) as exc:
         raise ToolError(
             "E_PLAN_INVALID",

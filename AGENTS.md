@@ -108,8 +108,19 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   Ausência de autorização significa NENHUMA técnica, nunca "todas" — o default seguro é não mexer no
   material do usuário. Pesquisa e autorização são coisas separadas, mesmo padrão de
   `suggested_plugin`/`suggested_preset`: o arranjador sugere, o usuário marca, e só o que ele marcou
-  vira `plan.style.<família>.techniques[]`. Rastreado em #51; enquanto não fecha, nada valida isso —
-  `brief_ref` só carrega `path` e `sha256`.
+  vira `plan.style.<família>.techniques[]`. O mecanismo vive em três camadas: (a) o brief separa
+  `style.<família>.suggested_techniques[]` (o que a pesquisa levantou) de
+  `style.<família>.authorized_techniques[]` (o que o usuário marcou), validado por
+  `tools/brief_schema.py` — `techniques[]` do brief é subconjunto de `authorized_techniques`; (b)
+  `tools/plan.py::validate` lê o brief apontado por `plan.brief_ref.path`, exige que
+  `brief_ref.sha256` case com `tools.brief_ref.brief_sha256()` do arquivo (autorização pode ter sido
+  editada depois de aprovada) e recusa `plan.style.<família>.techniques[]` com nome fora de
+  `authorized_techniques` da mesma família; plano sem `brief_ref` com técnica declarada em qualquer
+  família também é erro — sem brief não há autorização; (c) `tools/render.py` repete a barreira
+  antes de aplicar qualquer técnica, para plano construído em memória sem passar por `plan.load`
+  (`RenderError` explícito citando família e técnica). A skill `midi-brief` pergunta ao usuário
+  quais técnicas entram e preenche `authorized_techniques` só com o que ele marcou — silêncio ou
+  dúvida NÃO autoriza.
 - Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de

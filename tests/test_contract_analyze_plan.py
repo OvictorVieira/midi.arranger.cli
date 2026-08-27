@@ -198,6 +198,28 @@ def _valid_plan_from_skeleton() -> dict:
     return env["data"]["plan"]
 
 
+def _attach_brief_authorizing_all(plan: dict, tmp_path: Path) -> None:
+    """Anexa `brief_ref` autorizando todas as tecnicas em `plan['style']`.
+
+    Depois de US-003, plan sem brief_ref com techniques nao vazia falha na
+    validacao. Este helper e o atalho para os testes de fachada que
+    exercitam outras regras (parametro, apelido, mensagem de erro).
+    """
+    from tools.brief_ref import brief_sha256
+
+    authorized: dict[str, dict[str, list[str]]] = {}
+    for family, entry in (plan.get("style") or {}).items():
+        names = [t["name"] for t in entry.get("techniques") or []]
+        if names:
+            authorized[family] = {"authorized_techniques": names}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": authorized}), encoding="utf-8")
+    plan["brief_ref"] = {
+        "path": str(brief_path),
+        "sha256": brief_sha256(brief_path),
+    }
+
+
 def test_plan_validate_accepts_skeleton_output():
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
@@ -277,21 +299,50 @@ def _complete_style_dict() -> dict:
     }
 
 
-def test_plan_validate_accepts_complete_style_in_all_four_families():
+def test_plan_validate_accepts_complete_style_in_all_four_families(tmp_path: Path):
+    from tools.brief_ref import brief_sha256
+
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps(
+            {
+                "style": {
+                    family: {
+                        "authorized_techniques": [
+                            t["name"] for t in entry["techniques"]
+                        ],
+                    }
+                    for family, entry in plan["style"].items()
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    plan["brief_ref"] = {
+        "path": str(brief_path),
+        "sha256": brief_sha256(brief_path),
+    }
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_accepts_valid_brief_ref():
+def test_plan_validate_accepts_valid_brief_ref(tmp_path: Path):
+    from tools.brief_ref import brief_sha256
+
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({"style": {"drums": {"authorized_techniques": []}}}),
+        encoding="utf-8",
+    )
     plan["brief_ref"] = {
-        "path": "arrangement-brief.json",
-        "sha256": "0" * 64,
+        "path": str(brief_path),
+        "sha256": brief_sha256(brief_path),
     }
 
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -339,21 +390,23 @@ def test_plan_validate_rejects_partial_brief_ref_in_schema(field: str, path: str
     assert env["error"]["path"] == path
 
 
-def test_plan_validate_resolves_simple_style_technique_name_by_family():
+def test_plan_validate_resolves_simple_style_technique_name_by_family(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_rejects_unknown_style_technique_with_exact_path():
+def test_plan_validate_rejects_unknown_style_technique_with_exact_path(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "flanm"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -362,11 +415,12 @@ def test_plan_validate_rejects_unknown_style_technique_with_exact_path():
     assert "drums.flam" in err["message"]
 
 
-def test_plan_validate_rejects_documented_but_unimplemented_style_technique():
+def test_plan_validate_rejects_documented_but_unimplemented_style_technique(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["keys"]["techniques"] = [{"name": "keys.hand_asynchrony"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -376,11 +430,12 @@ def test_plan_validate_rejects_documented_but_unimplemented_style_technique():
     assert "drums.ghost_notes" in err["message"]
 
 
-def test_plan_validate_rejects_style_technique_from_other_family():
+def test_plan_validate_rejects_style_technique_from_other_family(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["bass"]["techniques"] = [{"name": "drums.flam"}]
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -452,22 +507,24 @@ def test_plan_validate_rejects_musical_content_key_inside_style_schema():
     assert "nunca conteudo musical" in env["error"]["message"]
 
 
-def test_plan_validate_accepts_style_parameter_range_pair_schema():
+def test_plan_validate_accepts_style_parameter_range_pair_schema(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["parameters"] = {"velocity": [20, 45]}
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_rejects_style_parameter_outside_manual_range():
+def test_plan_validate_rejects_style_parameter_outside_manual_range(tmp_path: Path):
     midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
     plan["style"]["drums"]["parameters"] = {"velocity": 46}
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is False
@@ -477,7 +534,9 @@ def test_plan_validate_rejects_style_parameter_outside_manual_range():
     assert "[20, 45]" in err["message"]
 
 
-def test_plan_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.MonkeyPatch):
+def test_plan_validate_warns_for_style_parameter_source_gap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
     monkeypatch.setattr(
         "tools.techniques.SUPPORTED_TECHNIQUES",
         (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
@@ -487,6 +546,7 @@ def test_plan_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.
     plan["style"] = _complete_style_dict()
     plan["style"]["guitar"]["techniques"] = [{"name": "palm_mute"}]
     plan["style"]["guitar"]["parameters"] = {"gate_absoluto_ms": 999}
+    _attach_brief_authorizing_all(plan, tmp_path)
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
@@ -693,3 +753,102 @@ def test_plan_validate_rejects_missing_rationale():
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is False
     assert env["error"]["path"] == "plan.elements[0].rationale"
+
+
+def _write_drums_midi(path: Path) -> None:
+    """Bateria com backbeats de caixa no canal 9, suficiente para ornamentar."""
+    import mido
+
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums", time=0))
+    previous = 0
+    for tick in (480, 1440, 2400, 3360, 4320, 5280):
+        track.append(mido.Message(
+            "note_on", note=38, velocity=100, channel=9, time=tick - previous,
+        ))
+        track.append(mido.Message(
+            "note_off", note=38, velocity=0, channel=9, time=60,
+        ))
+        previous = tick + 60
+    mid.tracks.append(track)
+    mid.save(str(path))
+
+
+def test_render_resolve_brief_relativo_contra_o_diretorio_do_plano(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """Achado do review com o Codex no PR #52.
+
+    A fachada `render` lia o plano com `_read_plan_dict` e chamava
+    `render_mod.render(plan_obj, ...)` sem informar de onde o plano veio.
+    `brief_ref.path` relativo resolvia contra o CWD de quem chamou a tool,
+    nao contra o diretorio do plano — entao o brief ao lado do plano nao era
+    encontrado e o render falhava, mesmo com tudo autorizado corretamente.
+
+    O teste roda de um CWD deliberadamente diferente.
+    """
+    from tools.brief_ref import brief_sha256
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    src = proj / "src.mid"
+    _write_drums_midi(src)
+
+    brief_path = proj / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {
+                fam: {
+                    "authorized_techniques": (
+                        ["drums.ghost_notes"] if fam == "drums" else []
+                    ),
+                }
+                for fam in ("bass", "drums", "guitar", "keys")
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    plan_path = proj / "arrangement-plan.json"
+    plan_path.write_text(
+        json.dumps({
+            "version": 1,
+            "seed": 1,
+            "source_midi": {"path": str(src), "sha256": "0" * 64},
+            "route": "cinematica_emocional",
+            "sections": [],
+            "elements": [],
+            # RELATIVO de proposito — e disso que trata o achado
+            "brief_ref": {
+                "path": "arrangement-brief.json",
+                "sha256": brief_sha256(brief_path),
+            },
+            "edits": [
+                {"track": "Drums", "profile": "drums", "intensity": 0.0},
+            ],
+            "style": {
+                "drums": {
+                    "reference": "X",
+                    "researched_at": "2026-08-26",
+                    "sources": ["https://example.test/x"],
+                    "confidence": "high",
+                    "techniques": [{"name": "drums.ghost_notes"}],
+                    "parameters": {},
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    outside = tmp_path / "outro_cwd"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+    env = call("render", {
+        "plan_path": str(plan_path),
+        "midi_path": str(src),
+        "output_path": str(proj / "out.mid"),
+    })
+    assert env["ok"] is True, env
+    assert (proj / "out.mid").exists()

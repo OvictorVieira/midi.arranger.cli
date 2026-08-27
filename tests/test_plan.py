@@ -143,12 +143,52 @@ def test_brief_sha256_hashes_exact_file_bytes(tmp_path: Path):
     assert brief_sha256(brief) == hashlib.sha256(content).hexdigest()
 
 
-def test_plan_accepts_valid_brief_ref():
+def _attach_authorized_brief(plan: ArrangementPlan, tmp_path: Path) -> None:
+    """Anexa `plan.brief_ref` autorizando exatamente as tecnicas em `plan.style`.
+
+    Depois de US-003, plano sem `brief_ref` e com `style.<fam>.techniques[]`
+    nao vazia e erro de validacao. Este helper e o atalho para os testes que
+    declaram tecnicas para exercitar OUTRA regra (parametro, apelido,
+    idempotencia, ...) e nao a autorizacao em si.
+    """
+    authorized: dict[str, list[str]] = {}
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            if not isinstance(entry, FamilyStyle):
+                continue
+            names = [
+                t.name for t in entry.techniques if isinstance(t, StyleTechnique)
+            ]
+            if names:
+                authorized[family] = names
+    brief_path, sha = _write_brief(tmp_path, authorized)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+
+def _write_brief(
+    tmp_path: Path,
+    authorized: dict[str, list[str]] | None = None,
+) -> tuple[Path, str]:
+    """Grava um brief minimo em `tmp_path/arrangement-brief.json`.
+
+    O plan.validate so olha `brief.style.<familia>.authorized_techniques`;
+    o resto do brief nao entra na conta. A fixture segue essa fronteira.
+    """
+    authorized = authorized or {}
+    style_dict = {
+        family: {"authorized_techniques": list(authorized.get(family, []))}
+        for family in ("bass", "drums", "guitar", "keys")
+    }
+    brief = {"style": style_dict}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps(brief, indent=2), encoding="utf-8")
+    return brief_path, brief_sha256(brief_path)
+
+
+def test_plan_accepts_valid_brief_ref(tmp_path: Path):
     plan = _valid_plan()
-    plan.brief_ref = BriefRef(
-        path="arrangement-brief.json",
-        sha256="0" * 64,
-    )
+    brief_path, sha = _write_brief(tmp_path)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
 
     validate(plan)
     assert from_dict(to_dict(plan)) == plan
@@ -166,6 +206,284 @@ def test_validate_rejects_malformed_brief_ref_sha256():
 
     assert exc.value.path == "brief_ref.sha256"
     assert "64 lowercase hexadecimal" in exc.value.message
+
+
+def test_validate_rejects_missing_brief_file(tmp_path: Path):
+    plan = _valid_plan()
+    missing = tmp_path / "nao-existe.json"
+    plan.brief_ref = BriefRef(path=str(missing), sha256="0" * 64)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "brief_ref.path"
+    assert "not found" in exc.value.message
+
+
+def test_validate_rejects_brief_sha256_mismatch(tmp_path: Path):
+    plan = _valid_plan()
+    brief_path, _sha = _write_brief(tmp_path)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256="0" * 64)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "brief_ref.sha256"
+    assert "mismatch" in exc.value.message
+
+
+def test_validate_accepts_authorized_style_technique(tmp_path: Path):
+    plan = _valid_plan()
+    brief_path, sha = _write_brief(tmp_path, {"drums": ["drums.ghost_notes"]})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    validate(plan)  # nao levanta
+
+
+def test_validate_rejects_unauthorized_style_technique(tmp_path: Path):
+    plan = _valid_plan()
+    # brief autoriza NADA em drums, embora o plano declare uma tecnica.
+    brief_path, sha = _write_brief(tmp_path, {"drums": []})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+    assert "drums.ghost_notes" in exc.value.message
+    assert "drums" in exc.value.message
+    assert "authorized_techniques" in exc.value.message
+
+
+def test_validate_accepts_short_name_when_canonical_is_authorized(tmp_path: Path):
+    """Autorizacao por canonical casa com plano que usa apelido curto e vice-versa."""
+    plan = _valid_plan()
+    brief_path, sha = _write_brief(tmp_path, {"drums": ["ghost_notes"]})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    validate(plan)
+
+
+@pytest.mark.parametrize("family", ["bass", "drums", "guitar", "keys"])
+def test_validate_rejects_style_technique_without_brief_ref(family: str):
+    """Sem `brief_ref` nenhuma tecnica pode ser aplicada — vale para as 4 familias."""
+    plan = _valid_plan()
+    plan.brief_ref = None
+    canonical_by_family = {
+        "bass": "bass.ghost_notes",
+        "drums": "drums.ghost_notes",
+        "guitar": "guitar.palm_mute",
+        "keys": "keys.arpeggio_broken_chord",
+    }
+    canonical = canonical_by_family[family]
+    plan.style = {
+        family: FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name=canonical)],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == f"style.{family}.techniques[0].name"
+    assert canonical in exc.value.message
+    assert family in exc.value.message
+    assert "no brief_ref" in exc.value.message
+
+
+def test_validate_accepts_style_without_techniques_and_without_brief_ref():
+    """Plano sem `brief_ref` e sem tecnica em qualquer familia continua valido."""
+    plan = _valid_plan()
+    plan.brief_ref = None
+    plan.style = {
+        family: FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[],
+            parameters={},
+        )
+        for family in ("bass", "drums", "guitar", "keys")
+    }
+    validate(plan)  # caminho de quem so usa plan.edits
+
+
+def test_validate_resolves_relative_brief_path_against_plan_dir(tmp_path: Path):
+    """`brief_ref.path` relativo e resolvido contra `plan_dir` — como `plan.load` faz."""
+    plan = _valid_plan()
+    brief_path, sha = _write_brief(tmp_path)
+    plan.brief_ref = BriefRef(path="arrangement-brief.json", sha256=sha)
+
+    validate(plan, plan_dir=tmp_path)  # nao levanta; encontra o brief pelo diretorio
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)  # sem plan_dir, path relativo nao encontra o arquivo
+    assert exc.value.path == "brief_ref.path"
+
+
+def test_validate_rejects_unreadable_brief_file(tmp_path: Path):
+    """Brief que existe mas nao pode ser lido vira erro explicito no path."""
+    brief_path, sha = _write_brief(tmp_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    brief_path.chmod(0o000)
+    try:
+        with pytest.raises(PlanValidationError) as exc:
+            validate(plan)
+    finally:
+        brief_path.chmod(0o644)
+    assert exc.value.path == "brief_ref.path"
+    assert "could not read" in exc.value.message
+
+
+def test_validate_rejects_brief_with_invalid_json(tmp_path: Path):
+    """Brief com JSON quebrado (usuario editou a mao) vira erro explicito."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text("{not valid json", encoding="utf-8")
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "brief_ref.path"
+    assert "could not parse" in exc.value.message
+
+
+def test_validate_rejects_brief_root_not_object(tmp_path: Path):
+    """Brief cuja raiz e um array JSON nao passa — precisa ser objeto."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text("[]", encoding="utf-8")
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "brief_ref.path"
+    assert "JSON object" in exc.value.message
+
+
+def test_validate_rejects_brief_without_style_object(tmp_path: Path):
+    """Brief sem `style` (nao ha o que autorizar) vira erro explicito."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"input_midi": "x.mid"}), encoding="utf-8")
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "brief_ref.path"
+    assert "'style'" in exc.value.message
+
+
+def test_validate_treats_non_dict_family_as_no_authorization(tmp_path: Path):
+    """Familia com forma quebrada no brief e tratada como 'nada autorizado'."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({"style": {"drums": "boom-bap"}}), encoding="utf-8"
+    )
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+
+
+def test_validate_treats_non_list_authorized_techniques_as_empty(tmp_path: Path):
+    """`authorized_techniques` com forma quebrada e tratado como '[]', nunca 'tudo'."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {"drums": {"authorized_techniques": "drums.ghost_notes"}}
+        }),
+        encoding="utf-8",
+    )
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.drums.techniques[0].name"
+
+
+def test_validate_ignores_non_string_entries_in_authorized(tmp_path: Path):
+    """Entrada nao-string em `authorized_techniques` e ignorada sem autorizar nada."""
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(
+        json.dumps({
+            "style": {
+                "drums": {"authorized_techniques": [None, 42, "drums.ghost_notes"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    sha = brief_sha256(brief_path)
+    plan = _valid_plan()
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+    plan.style = {
+        "drums": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name="drums.ghost_notes")],
+            parameters={},
+        ),
+    }
+    validate(plan)  # a entrada valida "drums.ghost_notes" autoriza; as demais somem
 
 
 @pytest.mark.parametrize(
@@ -251,9 +569,10 @@ def _complete_style() -> dict[str, FamilyStyle]:
     }
 
 
-def test_validate_accepts_complete_style_for_all_four_families():
+def test_validate_accepts_complete_style_for_all_four_families(tmp_path: Path):
     plan = _valid_plan()
     plan.style = _complete_style()
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # nao levanta
 
 
@@ -304,7 +623,7 @@ def test_normalize_style_defaults_only_fills_used_families_missing_from_style():
     assert any("keys" in assumption for assumption in normalized.assumptions)
 
 
-def test_validate_resolves_simple_style_technique_name_by_family():
+def test_validate_resolves_simple_style_technique_name_by_family(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -316,10 +635,11 @@ def test_validate_resolves_simple_style_technique_name_by_family():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # `ghost_notes` existe em drums e bass; o path desambigua.
 
 
-def test_validate_accepts_canonical_style_technique_name():
+def test_validate_accepts_canonical_style_technique_name(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -331,10 +651,11 @@ def test_validate_accepts_canonical_style_technique_name():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # nao levanta
 
 
-def test_validate_rejects_documented_but_unimplemented_style_technique():
+def test_validate_rejects_documented_but_unimplemented_style_technique(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "keys": FamilyStyle(
@@ -346,6 +667,7 @@ def test_validate_rejects_documented_but_unimplemented_style_technique():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
@@ -356,7 +678,7 @@ def test_validate_rejects_documented_but_unimplemented_style_technique():
     assert "drums.ghost_notes" in exc.value.message
 
 
-def test_validate_accepts_only_supported_style_techniques_from_manual_index():
+def test_validate_accepts_only_supported_style_techniques_from_manual_index(tmp_path: Path):
     index = build_index()
 
     for technique in index.techniques:
@@ -371,6 +693,7 @@ def test_validate_accepts_only_supported_style_techniques_from_manual_index():
                 parameters={},
             )
         }
+        _attach_authorized_brief(plan, tmp_path)
 
         if technique.canonical in SUPPORTED_TECHNIQUES:
             validate(plan)
@@ -382,7 +705,7 @@ def test_validate_accepts_only_supported_style_techniques_from_manual_index():
         assert "not implemented by the engine" in exc.value.message
 
 
-def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates():
+def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -394,13 +717,14 @@ def test_validate_rejects_unknown_style_technique_with_exact_path_and_candidates
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.techniques[0].name"
     assert "drums.flam" in exc.value.message
 
 
-def test_validate_rejects_style_technique_from_other_family():
+def test_validate_rejects_style_technique_from_other_family(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "bass": FamilyStyle(
@@ -412,6 +736,7 @@ def test_validate_rejects_style_technique_from_other_family():
             parameters={},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.bass.techniques[0].name"
@@ -458,9 +783,10 @@ def _style_technique_to_dict_for_test(technique: StyleTechnique) -> dict[str, ob
     return data
 
 
-def test_validate_rejects_invalid_style_confidence():
+def test_validate_rejects_invalid_style_confidence(tmp_path: Path):
     plan = _valid_plan()
     plan.style = _complete_style()
+    _attach_authorized_brief(plan, tmp_path)
     plan.style["drums"].confidence = "bastante"
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
@@ -542,7 +868,7 @@ def test_validate_accepts_style_parameter_range_pair():
     validate(plan)  # par [min, max] e parametro de tecnica, nao conteudo.
 
 
-def test_validate_accepts_style_parameter_inside_manual_range():
+def test_validate_accepts_style_parameter_inside_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -554,10 +880,11 @@ def test_validate_accepts_style_parameter_inside_manual_range():
             parameters={"velocity": 35},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     validate(plan)  # velocity de drums.ghost_notes aceita 20-45.
 
 
-def test_validate_rejects_style_parameter_below_manual_range():
+def test_validate_rejects_style_parameter_below_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -569,6 +896,7 @@ def test_validate_rejects_style_parameter_below_manual_range():
             parameters={"velocity": 19},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.parameters.velocity"
@@ -576,7 +904,7 @@ def test_validate_rejects_style_parameter_below_manual_range():
     assert "[20, 45]" in exc.value.message
 
 
-def test_validate_rejects_style_parameter_above_manual_range():
+def test_validate_rejects_style_parameter_above_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -588,6 +916,7 @@ def test_validate_rejects_style_parameter_above_manual_range():
             parameters={"velocity": 46},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.parameters.velocity"
@@ -595,7 +924,7 @@ def test_validate_rejects_style_parameter_above_manual_range():
     assert "[20, 45]" in exc.value.message
 
 
-def test_validate_accepts_style_parameter_without_manual_range():
+def test_validate_accepts_style_parameter_without_manual_range(tmp_path: Path):
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -607,11 +936,14 @@ def test_validate_accepts_style_parameter_without_manual_range():
             parameters={"hard_ceiling": 999},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     warnings = validate(plan)
     assert not any("style.drums.parameters.hard_ceiling" in w for w in warnings)
 
 
-def test_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.MonkeyPatch):
+def test_validate_warns_for_style_parameter_source_gap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
     monkeypatch.setattr(
         "tools.techniques.SUPPORTED_TECHNIQUES",
         (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
@@ -627,6 +959,7 @@ def test_validate_warns_for_style_parameter_source_gap(monkeypatch: pytest.Monke
             parameters={"gate_absoluto_ms": 999},
         )
     }
+    _attach_authorized_brief(plan, tmp_path)
     warnings = validate(plan)
     assert any(
         "style.guitar.parameters.gate_absoluto_ms" in warning
@@ -700,13 +1033,11 @@ def test_validate_rejects_style_that_is_not_mapping():
     assert "must be dict" in exc.value.message
 
 
-def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.MonkeyPatch):
+def test_validate_reports_technique_index_build_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
     from tools.techniques import TechniqueError
 
-    def fail_build_index():
-        raise TechniqueError("manual quebrado")
-
-    monkeypatch.setattr("tools.techniques.build_index", fail_build_index)
     plan = _valid_plan()
     plan.style = {
         "drums": FamilyStyle(
@@ -718,6 +1049,15 @@ def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.Monk
             parameters={},
         )
     }
+    # Anexa o brief antes do monkeypatch: `_load_brief_authorized_techniques`
+    # tambem chama `build_index()`, e o teste so quer exercitar a rota do
+    # validador de style.
+    _attach_authorized_brief(plan, tmp_path)
+
+    def fail_build_index():
+        raise TechniqueError("manual quebrado")
+
+    monkeypatch.setattr("tools.techniques.build_index", fail_build_index)
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
@@ -750,7 +1090,7 @@ def test_validate_reports_technique_index_build_failure(monkeypatch: pytest.Monk
         (lambda entry: entry.parameters.update({"timing": "late"}), "style.drums.parameters.timing"),
     ],
 )
-def test_validate_rejects_malformed_style_family_values(mutate, path: str):
+def test_validate_rejects_malformed_style_family_values(mutate, path: str, tmp_path: Path):
     entry = FamilyStyle(
         reference="Steve Jordan",
         researched_at="2026-08-24",
@@ -762,6 +1102,10 @@ def test_validate_rejects_malformed_style_family_values(mutate, path: str):
     mutate(entry)
     plan = _valid_plan()
     plan.style = {"drums": entry}
+    # Autoriza `ghost_notes` para que o teste exercite a validacao de
+    # tipo/densidade/rationale, e nao a de "sem brief_ref".
+    brief_path, sha = _write_brief(tmp_path, {"drums": ["ghost_notes"]})
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)

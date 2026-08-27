@@ -79,6 +79,22 @@
           "rationale": "Feel laid back caracteristico do Steve Jordan."
         }
       ],
+      "authorized_techniques": [
+        "drums.ghost_notes",
+        "drums.microtiming"
+      ],
+      "suggested_techniques": [
+        {
+          "name": "drums.ghost_notes",
+          "density": 0.4,
+          "rationale": "Pesquisa levantou ghost notes para o pocket estilo Steve Jordan."
+        },
+        {
+          "name": "drums.microtiming",
+          "density": 0.3,
+          "rationale": "Pesquisa levantou microtiming laid back."
+        }
+      ],
       "parameters": {
         "timing_bias_ms": -8.0,
         "velocity_ghost_max": 45.0

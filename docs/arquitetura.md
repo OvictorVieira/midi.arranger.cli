@@ -162,6 +162,41 @@ Exemplo mínimo válido:
 }
 ```
 
+### Sugestão vs autorização de técnica
+
+O que a pesquisa levanta e o que o motor aplica são coisas separadas — o mesmo padrão de
+`suggested_plugin` vs `plugin`. A separação existe em três camadas:
+
+1. **No brief.** Cada `style.<família>` carrega dois campos independentes além de `techniques[]`:
+   - `suggested_techniques`: mesma forma de `techniques[]` (nome + parâmetros + `rationale`), onde
+     a pesquisa registra o que levantou. Sugerir não autoriza.
+   - `authorized_techniques`: array de nomes canônicos. É o que o usuário marcou depois de ver a
+     lista. Default é `[]` — o caminho seguro é NÃO autorizar nada.
+   - `techniques[]`: continua sendo a lista que vai para o plano, e é validada como **subconjunto**
+     de `authorized_techniques`. Nome em `techniques[]` fora de `authorized_techniques` é erro de
+     schema. `authorized_techniques` ausente ou `[]` com `techniques[]` não vazio também é erro —
+     não pode passar por omissão. `authorized_techniques: []` com `techniques: []` é o default
+     seguro.
+
+2. **No plano.** `plan.brief_ref` aponta para o brief real e carrega `path` mais `sha256`.
+   `tools/plan.py::validate` lê o brief apontado por `path` e confere o `sha256` contra
+   `tools.brief_ref.brief_sha256()` do arquivo antes de confiar no conteúdo — autorização pode ter
+   sido editada depois de aprovada, e o hash é o que trava essa janela. Divergência é erro no path
+   `brief_ref.sha256`, brief inexistente é erro no path `brief_ref.path`. Técnica em
+   `plan.style.<família>.techniques[]` fora de `authorized_techniques` da mesma família no brief é
+   `PlanValidationError` citando família, técnica e a lista autorizada. Plano sem `brief_ref` com
+   qualquer `style.<família>.techniques[]` não vazio é erro: sem brief não há como saber o que foi
+   autorizado. Plano sem `brief_ref` e sem técnica em família nenhuma continua válido — é o caminho
+   de quem só usa `plan.edits`.
+
+3. **No render.** `tools/render.py` repete a mesma barreira antes de aplicar qualquer técnica, para
+   plano construído em memória sem passar por `plan.load`. Violação vira `RenderError` explícito
+   citando família e técnica — nunca aplica parcialmente, nunca ignora em silêncio.
+
+A skill `midi-brief` fecha o ciclo: lista as técnicas disponíveis por família com `techniques.list`
+e o resumo de cada uma, apresenta ao usuário, e preenche `authorized_techniques` só com o que ele
+marcou. Silêncio ou dúvida não autoriza.
+
 ### Carimbo de plugin/preset em toda track tocada pelo arranjador
 
 Toda track de saída que o arranjador criou ou editou carrega, além do nome
