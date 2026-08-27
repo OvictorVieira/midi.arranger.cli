@@ -1652,6 +1652,189 @@ def _apply_bass_ghost_notes(
     return mid
 
 
+@register_technique("bass.palm_mute", "humanize")
+def _apply_bass_palm_mute(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Palm mute na linha de baixo — abafamento pontual, nao geral.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity` e `gate_pct` do manual via `build_index()`.
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - Aplica so onde o plano pedir por `density` explicita. `density` ausente
+        ou <= 0 significa DESLIGAR — a tecnica nunca abafa a linha inteira por
+        default; palm mute geral e ausencia de intencao musical, nao "seguro".
+      - INVARIANTE DE PRESSAO: nota da origem no topo (>= P75) nao pode sair na
+        faixa mais baixa (< P25) da propria origem, mesmo abafada.
+      - Encurta pelo `gate_pct` do manual sobre a duracao original — nao inventa
+        numero.
+      - Determinismo por seed atraves de `context.rng()`.
+    """
+
+    import mido as _mido
+
+    from .index import build_index
+
+    technique = build_index().get(context.canonical)
+    if technique is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} nao existe no indice dos manuais"
+        )
+
+    params_by_name = {p.name: p for p in technique.parameters}
+
+    def _range(name: str) -> tuple[float, float] | None:
+        if name in context.parameters:
+            value = context.parameters[name]
+        elif name in context.recipe:
+            value = context.recipe[name]
+        else:
+            param = params_by_name.get(name)
+            if param is None:
+                return None
+            if param.range is not None:
+                value = param.range
+            elif param.value is not None:
+                value = (param.value, param.value)
+            else:
+                return None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return (float(value), float(value))
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+            )
+        ):
+            return (float(value[0]), float(value[1]))
+        return None
+
+    velocity_range = _range("velocity") or (60.0, 100.0)
+    velocity_lo = max(1, int(velocity_range[0]))
+    velocity_hi = max(velocity_lo, int(velocity_range[1]))
+
+    gate_range = _range("gate_pct") or (25.0, 50.0)
+    gate_lo = max(1.0, float(gate_range[0]))
+    gate_hi = max(gate_lo, float(gate_range[1]))
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    if mid.ticks_per_beat <= 0:
+        return mid
+
+    selection_rng = context.rng("selection")
+    velocity_rng = context.rng("velocity")
+    gate_rng = context.rng("gate")
+
+    def collect_pairs(track):
+        pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        collected: list[tuple[int, int, int, int, int, int, int]] = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                pending.setdefault((msg.channel, msg.note), []).append(
+                    (tick, msg.velocity, msg_index),
+                )
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if not stack:
+                    continue
+                start_tick, velocity, note_on_index = stack.pop(0)
+                collected.append((
+                    msg.channel,
+                    msg.note,
+                    start_tick,
+                    tick,
+                    velocity,
+                    note_on_index,
+                    msg_index,
+                ))
+        return collected
+
+    for track in mid.tracks:
+        pairs = collect_pairs(track)
+        if not pairs:
+            continue
+
+        originals = [pair[4] for pair in pairs]
+        sorted_orig = sorted(originals)
+        n = len(sorted_orig)
+        p25 = sorted_orig[max(0, (n - 1) // 4)]
+        p75 = sorted_orig[min(n - 1, (3 * (n - 1)) // 4)]
+
+        indices = list(range(len(pairs)))
+        selection_rng.shuffle(indices)
+        wanted = max(1, min(len(pairs), int(round(len(pairs) * density))))
+        selected = set(indices[:wanted])
+
+        new_velocity_by_msg: dict[int, int] = {}
+        new_end_tick_by_msg: dict[int, int] = {}
+        for pair_index, pair in enumerate(pairs):
+            if pair_index not in selected:
+                continue
+            (
+                _channel,
+                _pitch,
+                start_tick,
+                end_tick,
+                original_velocity,
+                note_on_index,
+                note_off_index,
+            ) = pair
+            duration = max(1, end_tick - start_tick)
+            gate_pct = gate_rng.uniform(gate_lo, gate_hi)
+            new_duration = max(1, int(round(duration * gate_pct / 100.0)))
+            new_end_tick = start_tick + min(duration, new_duration)
+
+            proposed = velocity_rng.randint(velocity_lo, velocity_hi)
+            if original_velocity >= p75 and proposed < p25:
+                proposed = p25
+            proposed = max(1, min(127, proposed))
+
+            new_velocity_by_msg[note_on_index] = proposed
+            new_end_tick_by_msg[note_off_index] = new_end_tick
+
+        if not new_velocity_by_msg:
+            continue
+
+        absolute = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            absolute_tick = new_end_tick_by_msg.get(msg_index, tick)
+            absolute.append((absolute_tick, msg_index, msg))
+
+        absolute.sort(key=lambda item: (item[0], item[1]))
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, msg_index, msg in absolute:
+            delta = absolute_tick - previous_tick
+            if msg_index in new_velocity_by_msg:
+                rebuilt.append(
+                    msg.copy(time=delta, velocity=new_velocity_by_msg[msg_index])
+                )
+            else:
+                rebuilt.append(msg.copy(time=delta))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
