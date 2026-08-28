@@ -461,7 +461,11 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
     {"name": "normal",     "range": [80, 100],  "source": "Toontrack"},
     {"name": "soft",       "range": [55, 79],   "source": "Toontrack"},
     {"name": "ghost",      "range": [20, 45],   "source": "Toontrack"},
-    {"name": "hard_ceiling", "value": 115,      "source": "Audient"}
+    {"name": "hard_ceiling", "value": 115,      "source": "Audient"},
+    {"name": "fill_max_gap_beats",       "value": 0.25, "source": "CONVENCAO — mesmo gap maximo (16-avo) que `drums.accented_roll` usa em `roll_sequences`; agrupa notas em run so quando o intervalo cabe numa semicolcheia. Fecha a lacuna da secao 11 (`Limiar quantitativo de virada 'de bom gosto' vs 'atulhada' — sem fonte`); e escolha do motor, nao medicao"},
+    {"name": "fill_min_notes",           "value": 4,    "source": "CONVENCAO — piso do run herdado do `drums.accented_roll` (minimo de 4 notas para chamar de sequencia). Fecha a lacuna da secao 11"},
+    {"name": "fill_min_density_per_beat","value": 3.0,  "source": "CONVENCAO — densidade em notas por tempo; abaixo disso e groove, nao virada. Fecha a lacuna da secao 11"},
+    {"name": "fill_min_piece_variety",   "value": 2,    "source": "CONVENCAO — minimo de familias GM distintas dentro do run (kick/snare/tom/hihat/cymbal). Ostinato de uma peca so (hihat, ride) nao e virada; ja duas pecas na mesma corrida rapida quase sempre e. Fecha a lacuna da secao 11"}
   ],
   "tools": {
     "generic": {"note": "aplique nas velocities existentes; nao gera nota nova"},
