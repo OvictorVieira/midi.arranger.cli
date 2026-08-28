@@ -3760,6 +3760,243 @@ def _apply_keys_expression(
     return mid
 
 
+@register_technique("keys.damper_pedal", "technique")
+def _apply_keys_damper_pedal(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Damper pedal (CC64) binario — meio-pedal so com opt-in explicito.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le do manual `keys.damper_pedal` (via `build_index`): `cc` (64),
+        `limiar_on_min` (64), `limiar_off_max` (63), `default` (0),
+        `passos_maximos_de_meio_pedal` (128).
+      - Sem `density` numerica positiva no plano: NO-OP. Pedal sem intencao
+        declarada nunca e default.
+      - Padrao humano documentado: CC64=127 a maior parte do tempo, queda a
+        `default` (0) LOGO DEPOIS de cada mudanca harmonica selecionada, e
+        repressao em seguida. Nunca simultaneo ao note-on nem antes dele — o
+        manual e explicito que isso captura o acorde anterior. Aqui usamos
+        `gap_ticks = max(1, ticks_per_beat // 64)` para garantir que a
+        release/repress cai APOS a nota-alvo, mantendo o intervalo
+        praticamente instantaneo.
+      - Meio-pedal: `half_pedal_supported=True` no plano habilita
+        `press_value` intermediario em `[limiar_on_min, 127]`. Sem opt-in,
+        `press_value` diferente de 127 e erro explicito (o manual e
+        categorico que half-damper nao e padronizado; receptor conforme le
+        63 como OFF total e 64 como ON total). `press_value` fora da faixa
+        legal, ou nao numerico, tambem e erro.
+      - Canal 9 (bateria) e ignorado.
+      - Selecao por densidade determina QUAIS onsets recebem o par
+        release/press; a lista final e ordenada por `(start, channel, pitch)`
+        para casar com o sort da fotografia (`sort_and_flush`).
+      - Per-canal: primeiro onset selecionado emite apenas a PRESS (nao
+        havia pedal para soltar); onsets subsequentes emitem release em
+        `start+gap` e press em `start+2*gap`. Ao final, emitimos release
+        (`default`) em `max(note_end)` daquele canal — nunca deixamos pedal
+        pendurado no fim da track. `sort_and_flush` empurra `end_of_track`
+        para o ultimo tick, garantindo que o CC64=0 final entra antes.
+      - Determinismo por seed: selecao via `context.rng("damper_select")`.
+      - Idempotente: reaplicar produz eventos com a mesma assinatura
+        (canal, tick, valor); dedup do dispatch descarta duplicatas.
+    """
+
+    import mido as _mido
+
+    from ._helpers import (
+        select_by_density,
+        sort_by_track_start_pitch,
+        technique_from_manual,
+    )
+    from ._track_rebuild import collect_absolute, sort_and_flush
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    technique = technique_from_manual(context)
+    params = {p.name: p for p in technique.parameters}
+
+    def _int_param(name: str) -> int:
+        param = params.get(name)
+        if param is None or not isinstance(param.value, (int, float)):
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
+            )
+        return int(param.value)
+
+    cc = _int_param("cc")
+    limiar_on_min = _int_param("limiar_on_min")
+    limiar_off_max = _int_param("limiar_off_max")
+    default_off = _int_param("default")
+    if cc != 64:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera cc=64 (MIDI 1.0); "
+            f"manual declarou {cc}"
+        )
+    if limiar_on_min != 64 or limiar_off_max != 63:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: manual inconsistente — "
+            f"limiar_on_min={limiar_on_min}, limiar_off_max={limiar_off_max}"
+        )
+    if default_off > limiar_off_max:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: default={default_off} deveria "
+            f"cair na faixa OFF (<= {limiar_off_max})"
+        )
+
+    half_pedal_supported_raw = context.parameters.get("half_pedal_supported", False)
+    if not isinstance(half_pedal_supported_raw, bool):
+        raise ValueError(
+            f"tecnica {context.canonical!r}: half_pedal_supported precisa ser bool"
+        )
+    half_pedal_supported = half_pedal_supported_raw
+
+    press_raw = context.parameters.get("press_value")
+    if press_raw is None:
+        press_value = 127
+    elif not isinstance(press_raw, (int, float)) or isinstance(press_raw, bool):
+        raise ValueError(
+            f"tecnica {context.canonical!r}: press_value precisa ser numero"
+        )
+    else:
+        press_value = int(round(float(press_raw)))
+        if press_value < limiar_on_min or press_value > 127:
+            raise ValueError(
+                f"tecnica {context.canonical!r}: press_value={press_value} fora "
+                f"de [{limiar_on_min}, 127]"
+            )
+        if press_value != 127 and not half_pedal_supported:
+            raise ValueError(
+                f"tecnica {context.canonical!r}: press_value={press_value} "
+                "exige half_pedal_supported=True; half-damper nao e padronizado "
+                "e receptor conforme le como ON total"
+            )
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    gap = max(1, ticks_per_beat // 64)
+
+    select_rng = context.rng("damper_select")
+
+    for track_index, track in enumerate(mid.tracks):
+        structural: list[dict] = []
+        pending: dict[tuple[int, int], list[dict]] = {}
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                entry = {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": tick,
+                    "end": None,
+                }
+                structural.append(entry)
+                pending.setdefault((msg.channel, msg.note), []).append(entry)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if stack:
+                    stack.pop(0)["end"] = tick
+
+        structural = [
+            e for e in structural
+            if e["end"] is not None and e["channel"] != 9
+        ]
+        if not structural:
+            continue
+
+        candidates = [
+            {
+                "track_index": track_index,
+                "start": entry["start"],
+                "pitch": entry["pitch"],
+                "channel": entry["channel"],
+                "end": entry["end"],
+            }
+            for entry in structural
+        ]
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=sort_by_track_start_pitch,
+        )
+        if not selected:
+            continue
+
+        selected_sorted = sorted(
+            selected, key=lambda c: (c["start"], c["channel"], c["pitch"])
+        )
+
+        absolute = collect_absolute(track)
+        order = len(absolute)
+
+        per_channel_state: dict[int, dict] = {}
+        for cand in selected_sorted:
+            channel = cand["channel"]
+            start = cand["start"]
+            end = cand["end"]
+            state = per_channel_state.get(channel)
+            if state is None:
+                press_tick = start + gap
+                per_channel_state[channel] = {"last_end": end}
+            else:
+                release_tick = start + gap
+                press_tick = start + 2 * gap
+                absolute.append((
+                    release_tick, -2, order,
+                    _mido.Message(
+                        "control_change",
+                        channel=channel,
+                        control=cc,
+                        value=default_off,
+                    ),
+                ))
+                order += 1
+                state["last_end"] = max(state["last_end"], end)
+
+            absolute.append((
+                press_tick, -2, order,
+                _mido.Message(
+                    "control_change",
+                    channel=channel,
+                    control=cc,
+                    value=press_value,
+                ),
+            ))
+            order += 1
+
+            # Update last_end even for the first onset per-channel.
+            state = per_channel_state[channel]
+            state["last_end"] = max(state["last_end"], end)
+
+        for channel, state in per_channel_state.items():
+            absolute.append((
+                state["last_end"], -2, order,
+                _mido.Message(
+                    "control_change",
+                    channel=channel,
+                    control=cc,
+                    value=default_off,
+                ),
+            ))
+            order += 1
+
+        sort_and_flush(absolute, track)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
