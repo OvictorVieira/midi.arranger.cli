@@ -135,6 +135,18 @@ de notas; `technique` pode acrescentar ornamentos, CC e pitch bend, mas preserva
 das notas estruturais. Nota estrutural é o material de entrada ou de gerador; nota ornamental é a
 nota adicionada pela técnica.
 
+A humanização por profile (`plan.edits[].profile` + `intensity`) que roda dentro de `apply_edits`
+antes do motor de técnicas é parametrizada por `tools.style_profile.StyleProfile`: dataclass
+imutável (`frozen=True`, mapas `MappingProxyType`) que carrega `velocity_ranges`, `gate_ratios` e
+`timing_jitter_ms` na mesma forma dos dicionários de `tools/constants.py`. `StyleProfile.default()`
+reproduz esses três dicionários byte a byte — `constants.py` continua sendo a fonte declarada do
+default e não é apagado nem movido. `tools/humanize.py` (base_velocity, VelocityEngine,
+MicrotimingEngine, DurationEngine) e `tools/edits.py` (apply_edits, apply_edit) aceitam o profile
+como keyword-only opcional no final da assinatura; toda chamada antiga continua válida e
+byte-idêntica porque cai em `StyleProfile.default()`. Perfil muda a FAIXA de sorteio, nunca a
+fórmula. O construtor valida sanidade física (velocity em [0,127], gate em [0,1], jitter em
+[0,250] ms) e levanta `ValueError` antes de qualquer render.
+
 A idempotência também fica no despacho central: ao reaplicar uma técnica, ornamentos com a mesma
 assinatura de track/canal/pitch/início/fim já presentes são descartados antes da validação do
 contrato, assim como CC e pitch bend com a mesma assinatura de track/canal/tick/valor. Depois que as
@@ -291,7 +303,7 @@ midi.arranger.cli/
 ├── tools/                       o maquinário determinístico, Python
 │   ├── cli.py                   entrypoint: midi-arranger-tool <nome>
 │   ├── analyze.py  sections.py  plan.py  render.py  learn.py
-│   ├── humanize.py  voicing.py  constants.py  tracks.py
+│   ├── humanize.py  voicing.py  constants.py  style_profile.py  tracks.py
 │   ├── techniques/              motor de técnicas por família
 │   ├── palette/                 geradores
 │   ├── validators/              harmônico, placement, persona, artificialidade, não-cópia, colisão

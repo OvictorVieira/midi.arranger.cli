@@ -96,6 +96,22 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   origem editadas), depois o render por elemento com o motor de técnicas de estilo no loop, e por
   último os carimbos (`_stamp_element_tracks` inline no loop, `_stamp_edit_tracks` numa passada
   única no fim).
+- O motor de humanização por profile (`plan.edits[].profile` + `intensity`, executado por
+  `tools/humanize.py` e `tools/edits.py`) é SEPARADO do motor de técnicas de
+  `style.<familia>.techniques` (`tools/techniques/engine.py`) e roda ANTES dele. Ele lê
+  `velocity_ranges`, `gate_ratios` e `timing_jitter_ms` de um `tools.style_profile.StyleProfile`
+  imutável (frozen dataclass, mapas `MappingProxyType`), cujo `StyleProfile.default()` reproduz
+  byte a byte `VELOCITY_RANGES`, `GATE_RATIOS` e `TIMING_JITTER_MS` de `tools/constants.py` — os
+  dicionários do `constants.py` continuam sendo a fonte declarada do default e não devem ser
+  movidos nem apagados. O construtor rejeita configuração fora do domínio físico (velocity em
+  [0,127], gate em [0,1], timing jitter em [0,250] ms) com `ValueError`, antes de qualquer render.
+- Retrocompatibilidade obrigatória do `StyleProfile`: `tools/humanize.py`
+  (`base_velocity`, `VelocityEngine`, `MicrotimingEngine`, `DurationEngine`) e
+  `tools/edits.py` (`apply_edits`, `apply_edit`) aceitam `profile`/`style_profile` como
+  keyword-only opcional no FINAL da assinatura. Chamador antigo (inclusive `tools/render.py`) que
+  não passa nada continua byte-idêntico, porque a implementação cai em `StyleProfile.default()`.
+  Perfil muda a FAIXA de sorteio, nunca a fórmula de cálculo — se alguma story exigir mudar a
+  fórmula interna dos motores, PARE E REPORTE em vez de inventar.
 - Toda nota vinda do MIDI de origem é estrutural por definição — sobre ela o nível `technique` só
   pode acrescentar ornamento; nunca substitui pitch, posição ou duração da nota estrutural.
 - Toda track de saída tocada pelo arranjador — elemento gerado ou track de `plan.edits` — carrega
