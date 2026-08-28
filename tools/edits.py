@@ -36,7 +36,7 @@ from dataclasses import dataclass
 import mido
 import pretty_midi
 
-from .constants import GATE_RATIOS
+from .style_profile import StyleProfile
 
 # --- vocabulario e parametros por profile -----------------------------------
 
@@ -166,6 +166,8 @@ def apply_edit(
     intensity: float,
     seed: int,
     pm: pretty_midi.PrettyMIDI,
+    *,
+    style_profile: StyleProfile | None = None,
 ) -> tuple[int, float]:
     """Aplica humanizacao in-place na `track`. Devolve `(notes_touched,
     mean_offset_ms)`.
@@ -176,6 +178,8 @@ def apply_edit(
     if intensity <= 0.0:
         return (0, 0.0)
 
+    resolved_style = style_profile or StyleProfile.default()
+    gate_ratios = resolved_style.gate_ratios
     rng = random.Random(seed)
 
     # 1) absolute-tick view de todos os eventos, preservando a ordem
@@ -272,7 +276,7 @@ def apply_edit(
                     break
             if next_on_tick is not None and next_on_tick > on_tick:
                 gap_ticks = next_on_tick - on_tick
-                lo, hi = GATE_RATIOS[profile.gate_articulation]
+                lo, hi = gate_ratios[profile.gate_articulation]
                 target_ratio = rng.uniform(lo, hi)
                 original_ratio = original_duration_ticks / gap_ticks
                 blended_ratio = (
@@ -329,6 +333,8 @@ def apply_edits(
     edits: list,
     plan_seed: int,
     pm: pretty_midi.PrettyMIDI,
+    *,
+    style_profile: StyleProfile | None = None,
 ) -> list[EditReport]:
     """Aplica cada edit nas tracks correspondentes (busca pelo nome exato).
 
@@ -359,6 +365,7 @@ def apply_edits(
             seed = _edit_seed(plan_seed, seed_track, ed.profile)
             touched, mean_offset = apply_edit(
                 tracks[idx], profile, float(ed.intensity), seed, pm,
+                style_profile=style_profile,
             )
             total_touched += touched
             weighted_offset_sum += mean_offset * touched
