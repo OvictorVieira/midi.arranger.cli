@@ -56,3 +56,20 @@ def test_accepts_custom_ranges_and_freezes_them() -> None:
     assert profile.velocity_ranges["ghost"] == (5.0, 10.0)
     with pytest.raises(TypeError):
         profile.velocity_ranges["ghost"] = (0, 0)  # type: ignore[index]
+
+
+def test_rejects_velocity_out_of_midi_bounds() -> None:
+    with pytest.raises(ValueError, match="fora dos limites fisicos"):
+        StyleProfile(velocity_ranges={"ghost": (0, 200)})
+    with pytest.raises(ValueError, match="fora dos limites fisicos"):
+        StyleProfile(velocity_ranges={"ghost": (-1, 100)})
+
+
+def test_rejects_gate_ratio_above_one() -> None:
+    with pytest.raises(ValueError, match="fora dos limites fisicos"):
+        StyleProfile(gate_ratios={"open": (0.5, 1.5)})
+
+
+def test_rejects_absurd_timing_jitter() -> None:
+    with pytest.raises(ValueError, match="fora dos limites fisicos"):
+        StyleProfile(timing_jitter_ms={"fill": (0, 5_000)})
