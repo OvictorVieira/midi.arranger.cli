@@ -3070,26 +3070,13 @@ def _apply_keys_pitch_bend(
 
     import mido as _mido
 
-    from ._helpers import first_tempo, technique_from_manual
+    from ._helpers import first_tempo, structural_notes, technique_setup
     from ._track_rebuild import collect_absolute, sort_and_flush
 
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+    setup = technique_setup(context)
+    if setup is None:
         return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
-
-    technique = technique_from_manual(context)
-    params = {p.name: p for p in technique.parameters}
-
-    def _int_param(name: str) -> int:
-        param = params.get(name)
-        if param is None or not isinstance(param.value, (int, float)):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
-            )
-        return int(param.value)
+    density, _technique, _int_param = setup
 
     centro = _int_param("centro")
     passos_para_baixo = _int_param("passos_para_baixo")
@@ -3118,30 +3105,7 @@ def _apply_keys_pitch_bend(
     select_rng = context.rng("pitch_bend_select")
 
     for track in mid.tracks:
-        structural: list[dict] = []
-        pending: dict[tuple[int, int], list[dict]] = {}
-        tick = 0
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                entry = {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": tick,
-                    "end": None,
-                }
-                structural.append(entry)
-                pending.setdefault((msg.channel, msg.note), []).append(entry)
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if stack:
-                    stack.pop(0)["end"] = tick
-
-        structural = [e for e in structural if e["end"] is not None]
+        structural = structural_notes(track)
         if len(structural) < 2:
             continue
 
@@ -3205,15 +3169,10 @@ def _apply_keys_pitch_bend(
                     passos_para_baixo * abs(interval) / range_semitones
                 ))
                 target_wheel = max(-passos_para_baixo, min(0, target_wheel))
-            if target_wheel == 0:
-                continue
 
             a_mid = a["start"] + max(1, (a["end"] - a["start"]) // 2)
-            span_start = min(a_mid, b["start"] - 1)
             span_end = b["start"] - 1
-            if span_end <= span_start:
-                span_start = max(a["start"], b["start"] - 2)
-                span_end = b["start"] - 1
+            span_start = min(a_mid, span_end)
             span_ticks = max(1, span_end - span_start)
             span_seconds = span_ticks / ticks_per_second
             max_steps_by_rate = (
@@ -3230,10 +3189,6 @@ def _apply_keys_pitch_bend(
                 else:
                     pitch_value = min(0, max(target_wheel, pitch_value))
                 step_tick = span_start + int(round(span_ticks * frac))
-                if step_tick > span_end:
-                    step_tick = span_end
-                if step_tick < span_start:
-                    step_tick = span_start
                 absolute.append((
                     step_tick, -2, order,
                     _mido.Message(
@@ -3305,34 +3260,16 @@ def _apply_keys_modulation(
         (canal, tick, valor); o dedup do dispatch descarta duplicatas.
     """
 
-    import mido as _mido
-
     from ._helpers import (
-        first_tempo,
-        select_by_density,
-        sort_by_track_start_pitch,
-        technique_from_manual,
+        apply_symmetric_cc_envelope,
+        cc_envelope_setup,
+        iter_track_selections,
     )
-    from ._track_rebuild import collect_absolute, sort_and_flush
-    from .index import build_index
 
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+    prepared = cc_envelope_setup(context, mid, rng_key="modulation_select")
+    if prepared is None:
         return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
-
-    technique = technique_from_manual(context)
-    params = {p.name: p for p in technique.parameters}
-
-    def _int_param(name: str) -> int:
-        param = params.get(name)
-        if param is None or not isinstance(param.value, (int, float)):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
-            )
-        return int(param.value)
+    density, _technique, _int_param, teto_msgs, ticks_per_second, select_rng = prepared
 
     cc_mod = _int_param("cc")
     cc_lsb = _int_param("cc_lsb")
@@ -3386,129 +3323,18 @@ def _apply_keys_modulation(
     # Teto compartilhado da porta DIN — lacuna declarada em `keys.modulation`
     # (`eventos_por_segundo_recomendados` sem source); reusamos o teto fisico
     # sourced de `keys.pitch_bend` porque e limite da porta, nao da tecnica.
-    pitch_bend_manual = build_index().get("keys.pitch_bend")
-    if pitch_bend_manual is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r}: manual de keys.pitch_bend nao "
-            "encontrado para derivar teto de eventos"
+    for track, selected in iter_track_selections(
+        mid, density=density, rng=select_rng
+    ):
+        apply_symmetric_cc_envelope(
+            track,
+            selected,
+            cc=cc_mod,
+            rest_value=default_cc,
+            extreme_value=peak_cc1,
+            ticks_per_second=ticks_per_second,
+            teto_msgs=teto_msgs,
         )
-    teto_msgs = 1042
-    for param in pitch_bend_manual.parameters:
-        if param.name == "teto_mensagens_por_segundo_din" and isinstance(
-            param.value, (int, float)
-        ):
-            teto_msgs = int(param.value)
-            break
-
-    ticks_per_beat = mid.ticks_per_beat
-    if ticks_per_beat <= 0:
-        return mid
-    tempo_us = first_tempo(mid)
-    ticks_per_second = ticks_per_beat * 1_000_000 / tempo_us
-    steps_target = 8
-
-    select_rng = context.rng("modulation_select")
-
-    for track_index, track in enumerate(mid.tracks):
-        structural: list[dict] = []
-        pending: dict[tuple[int, int], list[dict]] = {}
-        tick = 0
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                entry = {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": tick,
-                    "end": None,
-                }
-                structural.append(entry)
-                pending.setdefault((msg.channel, msg.note), []).append(entry)
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if stack:
-                    stack.pop(0)["end"] = tick
-
-        structural = [
-            e for e in structural
-            if e["end"] is not None and e["channel"] != 9
-        ]
-        if not structural:
-            continue
-
-        candidates = [
-            {
-                "track_index": track_index,
-                "start": entry["start"],
-                "pitch": entry["pitch"],
-                "channel": entry["channel"],
-                "end": entry["end"],
-            }
-            for entry in structural
-        ]
-        selected = select_by_density(
-            candidates,
-            density=density,
-            rng=select_rng,
-            sort_key=sort_by_track_start_pitch,
-        )
-        if not selected:
-            continue
-
-        absolute = collect_absolute(track)
-        order = len(absolute)
-
-        for candidate in selected:
-            start = candidate["start"]
-            end = candidate["end"]
-            channel = candidate["channel"]
-            duration = end - start
-            if duration <= 1:
-                continue
-            midpoint = start + duration // 2
-            if midpoint <= start:
-                midpoint = start + 1
-            if midpoint >= end:
-                midpoint = end - 1
-
-            for low_tick, high_tick, low_value, high_value in (
-                (start, midpoint, default_cc, peak_cc1),
-                (midpoint, end, peak_cc1, default_cc),
-            ):
-                span_ticks = max(1, high_tick - low_tick)
-                span_seconds = span_ticks / ticks_per_second
-                max_by_rate = (
-                    max(2, int(span_seconds * teto_msgs))
-                    if span_seconds > 0
-                    else 2
-                )
-                max_by_ticks = max(2, span_ticks)
-                n_steps = max(2, min(steps_target, max_by_rate, max_by_ticks))
-                for i in range(1, n_steps + 1):
-                    frac = i / n_steps
-                    value = int(round(low_value + (high_value - low_value) * frac))
-                    value = max(0, min(127, value))
-                    step_tick = low_tick + int(round(span_ticks * frac))
-                    if step_tick < low_tick:
-                        step_tick = low_tick
-                    if step_tick > high_tick:
-                        step_tick = high_tick
-                    absolute.append((
-                        step_tick, -2, order,
-                        _mido.Message(
-                            "control_change",
-                            channel=channel,
-                            control=cc_mod,
-                            value=value,
-                        ),
-                    ))
-                    order += 1
-
-        sort_and_flush(absolute, track)
 
     return mid
 
@@ -3556,34 +3382,16 @@ def _apply_keys_expression(
         duplicatas.
     """
 
-    import mido as _mido
-
     from ._helpers import (
-        first_tempo,
-        select_by_density,
-        sort_by_track_start_pitch,
-        technique_from_manual,
+        apply_symmetric_cc_envelope,
+        cc_envelope_setup,
+        iter_track_selections,
     )
-    from ._track_rebuild import collect_absolute, sort_and_flush
-    from .index import build_index
 
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+    prepared = cc_envelope_setup(context, mid, rng_key="expression_select")
+    if prepared is None:
         return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
-
-    technique = technique_from_manual(context)
-    params = {p.name: p for p in technique.parameters}
-
-    def _int_param(name: str) -> int:
-        param = params.get(name)
-        if param is None or not isinstance(param.value, (int, float)):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
-            )
-        return int(param.value)
+    density, _technique, _int_param, teto_msgs, ticks_per_second, select_rng = prepared
 
     cc_expression = _int_param("cc_expression")
     cc_volume = _int_param("cc_volume")
@@ -3633,129 +3441,18 @@ def _apply_keys_expression(
 
     valley = max(0, default_cc11 - depth)
 
-    pitch_bend_manual = build_index().get("keys.pitch_bend")
-    if pitch_bend_manual is None:
-        raise ValueError(
-            f"tecnica {context.canonical!r}: manual de keys.pitch_bend nao "
-            "encontrado para derivar teto de eventos"
+    for track, selected in iter_track_selections(
+        mid, density=density, rng=select_rng
+    ):
+        apply_symmetric_cc_envelope(
+            track,
+            selected,
+            cc=cc_expression,
+            rest_value=default_cc11,
+            extreme_value=valley,
+            ticks_per_second=ticks_per_second,
+            teto_msgs=teto_msgs,
         )
-    teto_msgs = 1042
-    for param in pitch_bend_manual.parameters:
-        if param.name == "teto_mensagens_por_segundo_din" and isinstance(
-            param.value, (int, float)
-        ):
-            teto_msgs = int(param.value)
-            break
-
-    ticks_per_beat = mid.ticks_per_beat
-    if ticks_per_beat <= 0:
-        return mid
-    tempo_us = first_tempo(mid)
-    ticks_per_second = ticks_per_beat * 1_000_000 / tempo_us
-    steps_target = 8
-
-    select_rng = context.rng("expression_select")
-
-    for track_index, track in enumerate(mid.tracks):
-        structural: list[dict] = []
-        pending: dict[tuple[int, int], list[dict]] = {}
-        tick = 0
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                entry = {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": tick,
-                    "end": None,
-                }
-                structural.append(entry)
-                pending.setdefault((msg.channel, msg.note), []).append(entry)
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if stack:
-                    stack.pop(0)["end"] = tick
-
-        structural = [
-            e for e in structural
-            if e["end"] is not None and e["channel"] != 9
-        ]
-        if not structural:
-            continue
-
-        candidates = [
-            {
-                "track_index": track_index,
-                "start": entry["start"],
-                "pitch": entry["pitch"],
-                "channel": entry["channel"],
-                "end": entry["end"],
-            }
-            for entry in structural
-        ]
-        selected = select_by_density(
-            candidates,
-            density=density,
-            rng=select_rng,
-            sort_key=sort_by_track_start_pitch,
-        )
-        if not selected:
-            continue
-
-        absolute = collect_absolute(track)
-        order = len(absolute)
-
-        for candidate in selected:
-            start = candidate["start"]
-            end = candidate["end"]
-            channel = candidate["channel"]
-            duration = end - start
-            if duration <= 1:
-                continue
-            midpoint = start + duration // 2
-            if midpoint <= start:
-                midpoint = start + 1
-            if midpoint >= end:
-                midpoint = end - 1
-
-            for low_tick, high_tick, low_value, high_value in (
-                (start, midpoint, default_cc11, valley),
-                (midpoint, end, valley, default_cc11),
-            ):
-                span_ticks = max(1, high_tick - low_tick)
-                span_seconds = span_ticks / ticks_per_second
-                max_by_rate = (
-                    max(2, int(span_seconds * teto_msgs))
-                    if span_seconds > 0
-                    else 2
-                )
-                max_by_ticks = max(2, span_ticks)
-                n_steps = max(2, min(steps_target, max_by_rate, max_by_ticks))
-                for i in range(1, n_steps + 1):
-                    frac = i / n_steps
-                    value = int(round(low_value + (high_value - low_value) * frac))
-                    value = max(0, min(127, value))
-                    step_tick = low_tick + int(round(span_ticks * frac))
-                    if step_tick < low_tick:
-                        step_tick = low_tick
-                    if step_tick > high_tick:
-                        step_tick = high_tick
-                    absolute.append((
-                        step_tick, -2, order,
-                        _mido.Message(
-                            "control_change",
-                            channel=channel,
-                            control=cc_expression,
-                            value=value,
-                        ),
-                    ))
-                    order += 1
-
-        sort_and_flush(absolute, track)
 
     return mid
 
@@ -3804,30 +3501,13 @@ def _apply_keys_damper_pedal(
 
     import mido as _mido
 
-    from ._helpers import (
-        select_by_density,
-        sort_by_track_start_pitch,
-        technique_from_manual,
-    )
+    from ._helpers import iter_track_selections, technique_setup
     from ._track_rebuild import collect_absolute, sort_and_flush
 
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+    setup = technique_setup(context)
+    if setup is None:
         return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
-
-    technique = technique_from_manual(context)
-    params = {p.name: p for p in technique.parameters}
-
-    def _int_param(name: str) -> int:
-        param = params.get(name)
-        if param is None or not isinstance(param.value, (int, float)):
-            raise ValueError(
-                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
-            )
-        return int(param.value)
+    density, _technique, _int_param = setup
 
     cc = _int_param("cc")
     limiar_on_min = _int_param("limiar_on_min")
@@ -3884,56 +3564,9 @@ def _apply_keys_damper_pedal(
 
     select_rng = context.rng("damper_select")
 
-    for track_index, track in enumerate(mid.tracks):
-        structural: list[dict] = []
-        pending: dict[tuple[int, int], list[dict]] = {}
-        tick = 0
-        for msg in track:
-            tick += msg.time
-            if msg.is_meta:
-                continue
-            if msg.type == "note_on" and msg.velocity > 0:
-                entry = {
-                    "channel": msg.channel,
-                    "pitch": msg.note,
-                    "start": tick,
-                    "end": None,
-                }
-                structural.append(entry)
-                pending.setdefault((msg.channel, msg.note), []).append(entry)
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                stack = pending.get((msg.channel, msg.note))
-                if stack:
-                    stack.pop(0)["end"] = tick
-
-        structural = [
-            e for e in structural
-            if e["end"] is not None and e["channel"] != 9
-        ]
-        if not structural:
-            continue
-
-        candidates = [
-            {
-                "track_index": track_index,
-                "start": entry["start"],
-                "pitch": entry["pitch"],
-                "channel": entry["channel"],
-                "end": entry["end"],
-            }
-            for entry in structural
-        ]
-        selected = select_by_density(
-            candidates,
-            density=density,
-            rng=select_rng,
-            sort_key=sort_by_track_start_pitch,
-        )
-        if not selected:
-            continue
-
+    for track, selected in iter_track_selections(
+        mid, density=density, rng=select_rng
+    ):
         selected_sorted = sorted(
             selected, key=lambda c: (c["start"], c["channel"], c["pitch"])
         )

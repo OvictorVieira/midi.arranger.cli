@@ -138,6 +138,16 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `tests/test_techniques_engine.py` afirma a tupla exata e quebra o build se um registro fantasma
   aparecer. Inventário atual de bateria: `drums.accented_roll`, `drums.articulation_diff`,
   `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes` e `drums.microtiming`.
+  Inventário atual de teclas (issue #14): `keys.damper_pedal`, `keys.expression`,
+  `keys.modulation` e `keys.pitch_bend` — todas nível `technique`, só acrescentam CC/pitch bend,
+  nunca mudam pitch/posição/duração da nota estrutural. As dez restantes documentadas no manual
+  (`keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`,
+  `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`,
+  `keys.hammond_dynamics`, `keys.human_articulation`) continuam FORA de `SUPPORTED_TECHNIQUES` —
+  plano que as declare recebe `PlanValidationError` explícito. `filtro` (CC74) e `portamento`
+  (CC5/CC65), citados na issue #14 original, NÃO têm bloco de técnica próprio no manual (só
+  aparecem em prosa na §7.4 de `tecnicas_teclas_midi.md`): são pesquisa futura, não bug desta
+  rodada — não inventar bloco de técnica novo em cima deles.
 - Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
   no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
   63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por
