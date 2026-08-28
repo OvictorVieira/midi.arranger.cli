@@ -1429,6 +1429,7 @@ def _apply_drums_accent_hierarchy(
     soft_ceiling = _hi("soft", 79)
     normal_floor = _lo("normal", 80)
     hard_ceiling = _mid("hard_ceiling", 115)
+    pressure_max_drop = _mid("pressure_max_drop", 15)
 
     ticks_per_beat = mid.ticks_per_beat
     if ticks_per_beat <= 0:
@@ -1482,7 +1483,8 @@ def _apply_drums_accent_hierarchy(
                     target = normal_mid
 
             if original > soft_ceiling:
-                target = max(soft_ceiling + 1, min(target, original))
+                floor = max(soft_ceiling + 1, original - pressure_max_drop)
+                target = max(floor, min(target, original))
             target = max(1, min(hard_ceiling, target))
             if target != original:
                 velocity_by_index[int(note["note_on_index"])] = target
