@@ -248,6 +248,7 @@ class TechniqueRegistry:
                 before_technique.midi,
                 after_mid,
                 context.parameters,
+                context.recipe,
             )
             after = _StructuralSnapshot.from_midi(after_mid)
             _validate_technique_contract(
