@@ -73,3 +73,13 @@ def test_rejects_gate_ratio_above_one() -> None:
 def test_rejects_absurd_timing_jitter() -> None:
     with pytest.raises(ValueError, match="fora dos limites fisicos"):
         StyleProfile(timing_jitter_ms={"fill": (0, 5_000)})
+
+
+def test_rejects_non_mapping_argument() -> None:
+    with pytest.raises(ValueError, match="esperado mapping"):
+        StyleProfile(velocity_ranges=[("ghost", (5, 10))])  # type: ignore[arg-type]
+
+
+def test_rejects_non_numeric_range_bounds() -> None:
+    with pytest.raises(ValueError, match="numericos"):
+        StyleProfile(gate_ratios={"open": ("0.5", 0.8)})  # type: ignore[dict-item]

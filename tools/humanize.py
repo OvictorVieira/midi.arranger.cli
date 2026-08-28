@@ -340,7 +340,20 @@ class MicrotimingRequest:
     directional_bias_ms: int | None = None
 
 
-class MicrotimingEngine:
+class _ProfiledEngine:
+    """Base dos motores parametrizados por StyleProfile.
+
+    Guarda RNG seedado + StyleProfile resolvido para `default()` quando o
+    chamador nao passa nada. Existe para nao duplicar `__init__` em cada
+    motor (Microtiming, Duration) — a fatoracao e trivial mas o jscpd cobra.
+    """
+
+    def __init__(self, *, seed: int, profile: StyleProfile | None = None) -> None:
+        self._rng = random.Random(seed)
+        self._profile = profile or StyleProfile.default()
+
+
+class MicrotimingEngine(_ProfiledEngine):
     """Motor deterministico de microtiming.
 
     - Offset em ms por sync_role, seguindo TIMING_JITTER_MS.
@@ -348,10 +361,6 @@ class MicrotimingEngine:
     - Vies direcional configurado por elemento; jamais global.
     - Mesma seed + mesma sequencia de requests => mesma sequencia de offsets.
     """
-
-    def __init__(self, *, seed: int, profile: StyleProfile | None = None) -> None:
-        self._rng = random.Random(seed)
-        self._profile = profile or StyleProfile.default()
 
     def compute(self, req: MicrotimingRequest) -> int:
         """Devolve offset em ms (int arredondado) para a nota descrita."""
@@ -434,7 +443,7 @@ class DurationRequest:
     sustain_bars: int = 2
 
 
-class DurationEngine:
+class DurationEngine(_ProfiledEngine):
     """Motor deterministico de duracao.
 
     - Ghost/staccato/tight/open: duracao = gap * uniform(GATE_RATIOS[art]).
@@ -445,10 +454,6 @@ class DurationEngine:
       (garantido subtraindo DURATION_SAFETY_MS do gap).
     - Mesma seed + mesma sequencia de requests => mesma sequencia de duracoes.
     """
-
-    def __init__(self, *, seed: int, profile: StyleProfile | None = None) -> None:
-        self._rng = random.Random(seed)
-        self._profile = profile or StyleProfile.default()
 
     def compute(self, req: DurationRequest) -> float:
         """Devolve a duracao em ms."""
