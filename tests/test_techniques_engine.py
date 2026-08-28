@@ -207,6 +207,7 @@ def test_supported_techniques_is_derived_from_the_registry():
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
+        "keys.pitch_bend",
     )
 
 
@@ -230,6 +231,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
+        "keys.pitch_bend",
     )
 
 

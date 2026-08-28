@@ -3039,6 +3039,231 @@ def _apply_bass_let_ring(
 
     return mid
 
+
+@register_technique("keys.pitch_bend", "technique")
+def _apply_keys_pitch_bend(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Pitch bend em teclas — RPN 0, LSB+MSB completos, curva monotonica.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le do manual (via `build_index`): `centro`, `passos_para_baixo`,
+        `passos_para_cima`, `range_default_gm` e `teto_mensagens_por_segundo_din`.
+        Nada de hardcode.
+      - Sem `density` numerica positiva no plano: NO-OP. Bend geral e ausencia
+        de intencao musical.
+      - Emite RPN 0 (CC101=0, CC100=0, CC6=<semitons>, CC38=0) uma vez por canal
+        envolvido, antes do primeiro bend da track; fecha com RPN Null
+        (CC101=127, CC100=127) depois do ultimo bend da track.
+      - Cada bend selecionado e curva MONOTONICA na direcao (interval > 0 sobe,
+        interval < 0 desce) da cauda de A ate perto do ataque de B, com reset a
+        centro no proprio B.start.
+      - `mido.Message('pitchwheel', pitch=...)` grava LSB+MSB internamente;
+        a resolucao usada e a de `passos_para_(cima|baixo)`, nao 128.
+      - Densidade de eventos limitada por `teto_mensagens_por_segundo_din`.
+      - Idempotente: reaplicar com a mesma seed produz eventos com a mesma
+        assinatura (canal, tick, valor) e o dedup do dispatch central
+        descarta duplicatas.
+    """
+
+    import mido as _mido
+
+    from ._helpers import first_tempo, technique_from_manual
+    from ._track_rebuild import collect_absolute, sort_and_flush
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    technique = technique_from_manual(context)
+    params = {p.name: p for p in technique.parameters}
+
+    def _int_param(name: str) -> int:
+        param = params.get(name)
+        if param is None or not isinstance(param.value, (int, float)):
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
+            )
+        return int(param.value)
+
+    centro = _int_param("centro")
+    passos_para_baixo = _int_param("passos_para_baixo")
+    passos_para_cima = _int_param("passos_para_cima")
+    teto_msgs = _int_param("teto_mensagens_por_segundo_din")
+    if centro != 8192:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera centro=8192 (MIDI 1.0); "
+            f"manual declarou {centro}"
+        )
+
+    range_raw = context.parameters.get("range")
+    if isinstance(range_raw, (int, float)) and not isinstance(range_raw, bool):
+        range_semitones = max(1, int(range_raw))
+    else:
+        range_semitones = _int_param("range_default_gm")
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    tempo_us = first_tempo(mid)
+    ticks_per_second = ticks_per_beat * 1_000_000 / tempo_us
+    max_gap_ticks = ticks_per_beat
+    steps_target = 8
+
+    select_rng = context.rng("pitch_bend_select")
+
+    for track in mid.tracks:
+        structural: list[dict] = []
+        pending: dict[tuple[int, int], list[dict]] = {}
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                entry = {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": tick,
+                    "end": None,
+                }
+                structural.append(entry)
+                pending.setdefault((msg.channel, msg.note), []).append(entry)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if stack:
+                    stack.pop(0)["end"] = tick
+
+        structural = [e for e in structural if e["end"] is not None]
+        if len(structural) < 2:
+            continue
+
+        by_channel: dict[int, list[dict]] = {}
+        for entry in structural:
+            by_channel.setdefault(entry["channel"], []).append(entry)
+        for lst in by_channel.values():
+            lst.sort(key=lambda item: (item["start"], item["end"]))
+
+        pairs: list[tuple[dict, dict]] = []
+        for lst in by_channel.values():
+            for a, b in zip(lst, lst[1:], strict=False):
+                interval = b["pitch"] - a["pitch"]
+                if interval == 0 or abs(interval) > range_semitones:
+                    continue
+                if b["start"] <= a["start"]:
+                    continue
+                if b["start"] - a["end"] > max_gap_ticks:
+                    continue
+                pairs.append((a, b))
+
+        pairs.sort(key=lambda pair: (pair[0]["start"], pair[0]["channel"]))
+        selected: list[tuple[dict, dict]] = []
+        if density >= 1.0:
+            selected = list(pairs)
+        else:
+            for pair in pairs:
+                if select_rng.random() < density:
+                    selected.append(pair)
+        if not selected:
+            continue
+
+        absolute = collect_absolute(track)
+        order = len(absolute)
+
+        first_bend_tick = min(a["start"] for a, _ in selected)
+        last_reset_tick = max(b["start"] for _, b in selected)
+        channels = sorted({a["channel"] for a, _ in selected})
+
+        rpn_tick = max(0, first_bend_tick - 1)
+        for channel in channels:
+            for cc_num, cc_val in (
+                (101, 0), (100, 0), (6, range_semitones), (38, 0),
+            ):
+                absolute.append((
+                    rpn_tick, -3, order,
+                    _mido.Message(
+                        "control_change", channel=channel,
+                        control=cc_num, value=cc_val,
+                    ),
+                ))
+                order += 1
+
+        for a, b in selected:
+            interval = b["pitch"] - a["pitch"]
+            if interval > 0:
+                target_wheel = int(round(passos_para_cima * interval / range_semitones))
+                target_wheel = max(0, min(passos_para_cima, target_wheel))
+            else:
+                target_wheel = -int(round(
+                    passos_para_baixo * abs(interval) / range_semitones
+                ))
+                target_wheel = max(-passos_para_baixo, min(0, target_wheel))
+            if target_wheel == 0:
+                continue
+
+            a_mid = a["start"] + max(1, (a["end"] - a["start"]) // 2)
+            span_start = min(a_mid, b["start"] - 1)
+            span_end = b["start"] - 1
+            if span_end <= span_start:
+                span_start = max(a["start"], b["start"] - 2)
+                span_end = b["start"] - 1
+            span_ticks = max(1, span_end - span_start)
+            span_seconds = span_ticks / ticks_per_second
+            max_steps_by_rate = (
+                max(2, int(span_seconds * teto_msgs)) if span_seconds > 0 else 2
+            )
+            max_steps_by_ticks = max(2, span_ticks)
+            n_steps = max(2, min(steps_target, max_steps_by_rate, max_steps_by_ticks))
+
+            for i in range(n_steps):
+                frac = (i + 1) / n_steps
+                pitch_value = int(round(target_wheel * frac))
+                if target_wheel > 0:
+                    pitch_value = max(0, min(target_wheel, pitch_value))
+                else:
+                    pitch_value = min(0, max(target_wheel, pitch_value))
+                step_tick = span_start + int(round(span_ticks * frac))
+                if step_tick > span_end:
+                    step_tick = span_end
+                if step_tick < span_start:
+                    step_tick = span_start
+                absolute.append((
+                    step_tick, -2, order,
+                    _mido.Message(
+                        "pitchwheel", channel=a["channel"], pitch=pitch_value,
+                    ),
+                ))
+                order += 1
+            absolute.append((
+                b["start"], -2, order,
+                _mido.Message("pitchwheel", channel=a["channel"], pitch=0),
+            ))
+            order += 1
+
+        null_tick = last_reset_tick + 1
+        for channel in channels:
+            for cc_num, cc_val in ((101, 127), (100, 127)):
+                absolute.append((
+                    null_tick, 5, order,
+                    _mido.Message(
+                        "control_change", channel=channel,
+                        control=cc_num, value=cc_val,
+                    ),
+                ))
+                order += 1
+
+        sort_and_flush(absolute, track)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
