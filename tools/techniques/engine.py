@@ -3513,6 +3513,253 @@ def _apply_keys_modulation(
     return mid
 
 
+@register_technique("keys.expression", "technique")
+def _apply_keys_expression(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Expression em teclas — CC11 (dinamica), NUNCA CC7 (fader).
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le do manual `keys.expression` (via `build_index`): `cc_expression` (11),
+        `cc_volume` (7), `default_cc11` (127), `cc11_lsb` (43). O `cc_volume` e
+        lido SO para o assert de manual — nunca e emitido; um teste explicito
+        garante isso. O `cc11_lsb` idem: passos inteiros de CC11 nao precisam
+        de LSB, e emiti-lo seria inventar cadencia fracionaria.
+      - Sem `density` numerica positiva no plano: NO-OP.
+      - `default_cc11` (127) e o repouso. A curva SO se afasta do repouso
+        DENTRO da nota e obrigatoriamente RETORNA a 127 no fim da nota. Nunca
+        comeca nem termina fora do default sem retornar — teste explicito.
+      - Direcao: 127 e o teto pratico do CC11, entao o unico movimento
+        significativo e para BAIXO (dip). O manual documenta db_em_cc_64=-11.9
+        e db_em_cc_96=-4.9 como valores sourced da curva quadratica do GM2;
+        usamos CC11=64 como VALLEY default (dip de 63 abaixo do repouso).
+      - Lacuna: `forma_temporal_recomendada_da_rampa` esta com `source: null`
+        no manual (lacuna declarada). CONVENCAO: rampa linear simetrica
+        (127 -> valley -> 127) — mesma forma canonica de `keys.modulation`,
+        que ja e a curva mais barata de auditar em teste e nao introduz
+        segunda ordem sem source. Se um dia a MMA normatizar forma, o
+        aplicador troca a curva sem mexer no restante.
+      - Cadencia de eventos: mesmo caso da modulation — reusamos o
+        `teto_mensagens_por_segundo_din` de `keys.pitch_bend` (1042 msg/s,
+        limite fisico da porta DIN) como teto compartilhado. Mesmo
+        `steps_target=8`.
+      - Canal 9 (bateria) e ignorado: expression e usada por keys/melodicos;
+        aplicar em drum channel seria fora da familia da tecnica.
+      - `depth` opcional do plano: se ausente, dip default (63) do repouso.
+        Faixa aceita: 1..default_cc11 (127). Fora dessa faixa, ValueError
+        explicito. `depth=0` (nao positivo) e NO-OP (equivale a densidade zero
+        para esta nota).
+      - Determinismo por seed; idempotente: mesma seed gera eventos com a
+        mesma assinatura (canal, tick, valor); o dedup do dispatch descarta
+        duplicatas.
+    """
+
+    import mido as _mido
+
+    from ._helpers import (
+        first_tempo,
+        select_by_density,
+        sort_by_track_start_pitch,
+        technique_from_manual,
+    )
+    from ._track_rebuild import collect_absolute, sort_and_flush
+    from .index import build_index
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    technique = technique_from_manual(context)
+    params = {p.name: p for p in technique.parameters}
+
+    def _int_param(name: str) -> int:
+        param = params.get(name)
+        if param is None or not isinstance(param.value, (int, float)):
+            raise ValueError(
+                f"tecnica {context.canonical!r} precisa declarar {name} no manual"
+            )
+        return int(param.value)
+
+    cc_expression = _int_param("cc_expression")
+    cc_volume = _int_param("cc_volume")
+    default_cc11 = _int_param("default_cc11")
+    cc11_lsb = _int_param("cc11_lsb")
+    if cc_expression != 11:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera cc_expression=11 (MIDI 1.0); "
+            f"manual declarou {cc_expression}"
+        )
+    if cc_volume != 7:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera cc_volume=7 (MIDI 1.0); "
+            f"manual declarou {cc_volume}"
+        )
+    if cc11_lsb != 43:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera cc11_lsb=43 (MIDI 1.0); "
+            f"manual declarou {cc11_lsb}"
+        )
+    if default_cc11 != 127:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera default_cc11=127 (GM2); "
+            f"manual declarou {default_cc11}"
+        )
+
+    depth_raw = context.parameters.get("depth")
+    if depth_raw is None:
+        # CONVENCAO: valley em CC11=64 (dip de 63) — unico valor sourced
+        # da tabela GM2 (-11.9 dB) representando meio-curso auditivo.
+        depth = 63
+    elif not isinstance(depth_raw, (int, float)) or isinstance(depth_raw, bool):
+        raise ValueError(
+            f"tecnica {context.canonical!r}: depth precisa ser numero"
+        )
+    else:
+        depth_num = float(depth_raw)
+        if depth_num <= 0.0:
+            return mid
+        if depth_num > default_cc11:
+            raise ValueError(
+                f"tecnica {context.canonical!r}: depth={depth_num} "
+                f"excede default_cc11={default_cc11}"
+            )
+        depth = int(round(depth_num))
+        depth = max(1, min(default_cc11, depth))
+
+    valley = max(0, default_cc11 - depth)
+
+    pitch_bend_manual = build_index().get("keys.pitch_bend")
+    if pitch_bend_manual is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: manual de keys.pitch_bend nao "
+            "encontrado para derivar teto de eventos"
+        )
+    teto_msgs = 1042
+    for param in pitch_bend_manual.parameters:
+        if param.name == "teto_mensagens_por_segundo_din" and isinstance(
+            param.value, (int, float)
+        ):
+            teto_msgs = int(param.value)
+            break
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    tempo_us = first_tempo(mid)
+    ticks_per_second = ticks_per_beat * 1_000_000 / tempo_us
+    steps_target = 8
+
+    select_rng = context.rng("expression_select")
+
+    for track_index, track in enumerate(mid.tracks):
+        structural: list[dict] = []
+        pending: dict[tuple[int, int], list[dict]] = {}
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                entry = {
+                    "channel": msg.channel,
+                    "pitch": msg.note,
+                    "start": tick,
+                    "end": None,
+                }
+                structural.append(entry)
+                pending.setdefault((msg.channel, msg.note), []).append(entry)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if stack:
+                    stack.pop(0)["end"] = tick
+
+        structural = [
+            e for e in structural
+            if e["end"] is not None and e["channel"] != 9
+        ]
+        if not structural:
+            continue
+
+        candidates = [
+            {
+                "track_index": track_index,
+                "start": entry["start"],
+                "pitch": entry["pitch"],
+                "channel": entry["channel"],
+                "end": entry["end"],
+            }
+            for entry in structural
+        ]
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=sort_by_track_start_pitch,
+        )
+        if not selected:
+            continue
+
+        absolute = collect_absolute(track)
+        order = len(absolute)
+
+        for candidate in selected:
+            start = candidate["start"]
+            end = candidate["end"]
+            channel = candidate["channel"]
+            duration = end - start
+            if duration <= 1:
+                continue
+            midpoint = start + duration // 2
+            if midpoint <= start:
+                midpoint = start + 1
+            if midpoint >= end:
+                midpoint = end - 1
+
+            for low_tick, high_tick, low_value, high_value in (
+                (start, midpoint, default_cc11, valley),
+                (midpoint, end, valley, default_cc11),
+            ):
+                span_ticks = max(1, high_tick - low_tick)
+                span_seconds = span_ticks / ticks_per_second
+                max_by_rate = (
+                    max(2, int(span_seconds * teto_msgs))
+                    if span_seconds > 0
+                    else 2
+                )
+                max_by_ticks = max(2, span_ticks)
+                n_steps = max(2, min(steps_target, max_by_rate, max_by_ticks))
+                for i in range(1, n_steps + 1):
+                    frac = i / n_steps
+                    value = int(round(low_value + (high_value - low_value) * frac))
+                    value = max(0, min(127, value))
+                    step_tick = low_tick + int(round(span_ticks * frac))
+                    if step_tick < low_tick:
+                        step_tick = low_tick
+                    if step_tick > high_tick:
+                        step_tick = high_tick
+                    absolute.append((
+                        step_tick, -2, order,
+                        _mido.Message(
+                            "control_change",
+                            channel=channel,
+                            control=cc_expression,
+                            value=value,
+                        ),
+                    ))
+                    order += 1
+
+        sort_and_flush(absolute, track)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 
