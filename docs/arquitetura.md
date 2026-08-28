@@ -143,7 +143,11 @@ reproduz esses três dicionários byte a byte — `constants.py` continua sendo 
 default e não é apagado nem movido. `tools/humanize.py` (base_velocity, VelocityEngine,
 MicrotimingEngine, DurationEngine) e `tools/edits.py` (apply_edits, apply_edit) aceitam o profile
 como keyword-only opcional no final da assinatura; toda chamada antiga continua válida e
-byte-idêntica porque cai em `StyleProfile.default()`. Perfil muda a FAIXA de sorteio, nunca a
+byte-idêntica porque cai em `StyleProfile.default()`. HOJE só `gate_ratios` chega efetivamente a
+`apply_edits` — `timing_jitter_ms` do perfil ainda não substitui o `sigma_ms` fixo por profile em
+`tools/edits.py::ProfileParams`; a monotonicidade desse dicionário está provada isoladamente em
+`MicrotimingEngine`, não ponta a ponta pelo pipeline de edits. Fechar essa propagação é trabalho
+futuro, não bug desta rodada. Perfil muda a FAIXA de sorteio, nunca a
 fórmula. O construtor valida sanidade física (velocity em [0,127], gate em [0,1], jitter em
 [0,250] ms) e levanta `ValueError` antes de qualquer render.
 
