@@ -234,3 +234,79 @@ def test_virada_com_origem_alta_saida_permanece_alta():
         f"virada com origem 100 rebaixada: {low}. A tecnica nao pode inverter "
         "a intencao da origem dentro de janela classificada como virada."
     )
+
+
+def test_density_zero_desliga_a_tecnica():
+    """`density=0` retorna o MIDI intocado, mesma regra das demais tecnicas."""
+
+    src = _fill_fixture_all_at(100)
+    src_notes = _drum_notes(src)
+    out = apply_technique(
+        "drums.accent_hierarchy",
+        src,
+        seed=1,
+        parameters={"density": 0.0},
+    )
+    assert _drum_notes(out) == src_notes
+
+
+def test_nota_ja_em_faixa_ghost_ou_soft_permanece_intocada():
+    """Origem <= `normal_floor` fica igual — a hierarquia nao empurra pra cima."""
+
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    for pitch, vel in ((38, 25), (42, 55), (36, 40)):
+        track.append(mido.Message("note_on", channel=9, note=pitch, velocity=vel, time=0))
+        track.append(mido.Message("note_off", channel=9, note=pitch, velocity=0, time=60))
+    src_notes = _drum_notes(mid)
+
+    out = apply_technique("drums.accent_hierarchy", mid, seed=1)
+    assert _drum_notes(out) == src_notes
+
+
+def test_camada_sem_resolucao_usa_default_local_sem_quebrar():
+    """Override invalido de camada cai no default local em vez de crashar.
+
+    `load_range_resolver` devolve `None` quando o parametro nao resolve, e o
+    aplicador tem fallback numerico em `_mid/_lo/_hi` justamente para nao
+    perder o mapeamento. Guarda esse caminho — se sumir o default, a saida
+    da tecnica quebra silenciosamente para qualquer plano que passe override
+    fora do formato esperado.
+    """
+
+    src = _fill_fixture_all_at(100)
+    src_notes = _drum_notes(src)
+    out = apply_technique(
+        "drums.accent_hierarchy",
+        src,
+        seed=1,
+        parameters={
+            "accent": None,
+            "primary": None,
+            "normal": None,
+            "soft": None,
+            "ghost": None,
+            "hard_ceiling": None,
+            "pressure_max_drop": None,
+        },
+    )
+    out_notes = _drum_notes(out)
+    assert len(out_notes) == len(src_notes)
+    low = [(pitch, vel, tick) for pitch, vel, tick in out_notes if vel < 90]
+    assert not low
+
+
+def test_ticks_por_beat_invalido_nao_altera_o_midi():
+    """Guarda de sanidade: MIDI com tpb <= 0 devolve intocado."""
+
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    mid.tracks.append(track)
+    track.append(mido.Message("note_on", channel=9, note=38, velocity=120, time=0))
+    track.append(mido.Message("note_off", channel=9, note=38, velocity=0, time=60))
+    mid.ticks_per_beat = 0
+    src_notes = _drum_notes(mid)
+
+    out = apply_technique("drums.accent_hierarchy", mid, seed=1)
+    assert _drum_notes(out) == src_notes

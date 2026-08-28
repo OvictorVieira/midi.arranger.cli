@@ -430,23 +430,28 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
 
 ### 7.1 Hierarquia de acento
 
-> **NÃO IMPLEMENTADA NO MOTOR — ver issue #50.** A técnica continua documentada aqui porque o
-> conhecimento está certo; o que estava errado era a implementação. Ela decidia a camada **só pela
-> posição métrica**, sem nenhuma noção de virada, então dentro de uma virada — onde quase toda nota
+> **HISTÓRICO — defeito e correção (issue #50).** A primeira implementação decidia a camada **só
+> pela posição métrica**, sem nenhuma noção de virada; dentro de uma virada — onde quase toda nota
 > é contratempo — rebaixava tudo. Medido sobre `tests/fixtures/corpus_drums/DEIXE IR.mid`: 63 das 65
 > caixas em contratempo com velocity de origem ≥ 110 saíam ≤ 45, e a mediana dos toms caía de 127
-> para 67. A hierarquia invertia a intenção: quem escreve 127 não está escrevendo ghost note.
+> para 67. A hierarquia invertia a intenção: quem escreve 127 não está escrevendo ghost note. A
+> técnica foi removida do motor no commit `0addf93` para não seguir corrompendo o material do
+> usuário.
 >
-> Note que a tabela de camadas da §2.2 já distingue **"acento de virada"** (105–120) de **"tom de
-> preenchimento"** (55–79). O motor nunca implementou a primeira e jogava todo tom na segunda —
-> era leitura errada deste manual, não falta de informação.
->
-> Reimplementar exige separar contexto de groove de contexto de virada, e o limiar quantitativo de
-> virada é **lacuna declarada** na §11. Qualquer limiar adotado entra como `CONVENÇÃO`, com
-> justificativa, nunca como número solto no dispatch.
->
-> Enquanto isso, plano que declare `drums.accent_hierarchy` recebe `PlanValidationError` explícito.
-> Não vira no-op silencioso.
+> **RESOLUÇÃO (issue #50, esta rodada).** A técnica voltou ao motor com duas correções estruturais
+> em cima da mesma base de conhecimento. (a) Detecção determinística de virada em
+> `tools/techniques/_fill_detection.py`, reusando o padrão de `roll_sequences` de
+> `drums.accented_roll` (agrupamento por gap ≤ `fill_max_gap_beats`, mínimo de `fill_min_notes`,
+> `fill_min_density_per_beat` e `fill_min_piece_variety`, filtrando hi-hat contínuo antes do
+> agrupamento). Dentro de janela de virada, tom/caixa/prato vão para a camada **"acento de
+> virada"** (105–120) da §2.2 — a camada que a implementação original nunca leu — em vez de cair
+> em ghost/soft. (b) Invariante de pressão em duas camadas dentro do aplicador: o piso
+> `soft_ceiling+1` impede que nota escrita no topo caia para ghost/soft, e o piso
+> `original - pressure_max_drop` (default 15, `CONVENÇÃO` neste bloco) limita quanto uma nota
+> pode ser rebaixada. Fora de virada, a lógica de posição métrica (quantização ao 16-avo, mapa GM
+> de peças) diferencia backbeat/downbeat das notas de fundo. Todos os limiares de virada e o teto
+> de rebaixamento são `parameters` com `source: "CONVENÇÃO — ..."` neste bloco, fechando a lacuna
+> declarada na §11.
 
 ```technique
 {

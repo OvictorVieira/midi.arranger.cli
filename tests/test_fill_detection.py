@@ -126,6 +126,28 @@ def test_notas_fora_do_canal_de_bateria_sao_ignoradas():
     assert fill_windows(baixo, ticks_per_beat=TPB) == ()
 
 
+def test_run_com_uma_unica_familia_nao_e_virada():
+    """Run rapido, denso e longo, mas so uma familia — nao vale como virada.
+
+    Guarda o piso `fill_min_piece_variety`: ostinato de caixa sozinha e
+    exercicio de rudimento, nao virada de arranjo.
+    """
+
+    so_caixa = [
+        _note(38, step * (TPB // 4), velocity=100)
+        for step in range(FILL_MIN_NOTES + 2)
+    ]
+    assert is_fill_run(so_caixa, ticks_per_beat=TPB) is False
+
+
+def test_fill_windows_com_ticks_por_beat_invalido_retorna_vazio():
+    """Guarda de sanidade: MIDI corrompido nao trava a deteccao."""
+
+    notes = _dense_fill_bar()
+    assert fill_windows(notes, ticks_per_beat=0) == ()
+    assert fill_windows(notes, ticks_per_beat=-1) == ()
+
+
 def test_convencoes_sao_lidas_do_manual():
     """As convencoes do modulo casam com o bloco `accent_hierarchy` do manual.
 

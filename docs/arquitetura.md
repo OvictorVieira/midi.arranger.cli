@@ -143,6 +143,7 @@ que harmonia, placement, artificialidade e persona validem também os ornamentos
 
 Inventário atual de técnicas de bateria que o motor executa:
 
+- `drums.accent_hierarchy` (`humanize`)
 - `drums.accented_roll` (`humanize`)
 - `drums.articulation_diff` (`technique`, troca articulação da mesma peça)
 - `drums.buzz_roll` (`technique`)
@@ -151,10 +152,18 @@ Inventário atual de técnicas de bateria que o motor executa:
 - `drums.ghost_notes` (`technique`)
 - `drums.microtiming` (`humanize`)
 
-`drums.accent_hierarchy` continua fora do motor e fora de `SUPPORTED_TECHNIQUES`: ela está
-documentada no manual, mas só deve entrar quando a issue #50 entregar um aplicador real que não
-inverta a intenção de velocity da origem. Plano que declara técnica documentada mas não suportada
-falha na validação em vez de ser aceito como no-op.
+`drums.accent_hierarchy` foi reintroduzida na issue #50 depois da remoção que motivou a lição de
+"nunca inverter a intenção da origem". A implementação nova combina duas peças: (a) detecção
+determinística de virada em `tools/techniques/_fill_detection.py`, que reusa o padrão de
+`roll_sequences` de `drums.accented_roll` (agrupamento por gap máximo, filtragem de hi-hat
+contínuo, critérios de densidade/variedade/backbeat) e classifica cada trecho como virada ou
+groove estável; e (b) invariante de pressão em duas camadas dentro do aplicador — piso
+`soft_ceiling+1` impede que nota escrita no topo caia para ghost/soft, e piso
+`original - pressure_max_drop` (default 15, `source: CONVENÇÃO` no manual) limita quanto uma nota
+pode ser rebaixada. Dentro de janela de virada, tom/caixa/prato vão para `accent_ceiling` (não
+para ghost/soft); fora de virada, a lógica de posição métrica (quantização ao 16-avo, mapa GM de
+peças) diferencia backbeat/downbeat das notas de fundo. Plano que declara técnica documentada mas
+não suportada continua falhando na validação em vez de ser aceito como no-op.
 
 Exemplo mínimo válido:
 
@@ -227,7 +236,7 @@ Estado atual do motor:
 
 | Família | Executadas pelo motor | Documentadas, ainda sem aplicador |
 |---|---|---|
-| `drums` | `drums.ghost_notes` | `drums.accent_hierarchy` (issue #50) |
+| `drums` | `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes`, `drums.microtiming` | — |
 | `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.string_selection`, `bass.harmonic` |
 | `keys` | — | tudo documentado |
 | `guitar` | — | tudo documentado |
