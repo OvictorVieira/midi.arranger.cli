@@ -11,6 +11,7 @@ humanizacao, sem mudar a formula de calculo.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -31,7 +32,13 @@ TIMING_JITTER_MS_BOUNDS: tuple[float, float] = (0.0, 250.0)
 
 
 def _freeze(ranges: Mapping[str, tuple[float, float]]) -> Mapping[str, tuple[float, float]]:
-    return MappingProxyType({str(k): (float(v[0]), float(v[1])) for k, v in ranges.items()})
+    # NAO forca float(): `constants.py` declara varios pares como int
+    # (`VELOCITY_RANGES["ghost"] = (20, 50)`), e `default()` promete
+    # reproduzir esses tres dicionarios "byte a byte". Forcar float aqui
+    # trocava `(20, 50)` por `(20.0, 50.0)` — igual por `==`, mas divergente
+    # em tipo para qualquer consumidor sensivel a isso (serializacao, por
+    # exemplo). So imutabiliza a tupla; a validacao numerica ja rodou.
+    return MappingProxyType({str(k): (v[0], v[1]) for k, v in ranges.items()})
 
 
 def _validate(
@@ -50,8 +57,16 @@ def _validate(
             lo, hi = value
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{label}[{key!r}]: esperado par (lo, hi)") from exc
-        if not isinstance(lo, (int, float)) or not isinstance(hi, (int, float)):
+        if (
+            not isinstance(lo, (int, float)) or isinstance(lo, bool)
+            or not isinstance(hi, (int, float)) or isinstance(hi, bool)
+        ):
             raise ValueError(f"{label}[{key!r}]: lo/hi devem ser numericos")
+        # `nan > x` e `nan < x` sao SEMPRE False — sem isto, `(nan, nan)`
+        # atravessava `lo > hi` e a checagem de limites sem disparar erro
+        # nenhum, e o valor invalido so estourava tarde, dentro do render.
+        if not math.isfinite(lo) or not math.isfinite(hi):
+            raise ValueError(f"{label}[{key!r}]: lo/hi devem ser finitos, recebido ({lo}, {hi})")
         if lo > hi:
             raise ValueError(f"{label}[{key!r}]: lo ({lo}) > hi ({hi})")
         if lo < lo_bound or hi > hi_bound:
