@@ -1362,6 +1362,137 @@ def _apply_drums_flam(
     return mid
 
 
+@register_technique("drums.accent_hierarchy", "humanize")
+def _apply_drums_accent_hierarchy(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Redistribui velocity em camadas (acento/primario/normal/suave/ghost).
+
+    Reimplementacao pos-issue #50. A versao antiga decidia camada so pela
+    posicao metrica e rebaixava a virada inteira porque virada e feita de
+    contratempo. Aqui:
+
+      - Detectamos virada via `tools.techniques._fill_detection.fill_windows`,
+        que reusa o padrao de agrupamento por gap de `drums.accented_roll` e
+        aplica os quatro criterios da CONVENCAO documentada no bloco
+        `accent_hierarchy` do manual.
+      - Dentro de virada, tom/caixa/prato leem "acento de virada" (105-120,
+        exatamente a camada da tabela 2.2 que o motor antigo nunca usou).
+      - Fora de virada, backbeat/downbeat mapeiam para acento/primario e o
+        resto para a camada correspondente.
+      - Camadas vem do manual via `load_range_resolver`, com precedencia
+        `context.parameters` > `context.recipe` > manual.
+      - INVARIANTE DE PRESSAO: nota com velocity de origem > teto suave nunca
+        sai <= teto suave. Somada ao teto duro (~115), a saida cabe entre
+        `soft_ceiling+1` e `hard_ceiling`. Esta invariante e o que impede a
+        inversao que motivou a remocao original.
+      - Notas ja em faixa suave/ghost na origem NAO sao empurradas para cima.
+      - `density=0` desliga (via `density_disabled`), como as demais tecnicas.
+    """
+
+    from ._fill_detection import fill_windows, piece_family
+    from ._helpers import density_disabled, iter_note_dicts, rebuild_track
+    from ._param_range import load_range_resolver
+
+    if density_disabled(context):
+        return mid
+
+    _, _range = load_range_resolver(context)
+
+    def _mid(name: str, default: int) -> int:
+        rng = _range(name)
+        if rng is None:
+            return default
+        return int(round((rng[0] + rng[1]) / 2))
+
+    def _lo(name: str, default: int) -> int:
+        rng = _range(name)
+        if rng is None:
+            return default
+        return int(round(rng[0]))
+
+    def _hi(name: str, default: int) -> int:
+        rng = _range(name)
+        if rng is None:
+            return default
+        return int(round(rng[1]))
+
+    accent_mid = _mid("accent", 112)
+    accent_hi = _hi("accent", 120)
+    primary_mid = _mid("primary", 107)
+    primary_hi = _hi("primary", 115)
+    normal_mid = _mid("normal", 90)
+    soft_mid = _mid("soft", 67)
+    ghost_mid = _mid("ghost", 32)
+    soft_ceiling = _hi("soft", 79)
+    normal_floor = _lo("normal", 80)
+    hard_ceiling = _mid("hard_ceiling", 115)
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    sixteenth = max(1, ticks_per_beat // 4)
+
+    for track in mid.tracks:
+        drum_notes = [
+            note for note in iter_note_dicts(track)
+            if int(note["channel"]) == 9
+        ]
+        if not drum_notes:
+            continue
+        windows = fill_windows(drum_notes, ticks_per_beat=ticks_per_beat)
+
+        velocity_by_index: dict[int, int] = {}
+        for note in drum_notes:
+            original = int(note["velocity"])
+            if original <= normal_floor:
+                continue
+            family = piece_family(int(note["pitch"]))
+            position = round(int(note["start"]) / sixteenth) % 16
+            on_backbeat = position in (4, 12)
+            on_downbeat = position in (0, 8)
+            note_tick = int(note["start"])
+            is_fill = any(
+                start <= note_tick <= end for start, end in windows
+            )
+
+            if is_fill:
+                if family in ("tom", "snare", "cymbal"):
+                    target = accent_hi
+                elif family == "kick":
+                    target = primary_hi
+                elif family == "hihat":
+                    target = normal_mid
+                else:
+                    target = normal_mid
+            else:
+                if family == "snare":
+                    target = accent_mid if on_backbeat else ghost_mid
+                elif family == "kick":
+                    target = primary_mid if on_downbeat else normal_mid
+                elif family == "hihat":
+                    target = normal_mid if (on_backbeat or on_downbeat) else soft_mid
+                elif family == "tom":
+                    target = soft_mid
+                elif family == "cymbal":
+                    target = accent_mid if on_downbeat else primary_mid
+                else:
+                    target = normal_mid
+
+            if original > soft_ceiling:
+                target = max(soft_ceiling + 1, min(target, original))
+            target = max(1, min(hard_ceiling, target))
+            if target != original:
+                velocity_by_index[int(note["note_on_index"])] = target
+
+        if velocity_by_index:
+            rebuild_track(track, velocity_by_index=velocity_by_index)
+
+    return mid
+
+
 @register_technique("drums.accented_roll", "humanize")
 def _apply_drums_accented_roll(
     mid: mido.MidiFile,
