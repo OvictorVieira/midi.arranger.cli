@@ -720,6 +720,46 @@ def test_structural_pitch_permission_rejects_one_to_many_note_expansion():
         registry.apply("drums.articulation_diff", source, seed=1)
 
 
+def test_structural_pitch_permission_rejects_unclosed_note_on():
+    """Achado do Codex na PR #63 (issue #56).
+
+    `_StructuralSnapshot` deriva de `_collect_notes`, que so grava pares
+    completos e silenciosamente ignora `note_on` aberto no fim da track. Um
+    aplicador com `allow_structural_pitch_change=True` que troca o pitch de
+    uma nota estrutural E acrescenta um `note_on` extra SEM `note_off`
+    correspondente nunca aparecia em `after_shape - before_shape`, porque o
+    evento nem entrava no snapshot -- a bijecao de contagem aceitava uma
+    saida com mais `note_on` do que `note_off` e uma nota presa no MIDI.
+    """
+    registry = TechniqueRegistry()
+
+    @registry.register(
+        "drums.articulation_diff",
+        "technique",
+        allow_structural_pitch_change=True,
+    )
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        on = mid.tracks[1][1]
+        off = mid.tracks[1][2]
+        mid.tracks[1][1] = on.copy(note=40)
+        mid.tracks[1][2] = off.copy(note=40)
+        # note_on sem note_off correspondente (nota presa no fim da track).
+        mid.tracks[1].append(
+            mido.Message("note_on", channel=9, note=41, velocity=100, time=0)
+        )
+        return mid
+
+    source = _midi_with_notes("Drums", channel=9, notes=[(0, 120, 38, 100)])
+
+    with pytest.raises(TechniqueContractError, match="note_on sem"):
+        registry.apply("drums.articulation_diff", source, seed=1)
+
+
 def test_technique_application_is_idempotent_in_memory_byte_for_byte():
     registry = _ornament_registry()
     once = _apply_two_ornament_techniques(registry, _midi_with_drums_and_bass())

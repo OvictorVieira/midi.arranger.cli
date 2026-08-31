@@ -241,6 +241,7 @@ class TechniqueRegistry:
             )
         if before_technique is not None:
             after_mid = _result_midi(result) or working_mid or before_technique.midi
+            _assert_all_notes_closed(after_mid, technique.canonical)
             _drop_reapplied_notes(before_technique.snapshot, after_mid)
             _drop_reapplied_continuous_events(before_technique.snapshot, after_mid)
             validate_physical_plausibility(
@@ -625,6 +626,47 @@ def _validate_humanize_contract(
             f"contrato humanize violado por {canonical}: pareamento de "
             "note_on/note_off mudou"
         )
+
+
+def _assert_all_notes_closed(mid: mido.MidiFile, canonical: str) -> None:
+    """Rejeita `note_on` sem `note_off` correspondente na saida de uma tecnica.
+
+    `_StructuralSnapshot` deriva de `_collect_notes` (`tools/techniques/notes.py`),
+    que so grava pares completos e silenciosamente ignora `note_on` aberto no
+    fim da track -- por design, para os outros consumidores desse indice que
+    so querem notas fechadas. Mas isso faz uma nota presa desaparecer da
+    contagem: um aplicador com `allow_structural_pitch_change=True` que troca
+    o pitch de uma nota E acrescenta um `note_on` extra sem fechamento nunca
+    aparece em `after_shape - before_shape`, porque o evento nem chega a
+    entrar no snapshot. `note_off` e `note_on` com velocity 0 sao
+    equivalentes (mesmo par fechado do contrato `humanize`); qualquer nota
+    que sobra aberta, ou `note_off` sem `note_on` correspondente, e violacao
+    do contrato `technique`, com ou sem a excecao de pitch estrutural.
+    """
+
+    for track in mid.tracks:
+        open_counts: dict[tuple[int, int], int] = {}
+        for msg in track:
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                key = (msg.channel, msg.note)
+                open_counts[key] = open_counts.get(key, 0) + 1
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                key = (msg.channel, msg.note)
+                if open_counts.get(key, 0) <= 0:
+                    raise TechniqueContractError(
+                        f"contrato technique violado por {canonical}: "
+                        "note_off orfao encontrado"
+                    )
+                open_counts[key] -= 1
+        if any(count > 0 for count in open_counts.values()):
+            raise TechniqueContractError(
+                f"contrato technique violado por {canonical}: note_on sem "
+                "note_off correspondente"
+            )
 
 
 def _validate_technique_contract(
