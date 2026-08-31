@@ -27,12 +27,11 @@ import random
 from dataclasses import dataclass
 
 from .constants import (
-    GATE_RATIOS,
     LEGATO_OVERLAP_MS,
     SYNC_ROLES,
     TIMING_JITTER_MS,
-    VELOCITY_RANGES,
 )
+from .style_profile import StyleProfile
 
 # --- tabelas de contribuicao por dimensao musical ---------------------------
 
@@ -78,12 +77,17 @@ MAX_JITTER_AMPLITUDE = 20
 
 # --- componentes puros ------------------------------------------------------
 
-def base_velocity(role: str) -> int:
-    """Base da formula — ponto medio de VELOCITY_RANGES[role]."""
-    if role not in VELOCITY_RANGES:
+def base_velocity(role: str, *, profile: StyleProfile | None = None) -> int:
+    """Base da formula — ponto medio de `velocity_ranges[role]`.
+
+    Sem `profile`, le da `StyleProfile.default()`, que reproduz
+    `constants.VELOCITY_RANGES` byte a byte. Perfil customizado troca as
+    FAIXAS de entrada; a formula (ponto medio) nao muda."""
+    ranges = (profile or StyleProfile.default()).velocity_ranges
+    if role not in ranges:
         raise ValueError(f"unknown velocity role: {role!r}")
-    lo, hi = VELOCITY_RANGES[role]
-    return (lo + hi) // 2
+    lo, hi = ranges[role]
+    return int((lo + hi) // 2)
 
 
 def metric_accent(position: str) -> int:
@@ -210,6 +214,7 @@ class VelocityEngine:
         *,
         seed: int,
         jitter_amplitude: int = DEFAULT_JITTER_AMPLITUDE,
+        profile: StyleProfile | None = None,
     ) -> None:
         if jitter_amplitude < 0:
             raise ValueError(
@@ -223,6 +228,7 @@ class VelocityEngine:
             )
         self._rng = random.Random(seed)
         self._jitter_amplitude = jitter_amplitude
+        self._profile = profile or StyleProfile.default()
         self._peaked_tracks: set[str] = set()
 
     @property
@@ -264,7 +270,7 @@ class VelocityEngine:
 
     def _deterministic_components(self, req: VelocityRequest) -> VelocityComponents:
         return VelocityComponents(
-            base=base_velocity(req.role),
+            base=base_velocity(req.role, profile=self._profile),
             metric_accent=metric_accent(req.metric_position),
             drum_align=drum_alignment(
                 aligned_with_kick=req.aligned_with_kick,
@@ -334,7 +340,20 @@ class MicrotimingRequest:
     directional_bias_ms: int | None = None
 
 
-class MicrotimingEngine:
+class _ProfiledEngine:
+    """Base dos motores parametrizados por StyleProfile.
+
+    Guarda RNG seedado + StyleProfile resolvido para `default()` quando o
+    chamador nao passa nada. Existe para nao duplicar `__init__` em cada
+    motor (Microtiming, Duration) — a fatoracao e trivial mas o jscpd cobra.
+    """
+
+    def __init__(self, *, seed: int, profile: StyleProfile | None = None) -> None:
+        self._rng = random.Random(seed)
+        self._profile = profile or StyleProfile.default()
+
+
+class MicrotimingEngine(_ProfiledEngine):
     """Motor deterministico de microtiming.
 
     - Offset em ms por sync_role, seguindo TIMING_JITTER_MS.
@@ -342,9 +361,6 @@ class MicrotimingEngine:
     - Vies direcional configurado por elemento; jamais global.
     - Mesma seed + mesma sequencia de requests => mesma sequencia de offsets.
     """
-
-    def __init__(self, *, seed: int) -> None:
-        self._rng = random.Random(seed)
 
     def compute(self, req: MicrotimingRequest) -> int:
         """Devolve offset em ms (int arredondado) para a nota descrita."""
@@ -364,7 +380,7 @@ class MicrotimingEngine:
         if bucket_name == "anchor":
             return self._sample_anchor()
 
-        bucket_bias_ms, bucket_sigma_ms = TIMING_JITTER_MS[bucket_name]
+        bucket_bias_ms, bucket_sigma_ms = self._profile.timing_jitter_ms[bucket_name]
         directional = (
             req.directional_bias_ms
             if req.directional_bias_ms is not None
@@ -374,7 +390,8 @@ class MicrotimingEngine:
         return int(round(bucket_bias_ms + directional + noise))
 
     def _sample_anchor(self) -> int:
-        return int(round(self._rng.uniform(-ANCHOR_MAX_ABS_MS, ANCHOR_MAX_ABS_MS)))
+        anchor_max = self._profile.timing_jitter_ms["anchor"][1]
+        return int(round(self._rng.uniform(-anchor_max, anchor_max)))
 
 
 # ============================================================================
@@ -426,7 +443,7 @@ class DurationRequest:
     sustain_bars: int = 2
 
 
-class DurationEngine:
+class DurationEngine(_ProfiledEngine):
     """Motor deterministico de duracao.
 
     - Ghost/staccato/tight/open: duracao = gap * uniform(GATE_RATIOS[art]).
@@ -437,9 +454,6 @@ class DurationEngine:
       (garantido subtraindo DURATION_SAFETY_MS do gap).
     - Mesma seed + mesma sequencia de requests => mesma sequencia de duracoes.
     """
-
-    def __init__(self, *, seed: int) -> None:
-        self._rng = random.Random(seed)
 
     def compute(self, req: DurationRequest) -> float:
         """Devolve a duracao em ms."""
@@ -470,12 +484,12 @@ class DurationEngine:
             return req.bar_boundaries_ms[idx] - DURATION_SAFETY_MS
         # Sem limites: fallback via proporcao sustained do gap.
         if req.gap_ms is not None:
-            lo, hi = GATE_RATIOS["sustained"]
+            lo, hi = self._profile.gate_ratios["sustained"]
             return req.gap_ms * self._rng.uniform(lo, hi)
         return DEFAULT_LAST_NOTE_MS
 
     def _gap_based(self, req: DurationRequest) -> float:
         if req.gap_ms is None:
             return DEFAULT_LAST_NOTE_MS
-        lo, hi = GATE_RATIOS[req.articulation]
+        lo, hi = self._profile.gate_ratios[req.articulation]
         return req.gap_ms * self._rng.uniform(lo, hi)
