@@ -199,14 +199,14 @@ def _parse_block(block: str, manual: Path, block_index: int) -> Technique:
     if not isinstance(description, str):
         raise TechniqueError(f"{ctx}: `description` precisa ser string")
 
-    # verified do bloco vale, e derrubado por qualquer parametro sem source.
+    # verified do bloco vale, e derrubado por qualquer parametro sem source
+    # (numero orfao) ou cuja fonte e apenas convencao de oficio (`CONVENCAO —
+    # <razao>`): convencao nao e fonte medida, entao a tecnica nao pode ser
+    # apresentada como verificada so porque o parametro citou alguma string.
     verified = bool(data["verified"])
-    if verified and any(p.source is None and p.value is None and p.range is None
-                        for p in parameters):
-        # Parametro totalmente vazio nao tira o verified — nao ha numero para verificar.
-        pass
     if verified and any(
-        p.source is None and (p.value is not None or p.range is not None)
+        (p.value is not None or p.range is not None)
+        and (p.source is None or p.source.strip().startswith("CONVENCAO"))
         for p in parameters
     ):
         verified = False

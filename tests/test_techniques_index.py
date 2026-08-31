@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,30 @@ def test_technique_marked_unverified_when_any_param_has_no_source():
     flam = idx.get("drums.flam")
     assert flam is not None
     assert flam.verified is False
+
+
+def test_bass_vibrato_marked_unverified_despite_convencao_sourced_params():
+    """`bass.vibrato` declara `verified: true` no bloco, mas `atraso_de_inicio_ms`
+    e `profundidade_cc` sao `source: "CONVENCAO — ..."` — convencao de oficio,
+    nao medicao. O indice precisa derrubar `verified` para False tambem
+    quando a fonte e convencao, nao so quando e `None` (achado do Codex na
+    PR #62: o parser so rebaixava `source is None`, deixando convencao
+    passar como fato sourced)."""
+    idx = build_index(MANUALS_DIR)
+    vibrato = idx.get("bass.vibrato")
+    assert vibrato is not None
+    assert vibrato.verified is False
+
+
+def test_convencao_sourced_parameter_downgrades_block_verified(tmp_path: Path):
+    m = _one_block_manual(
+        tmp_path,
+        '{"name": "x", "family": "y", "summary": "s", "verified": true,'
+        ' "parameters": [{"name": "p", "range": [1, 2], '
+        '"source": "CONVENCAO — razao qualquer"}]}',
+    )
+    tech = parse_manual(m)[0]
+    assert tech.verified is False
 
 
 def test_accented_roll_velocities_agree_with_the_accent_hierarchy():
@@ -423,6 +448,52 @@ def test_parameter_range_must_be_two_items(tmp_path: Path):
 
 # --- issue #53: numero em manual precisa citar fonte real OU convencao ----
 
+def _source_violations(idx) -> list[str]:
+    """Mesma varredura de `test_every_manual_parameter_with_a_number_declares_source_or_convencao`,
+    extraida para poder testar o formato `"CONVENCAO — <razao>"` isoladamente
+    com um indice sintetico, sem depender dos manuais reais."""
+    orfaos = []
+    for t in idx.techniques:
+        for p in t.parameters:
+            if p.value is None and p.range is None:
+                continue
+            source = (p.source or "").strip()
+            if not source:
+                orfaos.append(f"{t.canonical}.{p.name}: sem source")
+            elif source.startswith("CONVENCAO"):
+                razao = source[len("CONVENCAO"):]
+                if not razao.startswith(" — ") or not razao[3:].strip():
+                    orfaos.append(f"{t.canonical}.{p.name}: CONVENCAO sem razao")
+    return orfaos
+
+
+def test_bare_convencao_without_separator_or_reason_is_rejected(tmp_path: Path):
+    """`"source": "CONVENCAO"` sozinho (sem ` — <razao>`) precisa falhar a
+    varredura — era exatamente o buraco apontado pelo Codex na PR #62: o
+    teste anterior so checava string nao-vazia, entao `"CONVENCAO"` isolado
+    passava despercebido, violando o formato que a propria regra documenta."""
+    for bad_source in ("CONVENCAO", "CONVENCAO ", "CONVENCAO —", "CONVENCAO — "):
+        _one_block_manual(
+            tmp_path,
+            '{"name": "x", "family": "y", "summary": "s", "verified": true,'
+            f' "parameters": [{{"name": "p", "value": 1, "source": {json.dumps(bad_source)}}}]}}',
+        )
+        idx = build_index(tmp_path)
+        violations = _source_violations(idx)
+        assert violations, f"source={bad_source!r} deveria ter sido rejeitado"
+
+
+def test_convencao_with_separator_and_reason_is_accepted(tmp_path: Path):
+    _one_block_manual(
+        tmp_path,
+        '{"name": "x", "family": "y", "summary": "s", "verified": true,'
+        ' "parameters": [{"name": "p", "value": 1, '
+        '"source": "CONVENCAO — razao concreta aqui"}]}',
+    )
+    idx = build_index(tmp_path)
+    assert _source_violations(idx) == []
+
+
 def test_every_manual_parameter_with_a_number_declares_source_or_convencao():
     """Nenhum numero orfao nos manuais reais.
 
@@ -436,10 +507,14 @@ def test_every_manual_parameter_with_a_number_declares_source_or_convencao():
 
     Varre TODOS os manuais em `knowledge/tecnicas/` via `build_index()`.
     Toda saida valida e uma destas duas: citar uma fonte real nao vazia, ou
-    comecar com "CONVENCAO" (convencao declarada, com a razao — mesma forma
-    ja usada em `drums.flam` e `guitar.vibrato`/`guitar.tremolo_picking`).
-    `source` ausente, `None` ou vazio/so-espaco num parametro que carrega
-    `value` ou `range` e sempre erro."""
+    seguir o formato exato `"CONVENCAO — <razao>"` (convencao declarada, com
+    a razao — mesma forma ja usada em `drums.flam` e
+    `guitar.vibrato`/`guitar.tremolo_picking`). `source` ausente, `None` ou
+    vazio/so-espaco num parametro que carrega `value` ou `range` e sempre
+    erro; `"CONVENCAO"` sozinho, sem o separador ` — ` e sem razao depois,
+    tambem e erro — a marca de convencao promete uma razao, nao so a
+    palavra (achado do Codex na PR #62: o teste anterior aceitava
+    `"CONVENCAO"` isolado por checar so string nao-vazia)."""
     idx = build_index(MANUALS_DIR)
     orfaos = []
     for t in idx.techniques:
@@ -455,4 +530,13 @@ def test_every_manual_parameter_with_a_number_declares_source_or_convencao():
                     f'`"source": "CONVENCAO — <razao>"` se o numero for '
                     f"convencao de oficio do motor."
                 )
+            elif source.startswith("CONVENCAO"):
+                razao = source[len("CONVENCAO"):]
+                if not razao.startswith(" — ") or not razao[3:].strip():
+                    orfaos.append(
+                        f"{t.source_manual}: {t.canonical}.{p.name} declara "
+                        f"CONVENCAO sem o formato `\"CONVENCAO — <razao>\"` "
+                        f"(source={p.source!r}). Convencao sem razao explicita "
+                        f"nao e diferente de numero orfao."
+                    )
     assert orfaos == [], "\n".join(orfaos)
