@@ -25,6 +25,7 @@ Escopo:
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -196,6 +197,150 @@ _PITCH_CLASS_NAMES = (
 _TUNING_PATTERNS_CACHE: tuple[
     frozenset[tuple[int, ...]], frozenset[tuple[int, ...]],
 ] | None = None
+
+# ---------------------------------------------------------------------------
+# issue #44 — resolver nome de afinacao declarado (brief) para as notas das
+# cordas soltas, contra o MESMO manual `guitar.drop_tuning` que
+# `_load_tuning_patterns` ja le. Nao existe tabela paralela: cada entrada de
+# `tools.generic.afinacoes` vira uma entrada aqui, indexada por
+# (numero_de_cordas, nome_canonico) — o nome canonico usa a MESMA convencao
+# de `_tuning_name` (`Drop <classe de altura>` / `Standard <classe de
+# altura>`), calculada a partir da corda mais grave da entrada. Nome que o
+# usuario digitar so resolve quando existe entrada no manual para aquele
+# nome E aquele numero de cordas exatos — "Drop G#" para 7 cordas nao
+# resolve so porque "Drop G#" existe para 6, porque sao instrumentos
+# diferentes com pisos diferentes.
+# ---------------------------------------------------------------------------
+
+_NAMED_TUNINGS_CACHE: dict[tuple[int, str], tuple[int, ...]] | None = None
+
+_FLAT_TO_SHARP_LETTER = {
+    "cb": "B", "db": "C#", "eb": "D#", "fb": "E", "gb": "F#",
+    "ab": "G#", "bb": "A#",
+}
+
+_TUNING_NAME_NOTE = r"([a-g])\s*(#|b|s|sharp)?"
+
+_TUNING_NAME_DROP_RE = re.compile(rf"^drop\s+{_TUNING_NAME_NOTE}$")
+_TUNING_NAME_STD_PREFIX_RE = re.compile(
+    rf"^(?:standard|padrao)\s+{_TUNING_NAME_NOTE}$",
+)
+_TUNING_NAME_STD_SUFFIX_RE = re.compile(
+    rf"^{_TUNING_NAME_NOTE}\s+(?:standard|padrao)$",
+)
+
+
+def _strip_accents(text: str) -> str:
+    """Remove acento (NFKD + descarta combining marks). `padrão` -> `padrao`,
+    para o parser de nome de afinacao aceitar `E padrão` e `E padrao` igual."""
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(c)
+    )
+
+
+def _canonicalize_note_letter(letter: str, accidental: str | None) -> str | None:
+    """`(letra, acidente)` do regex do parser -> nome de classe de altura
+    de `_PITCH_CLASS_NAMES`, ou None se nao for uma nota valida."""
+    letter = letter.upper()
+    if letter not in "ABCDEFG":
+        return None
+    if not accidental:
+        return letter if letter in _PITCH_CLASS_NAMES else None
+    if accidental in ("#", "s", "sharp"):
+        name = f"{letter}#"
+        return name if name in _PITCH_CLASS_NAMES else None
+    if accidental == "b":
+        return _FLAT_TO_SHARP_LETTER.get(f"{letter.lower()}b")
+    return None
+
+
+def _parse_tuning_name_query(raw: str) -> tuple[str, str] | None:
+    """Reconhece `drop <nota>`, `<nota> padrao`/`standard` e
+    `padrao`/`standard <nota>` (com ou sem acento, case-insensitive).
+    Devolve `(classe, classe_de_altura)` ou None quando o formato nao e
+    nenhum dos reconhecidos — nesse caso o chamador NAO deve chutar, so
+    pedir as notas das cordas soltas."""
+    text = re.sub(r"\s+", " ", _strip_accents(raw).strip().lower())
+    if not text:
+        return None
+    m = _TUNING_NAME_DROP_RE.match(text)
+    if m:
+        pc = _canonicalize_note_letter(m.group(1), m.group(2))
+        return (TUNING_CLASS_DROP, pc) if pc else None
+    m = _TUNING_NAME_STD_PREFIX_RE.match(text) or _TUNING_NAME_STD_SUFFIX_RE.match(text)
+    if m:
+        pc = _canonicalize_note_letter(m.group(1), m.group(2))
+        return (TUNING_CLASS_STANDARD, pc) if pc else None
+    return None
+
+
+def _load_named_tunings() -> dict[tuple[int, str], tuple[int, ...]]:
+    """Constroi, uma vez, `(numero_de_cordas, nome_canonico) -> midis` a
+    partir de `guitar.drop_tuning.tools.generic.afinacoes` — a mesma fonte
+    de `_load_tuning_patterns`, so que preservando os MIDIs (nao so os
+    intervalos) e o numero de cordas de cada entrada."""
+    global _NAMED_TUNINGS_CACHE
+    if _NAMED_TUNINGS_CACHE is not None:
+        return _NAMED_TUNINGS_CACHE
+
+    from .techniques import build_index
+
+    idx = build_index()
+    tech = idx.get("guitar.drop_tuning")
+    if tech is None:
+        raise TuningKnowledgeError(
+            "tecnica `guitar.drop_tuning` nao encontrada no indice de tecnicas",
+        )
+    generic = tech.tools.get("generic") or {}
+    afinacoes = generic.get("afinacoes") or {}
+    if not isinstance(afinacoes, dict) or not afinacoes:
+        raise TuningKnowledgeError(
+            "guitar.drop_tuning.tools.generic.afinacoes ausente ou vazio",
+        )
+
+    result: dict[tuple[int, str], tuple[int, ...]] = {}
+    for name, midis in afinacoes.items():
+        if not isinstance(midis, list) or len(midis) < 2:
+            continue
+        midis_t = tuple(int(m) for m in midis)
+        cls = TUNING_CLASS_DROP if "drop" in name else TUNING_CLASS_STANDARD
+        display = _tuning_name(cls, midis_t[0])
+        if display is None:
+            continue
+        result[(len(midis_t), display)] = midis_t
+
+    _NAMED_TUNINGS_CACHE = result
+    return result
+
+
+def resolve_tuning_name(name: str, strings: int) -> tuple[int, ...] | None:
+    """Resolve um nome de afinacao declarado (`Drop G#`, `E padrão`,
+    `standard E`...) para as notas MIDI das cordas soltas, grave -> agudo,
+    contra o manual `guitar.drop_tuning` — NUNCA uma tabela paralela.
+
+    Devolve `None` quando o nome nao casa com um formato reconhecido OU
+    quando o manual nao tem entrada para aquela classe/nota E aquele
+    numero de cordas exatos. Nos dois casos o chamador (brief_schema, a
+    skill) tem que pedir as notas das cordas soltas explicitamente — nome
+    desconhecido nunca vira chute.
+
+    O manual `guitar.drop_tuning` so documenta afinacoes de guitarra (6,
+    7 e 8 cordas) — nao tem entrada para baixo de 4/5 cordas. Chamar isto
+    para baixo por nome, portanto, sempre devolve `None` HOJE: e o
+    comportamento correto (pede as notas), nao um bug — inventar uma
+    conversao "guitarra menos uma oitava" seria uma tabela hardcoded
+    disfarcada. Se um manual de afinacao de baixo for adicionado depois,
+    esta funcao passa a enxergar as entradas dele automaticamente, sem
+    mudanca de codigo.
+    """
+    parsed = _parse_tuning_name_query(name)
+    if parsed is None:
+        return None
+    cls, pitch_class = parsed
+    display = f"{'Drop' if cls == TUNING_CLASS_DROP else 'Standard'} {pitch_class}"
+    named = _load_named_tunings()
+    return named.get((strings, display))
 
 
 class TuningKnowledgeError(RuntimeError):

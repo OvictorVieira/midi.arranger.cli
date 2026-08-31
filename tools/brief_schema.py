@@ -17,6 +17,18 @@ pesquisado por familia — com fontes, data e confianca.
   no indice de tecnicas (`knowledge/tecnicas/`, via `techniques.build_index`).
   Nome desconhecido vira erro com hint listando as mais parecidas.
 - `confidence` e vocabulario FECHADO: high | medium | low | default.
+- `instruments.<familia>` (issue #44) e configuracao de instrumento de
+  corda POR MUSICA — nunca conhecimento de repositorio, nunca inferida
+  em silencio. So `guitar` e `bass` (as familias de corda). `known: false`
+  e ausencia declarada ("nao sei"), nunca chute. `tuning.name` so resolve
+  contra o manual `guitar.drop_tuning` (via `tools.tuning.resolve_tuning_name`)
+  — nome desconhecido para o numero de cordas declarado exige `tuning.notes`
+  explicito, nunca aceito em silencio. `tuning.notes` tem que ter o mesmo
+  tamanho de `strings` e vir em ordem estritamente ascendente (grave->agudo).
+  `bass` tambem declara `playing_style` (finger|pick|slap) e `notation`
+  (`written` = soa uma oitava abaixo do escrito; `sounding` = ja na altura
+  que soa) — baixo e instrumento transpositor, confundir os dois faz o
+  arranjador escrever a linha uma oitava no lugar errado.
 
 ## O que este modulo expoe
 
@@ -33,6 +45,7 @@ import difflib
 from typing import Any
 
 from . import techniques as techniques_mod
+from . import tuning as tuning_mod
 from .plan import ROUTES
 from .registry import SchemaError, Tool, ToolError, validate_input
 from .style_schema import NOTE_NAME_RE as _NOTE_NAME_RE
@@ -58,6 +71,63 @@ _SHA256_RE = r"^[0-9a-f]{64}$"
 
 _MIDI_PITCH_MIN = 0
 _MIDI_PITCH_MAX = 127
+
+# --- issue #44 — configuracao de instrumento de corda, por musica ---------
+#
+# `instruments` guarda, por familia de CORDA presente no MIDI de origem, o
+# numero de cordas e a afinacao declarada pelo usuario — nunca inferida em
+# silencio, nunca conhecimento de repositorio (vive so neste brief). So as
+# duas familias de corda dedilhada entram aqui; bateria e teclas nao tem
+# afinacao de corda para declarar.
+STRINGED_INSTRUMENT_FAMILIES = ("guitar", "bass")
+
+BASS_PLAYING_STYLES = ("finger", "pick", "slap")
+"""Vocabulario fechado de `instruments.bass.playing_style` — dedo, palheta
+ou slap. Sem "unknown" aqui porque a ausencia de resposta e representada
+por `known: false` na familia inteira, nao por um valor dentro dela."""
+
+BASS_NOTATION_VALUES = ("written", "sounding")
+"""`instruments.bass.notation`: baixo e instrumento transpositor (soa uma
+oitava abaixo do escrito). `written` = a track guarda altura escrita (o
+caso comum de exportacao de tablatura/DAW); `sounding` = a track ja guarda
+a altura que soa. Confundir os dois faz o arranjador escrever uma oitava
+no lugar errado — ver issue #44."""
+
+
+def _instrument_tuning_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "name": {"type": ["string", "null"]},
+            "notes": {
+                "type": "array",
+                "items": {
+                    "type": "integer",
+                    "minimum": _MIDI_PITCH_MIN,
+                    "maximum": _MIDI_PITCH_MAX,
+                },
+            },
+        },
+        "required": ["name", "notes"],
+    }
+
+
+def _instrument_family_schema(family: str) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "known": {"type": "boolean"},
+        "strings": {"type": ["integer", "null"], "minimum": 1},
+        "tuning": {
+            "oneOf": [{"type": "null"}, _instrument_tuning_schema()],
+        },
+    }
+    required = ["known", "strings", "tuning"]
+    if family == "bass":
+        properties["playing_style"] = {
+            "enum": [*BASS_PLAYING_STYLES, None],
+        }
+        properties["notation"] = {"enum": [*BASS_NOTATION_VALUES, None]}
+        required += ["playing_style", "notation"]
+    return {"type": "object", "properties": properties, "required": required}
 
 
 # --- schema ---------------------------------------------------------------
@@ -146,6 +216,15 @@ def brief_schema() -> dict[str, Any]:
                 },
                 # style aceita apenas as familias declaradas; um familia
                 # desconhecida (ex.: "vocal") entra como erro estrutural.
+            },
+            "instruments": {
+                "type": "object",
+                "properties": {
+                    fam: _instrument_family_schema(fam)
+                    for fam in STRINGED_INSTRUMENT_FAMILIES
+                },
+                # so as familias de corda declaradas; qualquer outra chave
+                # (ex.: "drums") e erro estrutural — bateria nao tem corda.
             },
             "restricoes": {
                 "type": "array", "items": {"type": "string", "minLength": 1},
@@ -333,6 +412,142 @@ def _validate_family_techniques(
             )
 
 
+def _validate_instrument_tuning(
+    family: str, strings: int, tuning: dict[str, Any] | None, path: str,
+) -> None:
+    """Valida `instruments.<familia>.tuning` contra `strings` — a peca
+    central da issue #44. Regras, na ordem:
+
+    1. `tuning` ausente (None) quando `known=true` e erro — se o usuario
+       sabe a configuracao, a afinacao faz parte dela.
+    2. Nem `name` nem `notes`: erro — declaracao vazia nao e declaracao.
+    3. `name` presente: resolve contra o manual `guitar.drop_tuning` via
+       `tools.tuning.resolve_tuning_name`. Nome desconhecido (formato nao
+       reconhecido OU sem entrada no manual para aquele numero de cordas)
+       e erro pedindo `notes` explicito — NUNCA aceito em silencio.
+    4. `notes` presente: tamanho tem que bater com `strings` (N cordas
+       precisam de N notas) e a sequencia tem que estar estritamente
+       ascendente (grave -> agudo, sem corda repetida).
+    5. `name` E `notes` presentes ao mesmo tempo: tem que concordar. Nome
+       que resolve para um conjunto e notas que declaram outro e a mesma
+       categoria de erro que nome desconhecido — a declaracao esta
+       inconsistente e o validador nao adivinha qual dos dois vale.
+    """
+    if tuning is None:
+        raise ToolError(
+            "E_BRIEF_INSTRUMENT_MISSING_TUNING",
+            f"instruments.{family}.known=true mas tuning e null — se a "
+            f"configuracao e conhecida, a afinacao faz parte dela",
+            path=path,
+            hint=(
+                "declare tuning.name (ex.: 'Drop C') e/ou tuning.notes "
+                "(MIDI das cordas soltas, grave->agudo)"
+            ),
+        )
+    name = tuning.get("name")
+    notes = tuple(tuning.get("notes") or ())
+    if not name and not notes:
+        raise ToolError(
+            "E_BRIEF_INSTRUMENT_TUNING_EMPTY",
+            f"instruments.{family}.tuning nao declara nem name nem notes",
+            path=path,
+            hint="declare tuning.name ou tuning.notes — ou known=false",
+        )
+
+    resolved: tuple[int, ...] | None = None
+    if name:
+        resolved = tuning_mod.resolve_tuning_name(name, strings)
+        if resolved is None and not notes:
+            raise ToolError(
+                "E_BRIEF_TUNING_NAME_UNKNOWN",
+                f"instruments.{family}.tuning.name={name!r} nao resolve "
+                f"contra o manual guitar.drop_tuning para {strings} corda(s)",
+                path=f"{path}.name",
+                hint=(
+                    "nome desconhecido nao vira chute — declare "
+                    "tuning.notes com o MIDI de cada corda solta, "
+                    "grave->agudo"
+                ),
+            )
+
+    if notes:
+        if len(notes) != strings:
+            raise ToolError(
+                "E_BRIEF_INSTRUMENT_STRING_COUNT_MISMATCH",
+                f"instruments.{family}.strings={strings} mas "
+                f"tuning.notes tem {len(notes)} nota(s)",
+                path=f"{path}.notes",
+                hint=f"declare exatamente {strings} nota(s), grave->agudo",
+            )
+        if list(notes) != sorted(notes) or len(set(notes)) != len(notes):
+            raise ToolError(
+                "E_BRIEF_INSTRUMENT_NOTES_NOT_ORDERED",
+                f"instruments.{family}.tuning.notes nao esta em ordem "
+                f"estritamente ascendente (grave->agudo): {notes}",
+                path=f"{path}.notes",
+                hint="ordene do grave para o agudo, sem corda repetida",
+            )
+
+    if resolved is not None and notes and resolved != notes:
+        raise ToolError(
+            "E_BRIEF_TUNING_NAME_MISMATCH",
+            f"instruments.{family}.tuning.name={name!r} resolve para "
+            f"{resolved}, mas tuning.notes declara {notes} — as duas "
+            f"declaracoes discordam",
+            path=path,
+            hint=(
+                "corrija tuning.notes para bater com o nome, ou remova "
+                "tuning.name e mantenha so as notas declaradas"
+            ),
+        )
+
+
+def _validate_instruments(brief: dict[str, Any]) -> None:
+    """Valida `instruments` (issue #44) quando presente. Chave ausente
+    continua valida — a ausencia e o que o brief antigo (sem instruments)
+    ja fazia, e a issue exige que continue assim."""
+    instruments = brief.get("instruments")
+    if not instruments:
+        return
+    for family, entry in instruments.items():
+        path = f"instruments.{family}"
+        known = entry.get("known")
+        strings = entry.get("strings")
+        tuning = entry.get("tuning")
+        if known is False:
+            if strings is not None or tuning is not None:
+                raise ToolError(
+                    "E_BRIEF_INSTRUMENT_KNOWN_CONFLICT",
+                    f"{path}.known=false mas strings/tuning nao sao "
+                    f"null — 'nao sei' e ausencia declarada, nao pode "
+                    f"vir acompanhado de numero",
+                    path=path,
+                    hint="known=false so aceita strings=null, tuning=null",
+                )
+            continue
+        if strings is None:
+            raise ToolError(
+                "E_BRIEF_INSTRUMENT_MISSING_STRINGS",
+                f"{path}.known=true mas strings e null",
+                path=f"{path}.strings",
+                hint="declare o numero de cordas, ou known=false",
+            )
+        _validate_instrument_tuning(family, strings, tuning, f"{path}.tuning")
+        if family == "bass":
+            for field in ("playing_style", "notation"):
+                if entry.get(field) is None:
+                    raise ToolError(
+                        "E_BRIEF_INSTRUMENT_MISSING_BASS_FIELD",
+                        f"{path}.known=true mas {field} e null",
+                        path=f"{path}.{field}",
+                        hint=(
+                            "playing_style: finger|pick|slap; "
+                            "notation: written (soa 8vb) | sounding "
+                            "(ja soa na altura escrita)"
+                        ),
+                    )
+
+
 def validate_brief(brief: Any) -> None:
     """Valida `brief` contra o schema e as regras semanticas.
 
@@ -341,6 +556,21 @@ def validate_brief(brief: Any) -> None:
     - `E_BRIEF_MUSICAL_CONTENT`: `style` carrega sequencia de notas.
     - `E_BRIEF_TECHNIQUE_NOT_FOUND`: tecnica citada nao existe no indice.
     - `E_TECHNIQUES_INDEX`: falha ao ler `knowledge/tecnicas/`.
+    - `E_BRIEF_INSTRUMENT_KNOWN_CONFLICT`: `instruments.<familia>.known
+      == false` mas `strings`/`tuning` nao sao null.
+    - `E_BRIEF_INSTRUMENT_MISSING_STRINGS` /
+      `E_BRIEF_INSTRUMENT_MISSING_TUNING`: `known == true` sem o campo.
+    - `E_BRIEF_INSTRUMENT_TUNING_EMPTY`: `tuning` sem `name` nem `notes`.
+    - `E_BRIEF_TUNING_NAME_UNKNOWN`: `tuning.name` nao resolve contra o
+      manual `guitar.drop_tuning` para o numero de cordas declarado.
+    - `E_BRIEF_TUNING_NAME_MISMATCH`: `tuning.name` resolvido e
+      `tuning.notes` declarado discordam.
+    - `E_BRIEF_INSTRUMENT_STRING_COUNT_MISMATCH`: `len(tuning.notes) !=
+      strings`.
+    - `E_BRIEF_INSTRUMENT_NOTES_NOT_ORDERED`: `tuning.notes` fora de
+      ordem estritamente ascendente (grave->agudo).
+    - `E_BRIEF_INSTRUMENT_MISSING_BASS_FIELD`: baixo com `known == true`
+      sem `playing_style` ou `notation`.
     """
     try:
         validate_input(brief, brief_schema())
@@ -367,18 +597,24 @@ def validate_brief(brief: Any) -> None:
     for family, entry in style.items():
         _validate_family_techniques(family, entry, idx)
 
+    _validate_instruments(brief)
+
 
 # --- tool -----------------------------------------------------------------
 
 
 BRIEF_VALIDATE_DESCRIPTION = (
     "Valida um arrangement-brief.json contra o schema (estrutura) e contra "
-    "as duas regras semanticas invioláveis: (1) `style` NAO pode carregar "
+    "as regras semanticas invioláveis: (1) `style` NAO pode carregar "
     "conteudo musical — arrays de inteiros na faixa MIDI ou arrays de "
     "strings em formato de nome de nota (C4, F#3) sao rejeitados em "
     "qualquer profundidade dentro de style; (2) toda tecnica declarada em "
     "style.<familia>.techniques[].name precisa existir no indice de "
-    "tecnicas (knowledge/tecnicas/). Use ANTES de gravar o brief e ANTES "
+    "tecnicas (knowledge/tecnicas/); (3) `instruments.<familia>` (guitar, "
+    "bass), quando presente, tem numero de cordas coerente com o numero "
+    "de notas de tuning, notas em ordem grave->agudo, e tuning.name so "
+    "resolve contra o manual guitar.drop_tuning — nome desconhecido exige "
+    "tuning.notes explicito. Use ANTES de gravar o brief e ANTES "
     "de invocar o `run` — brief invalido faz o run gastar iteracao a toa."
 )
 
