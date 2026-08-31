@@ -11,12 +11,16 @@ from tests.test_render import (
     _build_source_with_guitar,
     _build_synthetic_source,
     _drone_element,
+    _hat_elec_element,
     _motor_element,
     _piano_element,
     _rhythmic_element,
     _shadow_element,
     _strings_element,
+    _sub_drop_element,
+    _sub_element,
 )
+from tools.palette.electronic import HAT_ELEC_ROLES, SUB_DROP_ROLES, SUB_ROLES
 from tools.palette.harmonic import DRONE_ROLES, KEYBOARD_ROLES, STRINGS_ROLES, PadNote
 from tools.palette.rhythmic import MOTOR_ROLES, RHYTHMIC_ROLES, SHADOW_ROLES
 from tools.render import SUPPORTED_ROLES, _notes_to_track, render
@@ -37,6 +41,12 @@ def _element_for_role(role: str):
         return _motor_element()
     if role in SHADOW_ROLES:
         return _shadow_element()
+    if role in HAT_ELEC_ROLES:
+        return _hat_elec_element()
+    if role in SUB_ROLES:
+        return _sub_element()
+    if role in SUB_DROP_ROLES:
+        return _sub_drop_element()
     raise AssertionError(f"test helper missing role factory for {role!r}")
 
 
