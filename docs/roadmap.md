@@ -128,20 +128,32 @@ Parte do eletrônico rítmico já existe. Permanecem
 
 ## M6 — MVP orientado por influências com a IA do usuário
 
-Tracking: [epic #80](https://github.com/OvictorVieira/midi.arranger.cli/issues/80).
+Tracking: [épico guarda-chuva #80](https://github.com/OvictorVieira/midi.arranger.cli/issues/80).
 
 ### Resultado esperado
 
-Um músico consegue:
+Um músico instala a ferramenta, fornece MIDI e intenção, deixa sua própria IA pesquisar referências,
+revisa e autoriza o de-para, e recebe MIDI com relatório rastreável para comparar no DAW.
 
-1. instalar a ferramenta;
-2. fornecer uma música em MIDI;
-3. explicar a intenção e citar referências;
-4. deixar a própria IA pesquisar fontes públicas;
-5. revisar findings e o de-para para técnicas;
-6. autorizar o conjunto;
-7. receber um MIDI e um relatório rastreável;
-8. comparar o resultado no DAW.
+### Etapas
+
+| Etapa | Épico | Entrega | Issues |
+|---|---|---|---|
+| M6.1 | [#84](https://github.com/OvictorVieira/midi.arranger.cli/issues/84) | Contratos e catálogo executável | #74, #75, #72 |
+| M6.2 | [#83](https://github.com/OvictorVieira/midi.arranger.cli/issues/83) | Compilação e orquestração | #73, #11, #76, #17 |
+| M6.3 | [#85](https://github.com/OvictorVieira/midi.arranger.cli/issues/85) | Conformidade, não-cópia e evidência | #45, #5, #15, #77 |
+| M6.4 | [#87](https://github.com/OvictorVieira/midi.arranger.cli/issues/87) | Entrega local e validação real | #79, #78, #86 |
+
+```mermaid
+flowchart LR
+    A["M6.1 Contratos"] --> B["M6.2 Orquestração"]
+    B --> C["M6.3 Prova"]
+    C --> D["M6.4 Validação"]
+    D --> E["Go / No-go M7"]
+```
+
+O paralelismo permitido dentro de cada etapa está documentado no respectivo épico. Uma etapa só
+encerra quando todos os seus critérios de saída forem atendidos.
 
 ### Escopo suportado
 
@@ -149,83 +161,55 @@ Um músico consegue:
 - criação de bateria e baixo ausentes;
 - elementos harmônicos e eletrônicos já disponíveis;
 - pesquisa e coordenação pela IA do usuário;
-- nenhuma IA hospedada pelo projeto.
+- nenhuma IA hospedada pelo projeto;
+- degradação explícita para capacidades ausentes.
 
-### Backlog do contrato e compilação
+### Fora do caminho crítico
 
-- [#74 — catálogo de capacidades executáveis](https://github.com/OvictorVieira/midi.arranger.cli/issues/74);
-- [#75 — InfluenceProfile v1](https://github.com/OvictorVieira/midi.arranger.cli/issues/75);
-- [#72 — parâmetros e evidências por técnica](https://github.com/OvictorVieira/midi.arranger.cli/issues/72);
-- [#73 — influence.compile](https://github.com/OvictorVieira/midi.arranger.cli/issues/73).
-
-### Backlog de orquestração e prova
-
-- [#76 — skill orientada por influências](https://github.com/OvictorVieira/midi.arranger.cli/issues/76);
-- [#77 — relatório de proveniência](https://github.com/OvictorVieira/midi.arranger.cli/issues/77);
-- [#79 — cenário ponta a ponta](https://github.com/OvictorVieira/midi.arranger.cli/issues/79);
-- [#78 — doctor e test-drive](https://github.com/OvictorVieira/midi.arranger.cli/issues/78).
-
-### Dependências existentes
-
-M6 depende de #5, #11, #15, #17 e #45. Não depende da conclusão integral de guitarra, corpus próprio,
-eletrônico ou anotações.
-
-### Ordem recomendada
-
-1. #74 e #75 em paralelo;
-2. #72;
-3. #73;
-4. #11 e #45 em paralelo;
-5. #76;
-6. #5, #15 e #77;
-7. #17;
-8. #79;
-9. #78;
-10. validação auditiva em três músicas reais.
+Guitarra completa (#19), aprendizado por corpus (#18), técnicas completas de teclas (#14), expansão
+eletrônica (#22, #23, #24) e anotações locais (#32) continuam no roadmap, mas não bloqueiam o MVP
+quando a ausência de suporte é reportada honestamente.
 
 ### Definition of Done
 
-- nenhum recurso não implementado é oferecido como executável;
-- toda influência pesquisada possui fonte, finding e confiança;
-- todo finding vira técnica executável ou achado não mapeado explícito;
+- os quatro épicos M6.1–M6.4 estão concluídos;
+- nenhum recurso não implementado é oferecido;
+- toda influência possui fonte ou origem explícita do usuário;
+- todo finding vira técnica executável ou `unmapped`;
 - nenhum parâmetro técnico é inventado pela IA;
-- o usuário autoriza antes do render;
-- conformidade mede o que foi solicitado;
-- não-cópia estrutural sempre roda;
-- comparação comportamental só roda com corpus legitimamente fornecido;
-- mesmo input, seed e versões produzem MIDI e relatório byte-idênticos;
-- tracks não declaradas permanecem nota a nota idênticas;
-- `midi-arranger test-drive` conclui de ponta a ponta;
-- três músicas reais passam pelo protocolo auditivo;
-- a entrega contém MIDI, brief, InfluenceProfile, plano e relatório.
-
-### Protocolo auditivo
-
-Para cada música real, comparar:
-
-1. MIDI de origem;
-2. saída apenas com humanização baseline;
-3. saída orientada por influência.
-
-Registrar por família:
-
-- fidelidade à intenção;
-- naturalidade;
-- preservação do que já funcionava;
-- excessos de densidade/articulação;
-- necessidade de edição manual;
-- técnicas ou traços ainda não suportados.
-
-O teste auditivo não substitui os validadores. Ele mede o que ainda é gosto e percepção musical.
+- autorização ocorre antes do render;
+- conformidade e não-cópia produzem evidências;
+- execução e relatório são determinísticos;
+- tracks não declaradas permanecem idênticas;
+- [protocolo auditivo #86](https://github.com/OvictorVieira/midi.arranger.cli/issues/86) passa em três músicas;
+- entrega contém MIDI, brief, InfluenceProfile, plano e relatório;
+- decisão de go/no-go para M7 é registrada em #80.
 
 ---
 
 ## M7 — Plataforma comercial MCP com core privado
 
-Tracking: [epic #81](https://github.com/OvictorVieira/midi.arranger.cli/issues/81).
+Tracking: [épico guarda-chuva #81](https://github.com/OvictorVieira/midi.arranger.cli/issues/81).
 
-M7 começa somente depois de M6 passar no uso real. A migração não deve mudar o contrato musical
-validado; apenas trocar a forma de distribuição e operação.
+M7 começa somente após M6.4 e uma decisão explícita de go. A migração preserva o contrato musical e
+troca somente a forma de distribuição e operação.
+
+### Etapas
+
+| Etapa | Épico | Entrega principal |
+|---|---|---|
+| M7.1 | [#89](https://github.com/OvictorVieira/midi.arranger.cli/issues/89) | Core privado, contratos versionados e MCP HTTP |
+| M7.2 | [#91](https://github.com/OvictorVieira/midi.arranger.cli/issues/91) | OAuth, multi-tenancy, arquivos efêmeros e jobs |
+| M7.3 | [#88](https://github.com/OvictorVieira/midi.arranger.cli/issues/88) | Stripe, quotas, reconciliação e observabilidade |
+| M7.4 | [#90](https://github.com/OvictorVieira/midi.arranger.cli/issues/90) | Políticas, segurança e closed alpha |
+
+```mermaid
+flowchart LR
+    A["M7.1 MCP"] --> B["M7.2 Plataforma"]
+    B --> C["M7.3 Operação"]
+    C --> D["M7.4 Alpha"]
+    D --> E["Go / No-go Beta"]
+```
 
 ### Arquitetura alvo
 
@@ -238,50 +222,28 @@ flowchart LR
     C --> F["Stripe"]
 ```
 
-### Público
+### Fronteira pública
 
-- skill mínima e instruções de fluxo;
-- schemas MCP;
-- catálogo semântico;
-- intensidades abstratas;
-- mensagens de erro e próximos passos.
+Skill mínima, schemas versionados, catálogo semântico, intensidades abstratas, tools MCP, erros e
+próximos passos.
 
-### Privado
+### Fronteira privada
 
-- receitas;
-- valores e tabelas;
-- dicionário de mapeamento;
-- código do motor;
-- validadores proprietários;
-- estratégia de render.
-
-### Workstreams
-
-1. ADR e versionamento de contratos;
-2. MCP Streamable HTTP;
-3. OAuth 2.1 e scopes mínimos;
-4. multi-tenancy;
-5. uploads e downloads assinados;
-6. armazenamento efêmero e exclusão automática;
-7. fila de jobs, workers, timeout, quota e idempotência;
-8. catálogo público sem receitas internas;
-9. skill pública mínima para Codex e Claude Code;
-10. Stripe Checkout, assinaturas, créditos e webhooks;
-11. observabilidade, auditoria e suporte;
-12. segurança de parsing/processamento MIDI;
-13. termos, privacidade, retenção e takedown;
-14. closed alpha com músicos convidados.
+Receitas, valores e tabelas, dicionário de mapeamento, código do motor, validadores proprietários e
+estratégia de render.
 
 ### Definition of Done
 
+- os quatro épicos M7.1–M7.4 estão concluídos;
 - usuário conecta o MCP via OAuth;
 - a IA dele executa o fluxo validado no M6;
-- o core não é distribuído;
+- core e receitas não são distribuídos;
 - jobs e dados são isolados por tenant;
-- MIDI tem retenção curta e auditável;
+- MIDI possui retenção curta e auditável;
 - cobrança é idempotente e reconciliável;
-- Codex e Claude Code produzem o mesmo contrato semântico;
-- alpha opera com métricas, suporte e políticas publicadas.
+- Codex e Claude Code mantêm a mesma semântica;
+- closed alpha opera com métricas, suporte e políticas;
+- decisão de go/no-go para beta está documentada.
 
 ---
 
