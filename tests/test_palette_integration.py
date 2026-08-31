@@ -180,6 +180,22 @@ _ROLE_SPECS: dict[str, dict] = {
         "sync_role": "response",
         "pattern": {"octave_shift": 12, "tail_notes": 2},
     },
+    "bass": {
+        "route": "hook_eletronico_pesado",
+        "register": [28, 55],
+        "articulation": "tight",
+        "harmony": "follow_chords",
+        "sync_role": "kick_support",
+        "pattern": None,
+    },
+    "drums": {
+        "route": "hook_eletronico_pesado",
+        "register": [0, 127],
+        "articulation": "tight",
+        "harmony": "percussion",
+        "sync_role": "exact_anchor",
+        "pattern": None,
+    },
     "hat_elec": {
         "route": "hook_eletronico_pesado",
         "register": [70, 70],

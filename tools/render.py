@@ -38,6 +38,8 @@ import pretty_midi
 
 from .analyze import Analysis, analyze
 from .edits import EditReport, apply_edits, collect_track_names, track_name
+from .palette.bass import BASS_ROLES, generate_bass
+from .palette.drums import DRUMS_ROLES, generate_drums
 from .palette.electronic import (
     HAT_ELEC_ROLES,
     SUB_DROP_ROLES,
@@ -130,6 +132,11 @@ DRONE_CHANNEL = 0
 RHYTHMIC_CHANNEL = 0
 MOTOR_CHANNEL = 0
 SHADOW_CHANNEL = 0
+BASS_CHANNEL = 0
+DRUMS_CHANNEL = 9
+"""Canal MIDI 10 (indice 0-based 9) — convencao General MIDI de percussao,
+a mesma que Superior Drummer/Addictive Drums e qualquer DAW esperam para
+reconhecer a track como kit em vez de instrumento melodico."""
 HAT_ELEC_CHANNEL = 0
 SUB_CHANNEL = 0
 SUB_DROP_CHANNEL = 0
@@ -151,6 +158,12 @@ SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
     "octave_shift", "tail_notes", "phrase_end_gap_s", "velocity_offset",
     "note_duration_s",
 })
+DRUMS_PATTERN_FIELDS: frozenset[str] = frozenset()
+BASS_PATTERN_FIELDS: frozenset[str] = frozenset()
+"""Nem bateria nem baixo (issue #20) consomem `element.pattern` nesta
+rodada — todo controle vem de `element.register`/`energy` da secao. Campo
+declarado em `pattern` para esses roles vira aviso de nao-suportado, mesma
+politica do pad."""
 HAT_ELEC_PATTERN_FIELDS: frozenset[str] = frozenset({"pattern_mode"})
 SUB_PATTERN_FIELDS: frozenset[str] = frozenset({"follow"})
 SUB_DROP_PATTERN_FIELDS: frozenset[str] = frozenset()
@@ -313,6 +326,10 @@ def _pattern_fields_for_role(role: str) -> frozenset[str]:
         return MOTOR_PATTERN_FIELDS
     if role in SHADOW_ROLES:
         return SHADOW_PATTERN_FIELDS
+    if role in DRUMS_ROLES:
+        return DRUMS_PATTERN_FIELDS
+    if role in BASS_ROLES:
+        return BASS_PATTERN_FIELDS
     if role in HAT_ELEC_ROLES:
         return HAT_ELEC_PATTERN_FIELDS
     if role in SUB_ROLES:
@@ -1459,6 +1476,65 @@ def _render_pad_element(
     return _layers_to_tracks(element, layer_notes, pm, channel)
 
 
+def _render_drums_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera tracks de bateria do zero (issue #20). Uma track por layer;
+    notas de todas as secoes concatenadas na mesma layer. A levada le
+    `section.energy` — nao consome `element.pattern` nesta rodada."""
+    layer_notes: list[list[RhythmicNote]] = [[] for _ in range(element.layers)]
+
+    for section, seed in _iter_element_sections(element, plan):
+        layers = generate_drums(
+            analysis,
+            section,
+            role=element.role,
+            layers=element.layers,
+            articulation=element.articulation,
+            dynamics=element.dynamics,
+            seed=seed,
+        )
+        for i, layer in enumerate(layers):
+            layer_notes[i].extend(layer.notes)
+
+    return _layers_to_tracks(element, layer_notes, pm, channel)
+
+
+def _render_bass_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera tracks de baixo do zero (issue #20). Uma track por layer;
+    notas de todas as secoes concatenadas na mesma layer. A linha segue o
+    campo harmonico (raiz/terca/quinta do acorde vigente) e as ancoras de
+    kick de `analysis.kick_positions`."""
+    layer_notes: list[list[RhythmicNote]] = [[] for _ in range(element.layers)]
+    register = (int(element.register[0]), int(element.register[1]))
+
+    for section, seed in _iter_element_sections(element, plan):
+        layers = generate_bass(
+            analysis,
+            section,
+            role=element.role,
+            register=register,
+            layers=element.layers,
+            articulation=element.articulation,
+            dynamics=element.dynamics,
+            seed=seed,
+        )
+        for i, layer in enumerate(layers):
+            layer_notes[i].extend(layer.notes)
+
+    return _layers_to_tracks(element, layer_notes, pm, channel)
+
+
 _RenderElementFn = Callable[
     [Element, ArrangementPlan, Analysis, pretty_midi.PrettyMIDI, int],
     tuple[list[mido.MidiTrack], list[RenderedTrack]],
@@ -1497,6 +1573,14 @@ def _build_role_renderers() -> dict[str, _RoleRenderer]:
         **{
             role: _RoleRenderer(_render_shadow_element, SHADOW_CHANNEL)
             for role in SHADOW_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_drums_element, DRUMS_CHANNEL)
+            for role in DRUMS_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_bass_element, BASS_CHANNEL)
+            for role in BASS_ROLES
         },
         **{
             role: _RoleRenderer(_render_hat_elec_element, HAT_ELEC_CHANNEL)

@@ -57,7 +57,7 @@ PROTAGONISTS = (
 
 ARTICULATIONS = ("ghost", "staccato", "tight", "open", "sustained", "let_ring")
 
-HARMONY_MODES = ("follow_chords", "pedal", "free", "unison_guitar")
+HARMONY_MODES = ("follow_chords", "pedal", "free", "unison_guitar", "percussion")
 
 EDIT_PROFILES = ("bass", "drums", "keys", "generic")
 EDIT_INTENSITY_MIN = 0.0

@@ -14,7 +14,13 @@ Modos suportados (FR-25 do spec):
   global. Qualquer coisa alem disso e erro.
 - `unison_guitar`: cada nota tem uma nota de guitarra no mesmo onset
   (dentro de UNISON_MATCH_WINDOW_S) com a mesma pitch class (modulo oitava).
+- `percussion`: sem checagem nenhuma — ver bloco abaixo.
 - `free`: isento de erro; AVISO quando o pitch cai fora da escala do tom.
+- `percussion`: isento de checagem de pitch class. Nota de bateria (GM/SD3/
+  AD2) endereça PEÇA, não altura musical — pitch % 12 não carrega
+  informação harmônica nenhuma, então aplicar a mesma checagem de
+  pitch-class das famílias tonais produziria erro/aviso sem sentido
+  musical (issue #20, elemento `drums` gerado do zero).
 
 Com `degrees` declarado no elemento, a lista de pitch classes permitidas
 substitui a do modo — usada para arpejo que pega graus especificos (1, 5,
@@ -444,6 +450,8 @@ def validate_harmony(
             issues.extend(_validate_unison(track, element, analysis))
         elif mode == "free":
             issues.extend(_validate_free(track, element, analysis))
+        elif mode == "percussion":
+            continue
         else:
             # Vocabulario fechado ja garantido em plan.validate; guarda
             # extra caso a lista mude sem atualizar este modulo.
