@@ -7,9 +7,11 @@ import pretty_midi
 import pytest
 
 from tests.test_palette_bass import _analyze, _build_chord_source  # noqa: E402
+from tools.analyze import Analysis, BarAnalysis
 from tools.palette.drums import (
     GM_CRASH,
     GM_HAT_CLOSED,
+    GM_KICK,
     GM_RIDE,
     GM_TOM_HIGH,
     GM_TOM_LOW,
@@ -172,6 +174,65 @@ def test_note_count_grows_monotonically_with_density_axis(tmp_path):
 
 
 # --- validacoes de entrada ----------------------------------------------------
+
+# --- achados Codex PR #69 ------------------------------------------------------
+
+def test_generate_drums_never_leaks_into_the_bar_before_the_section(tmp_path):
+    """Secao que comeca depois do bar 0 nao pode ter golpe do step 0
+    (hat/kick/crash) vazando para o bar ANTERIOR quando `_jitter_s`
+    sorteia offset negativo — `_emit_hit` clampava so em 0.0 absoluto, nao
+    na fronteira do bar atual. Varre varias seeds porque o vazamento so
+    aparece quando o sinal do jitter sorteado e negativo."""
+    src = _build_chord_source(tmp_path)
+    analysis = _analyze(src)
+    # secao comeca no bar 4 (nao no bar 0) — o bar anterior (3) existe na
+    # analise mas fica FORA da secao declarada do elemento.
+    section = _section(start_bar=4, end_bar=8)
+    section_start_s = next(b.start for b in analysis.bars if b.index == 4)
+    assert section_start_s > 0.0, "fixture must place the section after bar 0"
+
+    for seed in range(30):
+        notes = generate_drums(analysis, section, seed=seed)[0].notes
+        leaking = [n for n in notes if n.start_s < section_start_s - 1e-9]
+        assert leaking == [], (
+            f"seed={seed}: notes must never start before the section's own "
+            f"bar boundary ({section_start_s}s); leaked into the previous "
+            f"bar: {leaking}"
+        )
+
+
+def test_generate_drums_recomputes_step_duration_per_bar():
+    """`step_dur_s` tem que ser recalculado por bar (`bar.end - bar.start`),
+    nao derivado uma unica vez do primeiro bar da secao. Fixture com bar 1
+    de duracao METADE do bar 0 (mudanca de tempo/compasso no meio da
+    secao): se `step_dur_s` do bar 0 (2.0s / 16 = 0.125s) for reusado no
+    bar 1 (duracao real 1.0s), o kick do step 8 cairia em
+    2.0 + 8*0.125 = 3.0s — exatamente na fronteira/fora do bar 1
+    (que termina em 3.0s) — em vez do correto 2.0 + 8*0.0625 = 2.5s."""
+    bars = [
+        BarAnalysis(index=0, start=0.0, end=2.0, chord=None),
+        BarAnalysis(index=1, start=2.0, end=3.0, chord=None),
+        BarAnalysis(index=2, start=3.0, end=5.0, chord=None),
+    ]
+    analysis = Analysis(
+        key_root=0, bars=bars, kick_positions=[], snare_positions=[],
+        guitar_unison_positions=[], track_names=[],
+    )
+    section = _section(start_bar=0, end_bar=3)
+
+    for seed in range(10):
+        notes = generate_drums(analysis, section, seed=seed)[0].notes
+        bar1_kicks = [
+            n for n in notes
+            if n.pitch == GM_KICK and bars[1].start <= n.start_s < bars[1].end
+        ]
+        assert bar1_kicks, f"seed={seed}: bar 1 must carry at least one kick"
+        assert all(n.start_s < bars[1].end - 0.01 for n in bar1_kicks), (
+            f"seed={seed}: bar 1 kicks must use bar 1's own duration "
+            f"(1.0s), not bar 0's (2.0s) — got {[n.start_s for n in bar1_kicks]} "
+            f"against bar1 end {bars[1].end}"
+        )
+
 
 def test_generate_drums_rejects_invalid_layers(tmp_path):
     src = _build_chord_source(tmp_path)

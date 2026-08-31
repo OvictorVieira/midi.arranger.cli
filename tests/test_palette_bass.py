@@ -7,8 +7,13 @@ from pathlib import Path
 import pretty_midi
 import pytest
 
-from tools.analyze import Analysis, analyze
-from tools.palette.bass import DEFAULT_BASS_REGISTER, generate_bass
+from tools.analyze import Analysis, Chord, analyze
+from tools.palette.bass import (
+    DEFAULT_BASS_REGISTER,
+    _chord_tone_pitches,
+    _contour_pitch,
+    generate_bass,
+)
 from tools.plan import Element, PlanSection
 from tools.validators.harmony import RenderedNote, RenderedTrack, validate_harmony
 
@@ -36,6 +41,48 @@ def _build_chord_source(tmp_path: Path, name: str = "chords.mid") -> Path:
         (0, 4, 7),
         (9, 0, 4),
         (9, 0, 4),
+    ]
+    for bar, pcs in enumerate(chords):
+        start = bar * bar_len
+        for pc in pcs:
+            pitch = 48 + pc
+            guitar.notes.append(pretty_midi.Note(
+                velocity=80, pitch=pitch, start=start, end=start + bar_len,
+            ))
+        for beat in (0, 2):
+            drums.notes.append(pretty_midi.Note(
+                velocity=100, pitch=36, start=start + beat * beat_len,
+                end=start + beat * beat_len + 0.1,
+            ))
+    pm.instruments.append(guitar)
+    pm.instruments.append(drums)
+    dest = tmp_path / name
+    pm.write(str(dest))
+    return dest
+
+
+def _build_b_major_chord_source(tmp_path: Path, name: str = "b_major.mid") -> Path:
+    """MIDI de 8 compassos, 120bpm 4/4, alternando Si maior (root pc 11) /
+    Mi menor a cada 2 compassos — reproduz o exemplo concreto do achado do
+    Codex na PR #69: registro estreito `[28, 35]` sobre acorde de Si maior
+    produzia candidato 39 (terca), que a subtracao unica de uma oitava
+    levava a pitch 27 (abaixo do registro E do piso de afinacao E1=28)."""
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    guitar = pretty_midi.Instrument(program=27, name="Guitar")
+    drums = pretty_midi.Instrument(program=0, name="Drums", is_drum=True)
+    bar_len = 2.0
+    beat_len = bar_len / 4
+
+    chords = [
+        (11, 3, 6),   # B maior (raiz B=11, terca D#=3, quinta F#=6)
+        (11, 3, 6),
+        (4, 7, 11),   # E menor (raiz E=4, terca G=7, quinta B=11)
+        (4, 7, 11),
+        (11, 3, 6),
+        (11, 3, 6),
+        (4, 7, 11),
+        (4, 7, 11),
     ]
     for bar, pcs in enumerate(chords):
         start = bar * bar_len
@@ -173,6 +220,75 @@ def test_generate_bass_never_goes_below_tuning_floor(tmp_path):
     notes = generate_bass(analysis, section, seed=8)[0].notes
     floor = min(_BASS_DEFAULT_TUNING)
     assert all(n.pitch >= floor for n in notes)
+
+
+# --- registro estreito: nunca produzir tom fora dos limites (achado Codex PR #69) ----
+
+def test_chord_tone_pitches_stays_within_narrow_register():
+    """Exemplo concreto do achado: registro `[28, 35]` sobre Si maior. A
+    implementacao anterior subtraia uma oitava so quando o candidato
+    excedia `hi`, sem checar `lo` depois — a terca (39) virava 27, abaixo
+    do registro e do piso de afinacao E1 (28)."""
+    b_major = Chord(root=11, quality="major")
+    register = (28, 35)
+    pitches = _chord_tone_pitches(b_major, register)
+    assert pitches, "at least one chord tone must fit a 7-semitone register"
+    assert all(register[0] <= p <= register[1] for p in pitches), (
+        f"every returned tone must fall inside {register}, got {pitches}"
+    )
+    assert 27 not in pitches, "regression: tone must never leak below the register"
+
+
+def test_chord_tone_pitches_rejects_impossible_register():
+    """Registro mais estreito que qualquer classe de pitch do acorde nao
+    tem tom nenhum que caiba — deve falhar explicito, nunca devolver pitch
+    fora do intervalo pedido."""
+    b_major = Chord(root=11, quality="major")
+    with pytest.raises(ValueError):
+        _chord_tone_pitches(b_major, (100, 100))
+
+
+def test_contour_pitch_preserves_degree_slots_in_narrow_register():
+    """Achado do Codex pos-PR#70: registro `[28, 35]` sobre Si maior faz a
+    terca (39) nao caber em nenhuma oitava, mas a quinta (30) cabe direto.
+    A implementacao anterior filtrava a terca da lista antes de indexar,
+    deslocando a quinta e a oitava um slot para tras — o contorno de alta
+    densidade `(0, 2, 3, 2)` (raiz-quinta-oitava-quinta) colapsava para
+    `[35, 35, 35, 35]` mesmo a quinta cabendo perfeitamente no registro.
+    Preservando o slot por grau, o grau 2 (quinta) tem que resolver para
+    30 de verdade, nao para o mesmo tom do grau vizinho."""
+    b_major = Chord(root=11, quality="major")
+    register = (28, 35)
+    high_density_contour = (0, 2, 3, 2)
+    sequence = [
+        _contour_pitch(b_major, register, degree)
+        for degree in high_density_contour
+    ]
+    assert 30 in sequence, (
+        f"regression: quinta (30) deve aparecer na sequencia gerada, nao "
+        f"colapsar para o tom da raiz/oitava; got {sequence}"
+    )
+    assert sequence[1] == 30, (
+        f"grau 2 (quinta) do contorno deve resolver para seu proprio tom "
+        f"(30), nao para o tom deslocado de outro grau; got {sequence}"
+    )
+    assert all(register[0] <= p <= register[1] for p in sequence)
+
+
+def test_generate_bass_never_leaves_narrow_register(tmp_path):
+    """Integracao: `generate_bass` sobre uma progressao real com Si maior
+    e registro estreito `[28, 35]` nunca emite nota fora do registro
+    declarado — reproduz de ponta a ponta o cenario do achado."""
+    src = _build_b_major_chord_source(tmp_path)
+    analysis = _analyze(src)
+    section = _section(start_bar=0, end_bar=8, densidade=8)
+    register = (28, 35)
+    notes = generate_bass(analysis, section, register=register, seed=3)[0].notes
+    assert notes, "fixture must actually produce bass notes"
+    assert all(register[0] <= n.pitch <= register[1] for n in notes), (
+        f"every bass note must stay within the declared register {register}: "
+        f"{[n.pitch for n in notes if not (register[0] <= n.pitch <= register[1])]}"
+    )
 
 
 # --- densidade acompanha o eixo energy.densidade --------------------------------
