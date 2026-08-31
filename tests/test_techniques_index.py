@@ -419,3 +419,40 @@ def test_parameter_range_must_be_two_items(tmp_path: Path):
     )
     with pytest.raises(TechniqueError, match="range"):
         parse_manual(m)
+
+
+# --- issue #53: numero em manual precisa citar fonte real OU convencao ----
+
+def test_every_manual_parameter_with_a_number_declares_source_or_convencao():
+    """Nenhum numero orfao nos manuais reais.
+
+    `Technique.verified` ja derruba para False quando um parametro tem
+    `value`/`range` com `source: None` — isso funciona como SINAL, mas nao e
+    BARREIRA: o manual continua carregando o numero sem dizer se e fonte real
+    ou convencao de oficio (issue #53, achado em `drums.flam` na PR #46:
+    `grace_velocity_ratio` e `reading_ceiling_ms` tinham valor com
+    `source: null`, sem dizer que eram convencao — a §11 do manual de
+    bateria ja listava a razao graca/principal como lacuna declarada).
+
+    Varre TODOS os manuais em `knowledge/tecnicas/` via `build_index()`.
+    Toda saida valida e uma destas duas: citar uma fonte real nao vazia, ou
+    comecar com "CONVENCAO" (convencao declarada, com a razao — mesma forma
+    ja usada em `drums.flam` e `guitar.vibrato`/`guitar.tremolo_picking`).
+    `source` ausente, `None` ou vazio/so-espaco num parametro que carrega
+    `value` ou `range` e sempre erro."""
+    idx = build_index(MANUALS_DIR)
+    orfaos = []
+    for t in idx.techniques:
+        for p in t.parameters:
+            if p.value is None and p.range is None:
+                continue  # lacuna declarada (so `name`) nao tem numero pra verificar
+            source = (p.source or "").strip()
+            if not source:
+                orfaos.append(
+                    f"{t.source_manual}: {t.canonical}.{p.name} tem numero "
+                    f"(value={p.value!r}, range={p.range!r}) sem `source`. "
+                    f"Corrija citando uma fonte real, ou declare "
+                    f'`"source": "CONVENCAO — <razao>"` se o numero for '
+                    f"convencao de oficio do motor."
+                )
+    assert orfaos == [], "\n".join(orfaos)

@@ -190,6 +190,16 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Todo `plan.elements[]` deve carregar `rationale` string não vazia após `strip()`; fixtures e
   testes precisam usar uma razão real do elemento, não placeholder.
 - Número sem fonte é marcado `[NÃO VERIFICADO]` e **jamais** apresentado como fato.
+- Todo `value`/`range` numérico em `knowledge/tecnicas/*.md` tem `source` preenchido: ou cita fonte
+  real, ou declara `"source": "CONVENCAO — <razão>"` (mesma forma já usada em `drums.flam` e nas
+  técnicas de guitarra marcadas `verified: false`). Número nunca fica órfão — `source` ausente ou
+  `null` num parâmetro com `value`/`range` é erro de varredura, não "lacuna": lacuna é parâmetro sem
+  `value` e sem `range`, que documenta ausência de número, não convenção disfarçada. Isso já aconteceu
+  três vezes por caminhos diferentes (atribuição falsa a `cmuse.org` no manual de guitarra,
+  `_identity_apply`/gerador de bateria de andaime, e `drums.flam` em #46 com `grace_velocity_ratio` e
+  `reading_ceiling_ms` sem marcar convenção); `build_index()` já derruba `verified` para `false` nesse
+  caso como SINAL, mas o teste de varredura em `tests/test_techniques_index.py` é a BARREIRA que
+  falha o build citando manual, técnica e parâmetro.
 - Determinismo nas tools: sem relógio, sem `random` sem seed, sem rede.
 - Ao adicionar leitura de `element.pattern` em `tools/render.py`, atualize o conjunto
   `*_PATTERN_FIELDS` do role correspondente para evitar aviso falso de campo ignorado.
