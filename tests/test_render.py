@@ -1595,3 +1595,130 @@ def test_render_refuses_when_brief_sha256_mismatches(tmp_path):
     with pytest.raises(RenderError, match="brief_ref.sha256"):
         render(plan, out)
     assert not out.exists()
+
+
+# --- issue #44 / PR #64 (achado P1) — instruments alimenta o pipeline ------
+
+def _build_low_bass_source(tmp_path: Path) -> Path:
+    """Baixo em pitch 24 — abaixo do piso da afinacao PADRAO de 4 cordas
+    (28), mas dentro do piso de uma afinacao de 5 cordas em B (23)."""
+    src = tmp_path / "low_bass_source.mid"
+    mid = mido.MidiFile(ticks_per_beat=480, type=1)
+    tempo_track = mido.MidiTrack()
+    tempo_track.append(
+        mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(120), time=0)
+    )
+    mid.tracks.append(tempo_track)
+
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    previous = 0
+    for tick in (0, 960, 1920, 2880, 3840, 4800, 5760, 6720):
+        track.append(mido.Message(
+            "note_on", note=24, velocity=90, channel=1, time=tick - previous,
+        ))
+        track.append(mido.Message(
+            "note_off", note=24, velocity=0, channel=1, time=480,
+        ))
+        previous = tick + 480
+    mid.tracks.append(track)
+    mid.save(str(src))
+    return src
+
+
+def _low_bass_plan(src: Path, ref: BriefRef) -> ArrangementPlan:
+    plan = ArrangementPlan(
+        version=1,
+        seed=7,
+        source_midi=SourceMidi(path=str(src), sha256=_sha256_bytes(src)),
+        route="cinematica_emocional",
+        sections=[],
+        elements=[],
+    )
+    plan.brief_ref = ref
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.0)]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Research",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[StyleTechnique(name="bass.ghost_notes")],
+            parameters={"density": 1.0},
+        ),
+    }
+    return plan
+
+
+def _low_bass_brief_ref(tmp_path: Path, instruments: dict | None) -> BriefRef:
+    payload: dict = {
+        "style": {
+            fam: {
+                "authorized_techniques": (
+                    ["bass.ghost_notes"] if fam == "bass" else []
+                ),
+            }
+            for fam in ("bass", "drums", "guitar", "keys")
+        },
+    }
+    if instruments is not None:
+        payload["instruments"] = instruments
+    name = "brief_with_instruments.json" if instruments else "brief_bare.json"
+    brief_path = tmp_path / name
+    brief_path.write_text(json.dumps(payload), encoding="utf-8")
+    return BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+
+
+def test_render_uses_declared_instrument_tuning_for_physical_plausibility(
+    tmp_path,
+):
+    """Achado P1 do PR #64: `brief.instruments.<familia>.tuning` (issue #44)
+    tem que alimentar `TechniqueContext.parameters["tuning"]` de verdade —
+    antes desta correcao, `instruments` era validado e ignorado (o
+    "parametro mentiroso" que o AGENTS.md proibe).
+
+    Baixo escrito em pitch 24 (abaixo do piso da afinacao PADRAO de 4
+    cordas, 28) so pode ganhar ornamento de `bass.ghost_notes` (que herda o
+    pitch da nota estrutural anterior) se a afinacao de 5 cordas em B
+    (piso 23) declarada no brief realmente chegar ao validador fisico.
+    """
+    src = _build_low_bass_source(tmp_path)
+
+    # Sem `instruments` no brief: cai no default fisico (piso 28) e o
+    # motor recusa o ornamento em pitch 24.
+    bare_ref = _low_bass_brief_ref(tmp_path, None)
+    out_bare = tmp_path / "out_bare.mid"
+    with pytest.raises(RenderError, match="afinacao declarada"):
+        render(_low_bass_plan(src, bare_ref), out_bare)
+    assert not out_bare.exists()
+
+    # Com `instruments.bass` declarando 5 cordas em B (piso 23): o mesmo
+    # ornamento passa, e a saida ganha nota nova.
+    declared_ref = _low_bass_brief_ref(tmp_path, {
+        "bass": {
+            "known": True,
+            "strings": 5,
+            "tuning": {"name": None, "notes": [23, 28, 33, 38, 43]},
+            "playing_style": "finger",
+            "notation": "sounding",
+        },
+    })
+    out_declared = tmp_path / "out_declared.mid"
+    render(_low_bass_plan(src, declared_ref), out_declared)
+    assert out_declared.exists()
+
+    def bass_note_count(path: Path) -> int:
+        m = mido.MidiFile(str(path))
+        return sum(
+            1
+            for tr in m.tracks
+            for msg in tr
+            if msg.type == "note_on"
+            and msg.velocity > 0
+            and getattr(msg, "channel", -1) == 1
+        )
+
+    assert bass_note_count(out_declared) > bass_note_count(src), (
+        "com a afinacao declarada o motor tem que acrescentar ornamento — "
+        "sem isso o outro lado do teste nao prova nada"
+    )
