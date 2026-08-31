@@ -144,34 +144,36 @@ def have(tool: str, module: str | None = None) -> bool:
 # --- coleta de metricas ------------------------------------------------------
 
 def collect_tests() -> tuple[int, int, float | None]:
-    """Roda a suite. Devolve (passed, failed, coverage_pct | None).
+    """Roda a suite UMA vez. Devolve (passed, failed, coverage_pct | None).
 
     Coverage so e coletada quando o pacote `coverage` existe. Sem ele a
     metrica sai como None e o gate decide o que fazer com base no baseline.
+
+    Ate a issue #34 a suite rodava DUAS vezes: uma sob `coverage run` (para
+    a metrica de cobertura) e outra, identica, so para reler o resumo
+    textual (`N passed`/`N failed`) que a primeira rodada ja tinha
+    produzido e descartava. O resumo agora vem da MESMA execucao que roda
+    sob coverage — nao ha razao para rodar a suite inteira duas vezes so
+    para reler um numero que a primeira rodada ja imprimiu.
     """
     use_cov = have("coverage")
     if use_cov:
-        run(
+        proc = run(
             [sys.executable, "-m", "coverage", "run",
              "--source", "tools",
              "--omit", "tests/*",
-             "-m", "pytest", "-q"],
-            cwd=ROOT, allow_failure=True,
+             "-m", "pytest", "-q", "--no-header"],
+            cwd=ROOT, allow_failure=True, stream=False,
         )
-        proc = run(
+        cov_json = run(
             [sys.executable, "-m", "coverage", "json", "-o", "-", "--quiet"],
             cwd=ROOT, allow_failure=True, stream=False,
         )
-        # Reexecuta so para capturar o resumo textual do pytest.
-        summary = run(
-            [sys.executable, "-m", "pytest", "-q", "--no-header"],
-            cwd=ROOT, allow_failure=True, stream=False,
-        )
         cov = None
-        if proc.returncode == 0 and proc.stdout.strip():
+        if cov_json.returncode == 0 and cov_json.stdout.strip():
             try:
                 cov = round(
-                    json.loads(proc.stdout)["totals"]["percent_covered"], 2
+                    json.loads(cov_json.stdout)["totals"]["percent_covered"], 2
                 )
             except (ValueError, KeyError):
                 cov = None
@@ -180,13 +182,13 @@ def collect_tests() -> tuple[int, int, float | None]:
             "pacote `coverage` ausente — metrica coverage_pct nao sera "
             "coletada. Habilite com: python3 -m pip install coverage"
         )
-        summary = run(
+        proc = run(
             [sys.executable, "-m", "pytest", "-q", "--no-header"],
             cwd=ROOT, allow_failure=True, stream=False,
         )
         cov = None
 
-    out = f"{summary.stdout}\n{summary.stderr}"
+    out = f"{proc.stdout}\n{proc.stderr}"
     sys.stdout.write(out)
     passed = sum(int(n) for n in re.findall(r"(\d+) passed", out))
     failed = sum(int(n) for n in re.findall(r"(\d+) failed", out))

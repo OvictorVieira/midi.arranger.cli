@@ -25,9 +25,21 @@ FIXTURE = os.path.join(
 
 
 def _require_fixture() -> str:
+    """Arquivo ancora real. Nenhum teste deste modulo depende de valor
+    congelado dele — todos exercitam so o CODIGO de erro/aviso da fachada,
+    que independe do conteudo musical. Mantido por compat/documentacao;
+    os testes abaixo usam `_synthetic_fixture()`."""
     if not os.path.exists(FIXTURE):
         pytest.skip(f"fixture not present: {FIXTURE}")
     return FIXTURE
+
+
+def _synthetic_fixture() -> str:
+    """MIDI sintetico minimo para testes de CONTRATO (codigo de erro,
+    aviso, envelope) — nao comportamento musical real. Ver
+    `tests/conftest.py::_build_synthetic_contract_midi`."""
+    from tests.conftest import _build_synthetic_contract_midi
+    return _build_synthetic_contract_midi()
 
 
 # --- _resolve_midi: E_MIDI_* ---------------------------------------------
@@ -69,7 +81,7 @@ def test_analyze_empty_midi_path_returns_e_midi_path():
 # --- plan.skeleton output_path -------------------------------------------
 
 def test_plan_skeleton_output_path_unwritable_returns_e_output_write(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     # Tenta escrever num diretorio sem permissao — cria pasta, remove permissao.
     parent = tmp_path / "noperm"
     parent.mkdir()
@@ -88,7 +100,7 @@ def test_plan_skeleton_output_path_unwritable_returns_e_output_write(tmp_path: P
 # --- plan.validate: E_PLAN_* ---------------------------------------------
 
 def test_plan_validate_plan_path_missing_returns_error():
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.validate", {
         "plan_path": "/nope/plan.json", "midi_path": midi,
     })
@@ -97,7 +109,7 @@ def test_plan_validate_plan_path_missing_returns_error():
 
 
 def test_plan_validate_plan_path_not_json_returns_error(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     p = tmp_path / "plan.json"
     p.write_text("{not json", encoding="utf-8")
     env = call("plan.validate", {"plan_path": str(p), "midi_path": midi})
@@ -106,7 +118,7 @@ def test_plan_validate_plan_path_not_json_returns_error(tmp_path: Path):
 
 
 def test_plan_validate_plan_path_unreadable_returns_e_plan_file_io(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     p = tmp_path / "plan.json"
     p.write_text("{}", encoding="utf-8")
     p.chmod(0o000)
@@ -119,7 +131,7 @@ def test_plan_validate_plan_path_unreadable_returns_e_plan_file_io(tmp_path: Pat
 
 
 def test_plan_validate_plan_path_not_object_returns_error(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     p = tmp_path / "plan.json"
     p.write_text("[1, 2]", encoding="utf-8")
     env = call("plan.validate", {"plan_path": str(p), "midi_path": midi})
@@ -130,7 +142,7 @@ def test_plan_validate_plan_path_not_object_returns_error(tmp_path: Path):
 def test_plan_validate_missing_edit_track_reports_domain_error(tmp_path: Path):
     """`edits[]` aponta para track inexistente no MIDI: cai em
     validate_edits_against_midi, que devolve erro no `data.errors`."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["edits"] = [{
@@ -148,7 +160,7 @@ def test_plan_validate_missing_edit_track_reports_domain_error(tmp_path: Path):
 
 def test_render_forbidden_plugin_returns_e_track_name(tmp_path: Path):
     """Plugin em FORBIDDEN_PLUGINS dispara TrackNameError durante a montagem."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -178,7 +190,7 @@ def test_render_forbidden_plugin_returns_e_track_name(tmp_path: Path):
 
 def test_render_element_without_instrument_becomes_render_error(tmp_path: Path):
     """Elemento pad sem instrument.plugin/preset — RenderError da fachada."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -203,7 +215,7 @@ def test_render_element_without_instrument_becomes_render_error(tmp_path: Path):
 
 def test_render_role_unknown_generates_warning_but_still_writes(tmp_path: Path):
     """Role sem renderer conhecido nao dispara erro — vai para warning."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -228,7 +240,7 @@ def test_render_role_unknown_generates_warning_but_still_writes(tmp_path: Path):
 
 
 def test_render_plan_path_missing_returns_error(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("render", {
         "midi_path": midi, "plan_path": "/nope/plan.json",
     })
@@ -237,7 +249,7 @@ def test_render_plan_path_missing_returns_error(tmp_path: Path):
 
 
 def test_render_plan_path_bad_json_returns_error(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     p = tmp_path / "plan.json"
     p.write_text("{not json", encoding="utf-8")
     env = call("render", {"midi_path": midi, "plan_path": str(p)})
@@ -246,7 +258,7 @@ def test_render_plan_path_bad_json_returns_error(tmp_path: Path):
 
 
 def test_render_plan_inline_invalid_returns_e_plan_invalid(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("render", {
         "midi_path": midi, "plan": {"version": 1, "route": "x"},  # faltando campos
     })
@@ -256,7 +268,7 @@ def test_render_plan_inline_invalid_returns_e_plan_invalid(tmp_path: Path):
 
 
 def test_render_seed_override_changes_output_bytes(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -291,7 +303,7 @@ def test_render_seed_override_changes_output_bytes(tmp_path: Path):
 # --- validate error paths -----------------------------------------------
 
 def test_validate_plan_inline_invalid_returns_e_plan_invalid(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -319,7 +331,7 @@ def test_validate_plan_inline_invalid_returns_e_plan_invalid(tmp_path: Path):
 def test_validate_warns_when_element_has_no_track(tmp_path: Path):
     """MIDI renderizado nao contem a track esperada de um elemento — warning
     W_ELEMENTS_MISSING_IN_RENDER."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -359,7 +371,7 @@ def test_validate_warns_when_element_has_no_track(tmp_path: Path):
 # --- plan.validate exclusive plan / plan_path ---------------------------
 
 def test_plan_validate_both_missing_returns_error():
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.validate", {"midi_path": midi})
     assert env["ok"] is False
     assert env["error"]["code"] == "E_PLAN_INPUT"
@@ -377,7 +389,7 @@ def test_techniques_describe_missing_name_returns_schema_error():
 # --- plan.skeleton default output_path branch --------------------------
 
 def test_plan_skeleton_without_output_path_returns_null_output_path():
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["output_path"] is None
@@ -387,7 +399,7 @@ def test_plan_skeleton_without_output_path_returns_null_output_path():
 
 def test_render_default_output_path_writes_to_home_desktop(tmp_path: Path, monkeypatch):
     """Sem `output_path`, o render usa `~/Desktop/<name>_arranged.mid`."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "Desktop").mkdir()
     env = call("plan.skeleton", {"midi_path": midi})
@@ -455,7 +467,7 @@ def test_render_broken_source_midi_returns_e_render(tmp_path: Path):
     empacota como E_INTERNAL (o render nao levanta RenderError para isso)."""
     p = tmp_path / "broken.mid"
     p.write_bytes(b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x01\xe0")
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env0 = call("plan.skeleton", {"midi_path": midi})
     plan = env0["data"]["plan"]
     plan["source_midi"]["path"] = str(p)  # aponta pra broken
@@ -486,7 +498,7 @@ def test_techniques_list_index_failure_reports_e_techniques_index(monkeypatch, t
 def test_plan_validate_plan_with_bad_field_type_reports_domain_error(tmp_path: Path):
     """Passa plan como dict com campo com tipo errado — _load_plan_from_dict
     dispara ToolError E_PLAN_FIELD_TYPE, que vira uma entrada em `errors`."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env0 = call("plan.skeleton", {"midi_path": midi})
     plan = env0["data"]["plan"]
     # sections[0].start_bar recebe string, from_dict via to_dict repassa.
@@ -608,7 +620,7 @@ def test_render_plan_validation_error_from_render_layer(tmp_path: Path):
     """Section label referenciada por elemento nao existe — dominio validate
     dispara PlanValidationError durante render, que a fachada mapeia para
     E_PLAN_INVALID com path."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -631,7 +643,7 @@ def test_render_plan_validation_error_from_render_layer(tmp_path: Path):
 def test_validate_broken_rendered_midi_returns_e_midi_parse(tmp_path: Path):
     """rendered_path com header valido mas conteudo quebrado — E_MIDI_PARSE
     de dentro de _rendered_tracks_from_midi."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     broken = tmp_path / "broken.mid"
     broken.write_bytes(b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x01\xe0")
     env = call("plan.skeleton", {"midi_path": midi})
@@ -657,7 +669,7 @@ def test_validate_forbidden_plugin_in_element_falls_back_to_missing(tmp_path: Pa
     """Elemento com plugin proibido — name_for_element levanta TrackNameError
     dentro de _rendered_tracks_from_midi, o elemento fica sem track e vira
     warning W_ELEMENTS_MISSING_IN_RENDER."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -715,7 +727,7 @@ def test_plan_skeleton_inferred_sections_produce_warning(tmp_path: Path):
 
 def test_validate_element_with_empty_instrument_skips_matching(tmp_path: Path):
     """Elemento com instrument dict mas plugin/preset vazios: entra em missing."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     plan = env["data"]["plan"]
     plan["elements"] = [{
@@ -828,7 +840,7 @@ def test_plan_validate_plan_path_missing_version_returns_field_missing(
     """plan_path sem `version` bypassa o schema (que so olha o campo string) e
     chega em `_load_plan_from_dict` -> KeyError -> ToolError E_PLAN_FIELD_MISSING.
     O ToolError e capturado pela plan.validate e vira erro de dominio."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     p = tmp_path / "no_version.json"
     # Plan sem `version` — from_dict levanta KeyError.
     p.write_text(json.dumps({
@@ -846,7 +858,7 @@ def test_plan_validate_plan_path_missing_version_returns_field_missing(
 def test_render_plan_path_missing_version_returns_e_plan_invalid(tmp_path: Path):
     """plan_path bypassa o schema; plan_mod.from_dict levanta KeyError; a
     fachada mapeia para E_PLAN_INVALID."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     p = tmp_path / "no_version.json"
     p.write_text(json.dumps({
         "seed": 0, "route": "rock",

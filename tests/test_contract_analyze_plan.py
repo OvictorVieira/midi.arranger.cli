@@ -21,6 +21,10 @@ FIXTURE = os.path.join(
 
 
 def _require_fixture() -> str:
+    """Arquivo ancora real — so para testes que dependem de COMPORTAMENTO
+    MUSICAL REAL (valores congelados, contagem de secoes/compassos). Testes
+    de envelope/schema/erro usam a fixture `synthetic_contract_midi` de
+    `tests/conftest.py` em vez desta."""
     if not os.path.exists(FIXTURE):
         pytest.skip(f"fixture not present: {FIXTURE}")
     return FIXTURE
@@ -44,6 +48,8 @@ def test_tool_has_prompt_style_description(name: str):
 # --- analyze ---------------------------------------------------------------
 
 def test_analyze_valid_input_returns_ok_and_full_shape():
+    # Ancora: valores CONGELADOS do arquivo real (key_root, contagem de
+    # secoes/compassos, secao exata) — nao trocar para o sintetico.
     midi = _require_fixture()
     env = call("analyze", {"midi_path": midi})
     assert env["ok"] is True
@@ -65,6 +71,9 @@ def test_analyze_valid_input_returns_ok_and_full_shape():
 
 
 def test_analyze_ancora_has_no_inferred_warning():
+    # Ancora: prova que TODAS as secoes do arquivo real vem de marker — uma
+    # propriedade do arquivo, nao do envelope. O sintetico nao tem markers
+    # e sempre dispararia este warning, entao nao serve aqui.
     midi = _require_fixture()
     env = call("analyze", {"midi_path": midi})
     assert env["ok"] is True
@@ -113,8 +122,8 @@ def test_analyze_not_a_midi_returns_error(tmp_path: Path):
     assert env["error"]["code"] == "E_MIDI_INVALID"
 
 
-def test_analyze_unknown_field_returns_ok_false_with_path():
-    env = call("analyze", {"midi_path": FIXTURE, "extra": True})
+def test_analyze_unknown_field_returns_ok_false_with_path(synthetic_contract_midi: str):
+    env = call("analyze", {"midi_path": synthetic_contract_midi, "extra": True})
     assert env["ok"] is False
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
     assert env["error"]["path"] == "extra"
@@ -130,6 +139,7 @@ def test_analyze_missing_midi_path_field_returns_ok_false():
 # --- plan.skeleton --------------------------------------------------------
 
 def test_plan_skeleton_returns_valid_plan_that_round_trips_through_validate():
+    # Ancora: `len(sections) == 10` e valor CONGELADO do arquivo real.
     midi = _require_fixture()
     env = call("plan.skeleton", {"midi_path": midi, "seed": 42})
     assert env["ok"] is True
@@ -147,10 +157,13 @@ def test_plan_skeleton_returns_valid_plan_that_round_trips_through_validate():
     assert env2["data"]["normalized_plan"] == plan
 
 
-def test_plan_skeleton_writes_to_output_path_when_given(tmp_path: Path):
-    midi = _require_fixture()
+def test_plan_skeleton_writes_to_output_path_when_given(
+    tmp_path: Path, synthetic_contract_midi: str,
+):
     out = tmp_path / "plan.json"
-    env = call("plan.skeleton", {"midi_path": midi, "output_path": str(out)})
+    env = call("plan.skeleton", {
+        "midi_path": synthetic_contract_midi, "output_path": str(out),
+    })
     assert env["ok"] is True
     assert env["data"]["output_path"] == str(out)
     assert out.exists()
@@ -158,22 +171,23 @@ def test_plan_skeleton_writes_to_output_path_when_given(tmp_path: Path):
     assert written == env["data"]["plan"]
 
 
-def test_plan_skeleton_default_route_when_omitted():
-    midi = _require_fixture()
-    env = call("plan.skeleton", {"midi_path": midi})
+def test_plan_skeleton_default_route_when_omitted(synthetic_contract_midi: str):
+    env = call("plan.skeleton", {"midi_path": synthetic_contract_midi})
     assert env["ok"] is True
     assert env["data"]["plan"]["route"] == "cinematica_emocional"
 
 
-def test_plan_skeleton_invalid_route_returns_error():
-    midi = _require_fixture()
-    env = call("plan.skeleton", {"midi_path": midi, "route": "nao_existe"})
+def test_plan_skeleton_invalid_route_returns_error(synthetic_contract_midi: str):
+    env = call("plan.skeleton", {
+        "midi_path": synthetic_contract_midi, "route": "nao_existe",
+    })
     assert env["ok"] is False
     # o proprio schema rejeita porque route e um enum
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
 
 
 def test_plan_skeleton_source_midi_carries_sha256_and_bar_count():
+    # Ancora: `bars == 163` e valor CONGELADO do arquivo real.
     midi = _require_fixture()
     env = call("plan.skeleton", {"midi_path": midi})
     assert env["ok"] is True
@@ -182,9 +196,12 @@ def test_plan_skeleton_source_midi_carries_sha256_and_bar_count():
     assert src["bars"] == 163
 
 
-def test_plan_skeleton_unknown_field_returns_ok_false_with_path():
-    midi = _require_fixture()
-    env = call("plan.skeleton", {"midi_path": midi, "surprise": True})
+def test_plan_skeleton_unknown_field_returns_ok_false_with_path(
+    synthetic_contract_midi: str,
+):
+    env = call("plan.skeleton", {
+        "midi_path": synthetic_contract_midi, "surprise": True,
+    })
     assert env["ok"] is False
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
     assert env["error"]["path"] == "surprise"
@@ -192,10 +209,26 @@ def test_plan_skeleton_unknown_field_returns_ok_false_with_path():
 
 # --- plan.validate --------------------------------------------------------
 
+_SYNTHETIC_SKELETON_PLAN_CACHE: dict | None = None
+
+
 def _valid_plan_from_skeleton() -> dict:
-    midi = _require_fixture()
-    env = call("plan.skeleton", {"midi_path": midi})
-    return env["data"]["plan"]
+    """Plano valido a partir de `plan.skeleton` sobre o MIDI sintetico de
+    contrato (`synthetic_contract_midi`, `tests/conftest.py`). Os testes de
+    `plan.validate` abaixo exercitam schema/dominio (tecnica, estilo,
+    elemento) e nao dependem de nenhum valor especifico do MIDI de origem —
+    o skeleton so precisa ser calculado uma vez (cache em modulo, mesmo
+    papel de uma fixture de escopo de sessao) e cada teste recebe uma copia
+    independente para mutar sem vazar estado entre testes. Os poucos testes
+    que checam fato CONGELADO do ancora usam `_require_fixture()` direto,
+    sem passar por este helper.
+    """
+    global _SYNTHETIC_SKELETON_PLAN_CACHE
+    if _SYNTHETIC_SKELETON_PLAN_CACHE is None:
+        from tests.conftest import _build_synthetic_contract_midi
+        env = call("plan.skeleton", {"midi_path": _build_synthetic_contract_midi()})
+        _SYNTHETIC_SKELETON_PLAN_CACHE = env["data"]["plan"]
+    return copy.deepcopy(_SYNTHETIC_SKELETON_PLAN_CACHE)
 
 
 def _attach_brief_authorizing_all(plan: dict, tmp_path: Path) -> None:
@@ -221,8 +254,8 @@ def _attach_brief_authorizing_all(plan: dict, tmp_path: Path) -> None:
 
 
 def test_plan_validate_accepts_skeleton_output():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
     assert env["ok"] is True
     assert env["data"]["valid"] is True
@@ -230,8 +263,8 @@ def test_plan_validate_accepts_skeleton_output():
 
 
 def test_plan_validate_returns_normalized_style_default_for_used_family():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["assumptions"] = []
     plan["elements"] = [{
         "id": "piano_default",
@@ -302,8 +335,8 @@ def _complete_style_dict() -> dict:
 def test_plan_validate_accepts_complete_style_in_all_four_families(tmp_path: Path):
     from tools.brief_ref import brief_sha256
 
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     brief_path = tmp_path / "arrangement-brief.json"
     brief_path.write_text(
@@ -333,8 +366,8 @@ def test_plan_validate_accepts_complete_style_in_all_four_families(tmp_path: Pat
 def test_plan_validate_accepts_valid_brief_ref(tmp_path: Path):
     from tools.brief_ref import brief_sha256
 
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     brief_path = tmp_path / "arrangement-brief.json"
     brief_path.write_text(
         json.dumps({"style": {"drums": {"authorized_techniques": []}}}),
@@ -353,8 +386,8 @@ def test_plan_validate_accepts_valid_brief_ref(tmp_path: Path):
 
 
 def test_plan_validate_rejects_malformed_brief_ref_sha256_in_schema():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["brief_ref"] = {
         "path": "arrangement-brief.json",
         "sha256": "A" * 64,
@@ -375,8 +408,8 @@ def test_plan_validate_rejects_malformed_brief_ref_sha256_in_schema():
     ],
 )
 def test_plan_validate_rejects_partial_brief_ref_in_schema(field: str, path: str):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["brief_ref"] = {
         "path": "arrangement-brief.json",
         "sha256": "0" * 64,
@@ -391,8 +424,8 @@ def test_plan_validate_rejects_partial_brief_ref_in_schema(field: str, path: str
 
 
 def test_plan_validate_resolves_simple_style_technique_name_by_family(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
     _attach_brief_authorizing_all(plan, tmp_path)
@@ -402,8 +435,8 @@ def test_plan_validate_resolves_simple_style_technique_name_by_family(tmp_path: 
 
 
 def test_plan_validate_rejects_unknown_style_technique_with_exact_path(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "flanm"}]
     _attach_brief_authorizing_all(plan, tmp_path)
@@ -416,8 +449,8 @@ def test_plan_validate_rejects_unknown_style_technique_with_exact_path(tmp_path:
 
 
 def test_plan_validate_rejects_documented_but_unimplemented_style_technique(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["keys"]["techniques"] = [{"name": "keys.hand_asynchrony"}]
     _attach_brief_authorizing_all(plan, tmp_path)
@@ -431,8 +464,8 @@ def test_plan_validate_rejects_documented_but_unimplemented_style_technique(tmp_
 
 
 def test_plan_validate_rejects_style_technique_from_other_family(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["bass"]["techniques"] = [{"name": "drums.flam"}]
     _attach_brief_authorizing_all(plan, tmp_path)
@@ -445,8 +478,8 @@ def test_plan_validate_rejects_style_technique_from_other_family(tmp_path: Path)
 
 
 def test_plan_validate_rejects_unknown_style_family_in_schema():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["vocals"] = {
         "reference": "cantor",
@@ -474,8 +507,8 @@ def test_plan_validate_rejects_unknown_style_family_in_schema():
     ],
 )
 def test_plan_validate_rejects_missing_style_field_in_schema(field: str, path: str):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     del plan["style"]["bass"][field]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -485,8 +518,8 @@ def test_plan_validate_rejects_missing_style_field_in_schema(field: str, path: s
 
 
 def test_plan_validate_rejects_invalid_style_confidence_in_schema():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["confidence"] = "bastante"
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -496,8 +529,8 @@ def test_plan_validate_rejects_invalid_style_confidence_in_schema():
 
 
 def test_plan_validate_rejects_musical_content_key_inside_style_schema():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["bass"]["notes"] = [40, 42, 45]
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -508,8 +541,8 @@ def test_plan_validate_rejects_musical_content_key_inside_style_schema():
 
 
 def test_plan_validate_accepts_style_parameter_range_pair_schema(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["parameters"] = {"velocity": [20, 45]}
     _attach_brief_authorizing_all(plan, tmp_path)
@@ -519,8 +552,8 @@ def test_plan_validate_accepts_style_parameter_range_pair_schema(tmp_path: Path)
 
 
 def test_plan_validate_rejects_style_parameter_outside_manual_range(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
     plan["style"]["drums"]["parameters"] = {"velocity": 46}
@@ -541,8 +574,8 @@ def test_plan_validate_warns_for_style_parameter_source_gap(
         "tools.techniques.SUPPORTED_TECHNIQUES",
         (*SUPPORTED_TECHNIQUES, "guitar.palm_mute"),
     )
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["guitar"]["techniques"] = [{"name": "palm_mute"}]
     plan["style"]["guitar"]["parameters"] = {"gate_absoluto_ms": 999}
@@ -557,8 +590,8 @@ def test_plan_validate_warns_for_style_parameter_source_gap(
 
 
 def test_plan_validate_rejects_midi_integer_sequence_under_innocent_style_parameter_schema():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["bass"]["parameters"] = {"accent_shape": [40, 42, 45]}
     env = call("plan.validate", {"plan": plan, "midi_path": midi})
@@ -569,8 +602,8 @@ def test_plan_validate_rejects_midi_integer_sequence_under_innocent_style_parame
 
 
 def test_plan_validate_rejects_pitch_time_event_array_inside_style_schema():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["style"] = _complete_style_dict()
     plan["style"]["drums"]["parameters"] = {
         "accent_map": [{"pitch": 38, "time": 0.0}],
@@ -583,8 +616,8 @@ def test_plan_validate_rejects_pitch_time_event_array_inside_style_schema():
 
 
 def test_plan_validate_reports_layers_lt_1_error():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["elements"] = [{
         "id": "bad",
         "role": "pad",
@@ -607,8 +640,8 @@ def test_plan_validate_reports_layers_lt_1_error():
 
 
 def test_plan_validate_reports_register_out_of_range():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["elements"] = [{
         "id": "bad",
         "role": "pad",
@@ -631,8 +664,8 @@ def test_plan_validate_reports_register_out_of_range():
 
 def test_plan_validate_reports_missing_section_reference_via_domain():
     """Reference a section that doesn't exist: schema passa mas dominio rejeita."""
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["elements"] = [{
         "id": "bad",
         "role": "pad",
@@ -657,8 +690,8 @@ def test_plan_validate_reports_missing_section_reference_via_domain():
 
 
 def test_plan_validate_reports_multiple_protagonists_in_same_section():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     label = plan["sections"][0]["label"]
     base_el = {
         "role": "pad",
@@ -687,8 +720,8 @@ def test_plan_validate_reports_multiple_protagonists_in_same_section():
 
 
 def test_plan_validate_via_plan_path_reads_file(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     pp = tmp_path / "plan.json"
     pp.write_text(json.dumps(plan), encoding="utf-8")
     env = call("plan.validate", {"plan_path": str(pp), "midi_path": midi})
@@ -696,16 +729,17 @@ def test_plan_validate_via_plan_path_reads_file(tmp_path: Path):
     assert env["data"]["valid"] is True
 
 
-def test_plan_validate_missing_both_plan_and_plan_path_returns_error():
-    midi = _require_fixture()
-    env = call("plan.validate", {"midi_path": midi})
+def test_plan_validate_missing_both_plan_and_plan_path_returns_error(
+    synthetic_contract_midi: str,
+):
+    env = call("plan.validate", {"midi_path": synthetic_contract_midi})
     assert env["ok"] is False
     assert env["error"]["code"] == "E_PLAN_INPUT"
 
 
 def test_plan_validate_both_plan_and_plan_path_returns_error(tmp_path: Path):
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     pp = tmp_path / "plan.json"
     pp.write_text(json.dumps(plan), encoding="utf-8")
     env = call("plan.validate", {
@@ -716,8 +750,8 @@ def test_plan_validate_both_plan_and_plan_path_returns_error(tmp_path: Path):
 
 
 def test_plan_validate_rejects_null_rationale():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["elements"] = [{
         "id": "el_a",
         "role": "pad",
@@ -736,8 +770,8 @@ def test_plan_validate_rejects_null_rationale():
 
 
 def test_plan_validate_rejects_missing_rationale():
-    midi = _require_fixture()
     plan = _valid_plan_from_skeleton()
+    midi = plan["source_midi"]["path"]
     plan["elements"] = [{
         "id": "el_a",
         "role": "pad",

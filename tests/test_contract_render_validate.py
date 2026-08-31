@@ -20,9 +20,20 @@ FIXTURE = os.path.join(
 
 
 def _require_fixture() -> str:
+    """Arquivo ancora real — so para os testes de DETERMINISMO (byte a byte,
+    mesma seed) desta suite; sao os unicos aqui que provam algo sobre
+    material musical real. Os demais usam `_synthetic_fixture()`."""
     if not os.path.exists(FIXTURE):
         pytest.skip(f"fixture not present: {FIXTURE}")
     return FIXTURE
+
+
+def _synthetic_fixture() -> str:
+    """MIDI sintetico minimo para testes de CONTRATO (envelope, erro,
+    schema) — nao comportamento musical real. Ver
+    `tests/conftest.py::_build_synthetic_contract_midi`."""
+    from tests.conftest import _build_synthetic_contract_midi
+    return _build_synthetic_contract_midi()
 
 
 def _pad_plan(midi: str) -> dict:
@@ -70,7 +81,7 @@ def test_render_family_has_prompt_description(name: str):
 # --- render ---------------------------------------------------------------
 
 def test_render_produces_output_and_leaves_source_unchanged(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     before = _sha256(midi)
     out = tmp_path / "out.mid"
@@ -86,6 +97,8 @@ def test_render_produces_output_and_leaves_source_unchanged(tmp_path: Path):
 
 
 def test_render_twice_with_same_seed_is_byte_identical(tmp_path: Path):
+    # Ancora: determinismo byte-a-byte e uma promessa sobre material
+    # musical real — mantido de proposito.
     midi = _require_fixture()
     plan = _pad_plan(midi)
     out1 = tmp_path / "a.mid"
@@ -97,7 +110,7 @@ def test_render_twice_with_same_seed_is_byte_identical(tmp_path: Path):
 
 
 def test_render_refuses_to_overwrite_source(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     env = call("render", {
         "midi_path": midi, "plan": plan, "output_path": midi,
@@ -108,7 +121,7 @@ def test_render_refuses_to_overwrite_source(tmp_path: Path):
 
 
 def test_render_reports_rationale_per_element(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     out = tmp_path / "out.mid"
     env = call("render", {
@@ -125,7 +138,7 @@ def test_render_reports_rationale_per_element(tmp_path: Path):
 
 
 def test_render_seed_override_is_used(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     out = tmp_path / "out.mid"
     env = call("render", {
@@ -136,7 +149,7 @@ def test_render_seed_override_is_used(tmp_path: Path):
 
 
 def test_render_exposes_low_style_confidence_as_warning(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     plan["style"] = {
         "keys": {
@@ -162,7 +175,7 @@ def test_render_exposes_low_style_confidence_as_warning(tmp_path: Path):
 
 
 def test_render_missing_midi_returns_error():
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     env = call("render", {"midi_path": "/no/such.mid", "plan": plan})
     assert env["ok"] is False
@@ -171,7 +184,9 @@ def test_render_missing_midi_returns_error():
 
 
 def test_render_unknown_field_returns_ok_false():
-    env = call("render", {"midi_path": FIXTURE, "plan": {}, "surprise": True})
+    env = call("render", {
+        "midi_path": _synthetic_fixture(), "plan": {}, "surprise": True,
+    })
     assert env["ok"] is False
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
 
@@ -179,7 +194,7 @@ def test_render_unknown_field_returns_ok_false():
 # --- validate -------------------------------------------------------------
 
 def test_validate_runs_on_rendered_file_without_rerendering(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     out = tmp_path / "out.mid"
     call("render", {"midi_path": midi, "plan": plan, "output_path": str(out)})
@@ -202,7 +217,7 @@ def test_validate_runs_on_rendered_file_without_rerendering(tmp_path: Path):
 
 def test_validate_warns_when_render_has_no_track_for_element(tmp_path: Path):
     """MIDI renderizado que nao contem as tracks do plano dispara warning."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     env = call("validate", {
         "midi_path": midi, "rendered_path": midi, "plan": plan,
@@ -213,7 +228,7 @@ def test_validate_warns_when_render_has_no_track_for_element(tmp_path: Path):
 
 
 def test_validate_missing_rendered_file_returns_error():
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     env = call("validate", {
         "midi_path": midi, "rendered_path": "/no/such.mid", "plan": plan,
@@ -223,7 +238,7 @@ def test_validate_missing_rendered_file_returns_error():
 
 
 def test_validate_via_plan_path(tmp_path: Path):
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     plan = _pad_plan(midi)
     out = tmp_path / "out.mid"
     call("render", {"midi_path": midi, "plan": plan, "output_path": str(out)})

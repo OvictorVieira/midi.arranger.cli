@@ -25,9 +25,21 @@ FIXTURE = os.path.join(
 
 
 def _require_fixture() -> str:
+    """Arquivo ancora real. Nenhum teste deste modulo depende de valor
+    congelado dele — o pipeline completo e o schema de saida sao os mesmos
+    independente do MIDI de entrada. Os testes abaixo usam
+    `_synthetic_fixture()`."""
     if not os.path.exists(FIXTURE):
         pytest.skip(f"fixture not present: {FIXTURE}")
     return FIXTURE
+
+
+def _synthetic_fixture() -> str:
+    """MIDI sintetico minimo para testes de CONTRATO (pipeline/envelope) —
+    nao comportamento musical real. Ver
+    `tests/conftest.py::_build_synthetic_contract_midi`."""
+    from tests.conftest import _build_synthetic_contract_midi
+    return _build_synthetic_contract_midi()
 
 
 def _run_cli(argv: list[str], stdin: str = "") -> tuple[int, dict]:
@@ -73,7 +85,7 @@ def _pad_plan(midi: str) -> dict:
 def test_end_to_end_pipeline_via_cli(tmp_path: Path):
     """Pipeline completo pela CLI: analyze -> plan.skeleton -> plan.validate ->
     render -> validate. Envelope de cada passo precisa dar ok=true."""
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
 
     # 1. analyze
     inp = _tool_input(tmp_path, "analyze", {"midi_path": midi})
@@ -168,7 +180,7 @@ def test_output_of_analyze_validates_against_its_own_schema():
     """A validacao ja roda no registry.call, mas explicitamos para o teste
     documentar a promessa do contrato."""
     from tools.registry import call, get
-    midi = _require_fixture()
+    midi = _synthetic_fixture()
     env = call("analyze", {"midi_path": midi})
     assert env["ok"] is True
     tool = get("analyze")
