@@ -181,17 +181,26 @@ def _contour_for_bucket(bucket: str) -> tuple[tuple[int, ...], ...]:
 
 
 def _chord_tone_pitches(chord: Chord, register: tuple[int, int]) -> list[int]:
-    """Raiz/terca/quinta/oitava do acorde dentro do registro, ordenados —
-    indice 0=raiz, 1=terca (ou 5J se power/unknown), 2=quinta, 3=oitava.
+    """Raiz/terca/quinta/oitava do acorde dentro do registro — SEMPRE 4
+    entradas, indice 0=raiz, 1=terca (ou 5J se power/unknown), 2=quinta,
+    3=oitava, na mesma ordem que o catalogo de contorno espera (`_contour_pitch`
+    indexa direto por grau, sem compactar a lista).
 
-    So entra candidato que CABE DE VERDADE no registro: cada tom passa por
-    `_clamp_pitch_to_register` (tools/palette/rhythmic.py), que transpoe em
-    oitavas ate encaixar ou devolve `None` quando nenhuma oitava cabe —
-    nao a subtracao unica de uma oitava do codigo anterior, que podia
-    empurrar um tom para ABAIXO do registro (achado do Codex na PR #69:
-    registro `[28, 35]` sobre acorde de Si maior produzia terca em 27,
-    abaixo do piso de afinacao E1=28). Tons que nao cabem em nenhuma
-    oitava sao descartados, nao forcados para dentro do registro.
+    Cada tom passa por `_clamp_pitch_to_register` (tools/palette/rhythmic.py),
+    que transpoe em oitavas ate encaixar ou devolve `None` quando nenhuma
+    oitava cabe — nao a subtracao unica de uma oitava do codigo anterior, que
+    podia empurrar um tom para ABAIXO do registro (achado do Codex na PR #69:
+    registro `[28, 35]` sobre acorde de Si maior produzia terca em 27, abaixo
+    do piso de afinacao E1=28).
+
+    Quando o tom pedido por um grau especifico nao cabe em NENHUMA oitava, so
+    aquele grau e substituido — pelo tom, dentre os que couberam, cujo
+    candidato bruto (antes do clamp) fica mais perto do candidato bruto do
+    grau que faltou. Isso preserva o slot dos outros graus: filtrar a lista
+    e reindexar (comportamento anterior, achado do Codex pos-#69/pos-#70)
+    deslocava todo grau subsequente ao grau descartado, podendo fazer o
+    contorno colapsar para um unico tom repetido mesmo quando outro grau
+    pedido (ex.: quinta) cabia perfeitamente no registro.
 
     Raises:
       ValueError: registro impossivel para este acorde — nenhum dos
@@ -204,16 +213,23 @@ def _chord_tone_pitches(chord: Chord, register: tuple[int, int]) -> list[int]:
     third = degs[1] if len(degs) == 3 else degs[-1]
     fifth = degs[-1]
     candidates = [root_base, root_base + third, root_base + fifth, root_base + 12]
-    fitted = [
-        p for p in (_clamp_pitch_to_register(c, register) for c in candidates)
-        if p is not None
+    fitted = [_clamp_pitch_to_register(c, register) for c in candidates]
+    available = [
+        (c, p) for c, p in zip(candidates, fitted, strict=True) if p is not None
     ]
-    if not fitted:
+    if not available:
         raise ValueError(
             f"bass register {register} is impossible for chord root "
             f"{chord.root}: no chord tone fits within it"
         )
-    return fitted
+    resolved: list[int] = []
+    for raw, fit in zip(candidates, fitted, strict=True):
+        if fit is not None:
+            resolved.append(fit)
+        else:
+            closest = min(available, key=lambda cp: abs(cp[0] - raw))
+            resolved.append(closest[1])
+    return resolved
 
 
 def _contour_pitch(

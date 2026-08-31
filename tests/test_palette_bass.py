@@ -8,7 +8,12 @@ import pretty_midi
 import pytest
 
 from tools.analyze import Analysis, Chord, analyze
-from tools.palette.bass import DEFAULT_BASS_REGISTER, _chord_tone_pitches, generate_bass
+from tools.palette.bass import (
+    DEFAULT_BASS_REGISTER,
+    _chord_tone_pitches,
+    _contour_pitch,
+    generate_bass,
+)
 from tools.plan import Element, PlanSection
 from tools.validators.harmony import RenderedNote, RenderedTrack, validate_harmony
 
@@ -241,6 +246,33 @@ def test_chord_tone_pitches_rejects_impossible_register():
     b_major = Chord(root=11, quality="major")
     with pytest.raises(ValueError):
         _chord_tone_pitches(b_major, (100, 100))
+
+
+def test_contour_pitch_preserves_degree_slots_in_narrow_register():
+    """Achado do Codex pos-PR#70: registro `[28, 35]` sobre Si maior faz a
+    terca (39) nao caber em nenhuma oitava, mas a quinta (30) cabe direto.
+    A implementacao anterior filtrava a terca da lista antes de indexar,
+    deslocando a quinta e a oitava um slot para tras — o contorno de alta
+    densidade `(0, 2, 3, 2)` (raiz-quinta-oitava-quinta) colapsava para
+    `[35, 35, 35, 35]` mesmo a quinta cabendo perfeitamente no registro.
+    Preservando o slot por grau, o grau 2 (quinta) tem que resolver para
+    30 de verdade, nao para o mesmo tom do grau vizinho."""
+    b_major = Chord(root=11, quality="major")
+    register = (28, 35)
+    high_density_contour = (0, 2, 3, 2)
+    sequence = [
+        _contour_pitch(b_major, register, degree)
+        for degree in high_density_contour
+    ]
+    assert 30 in sequence, (
+        f"regression: quinta (30) deve aparecer na sequencia gerada, nao "
+        f"colapsar para o tom da raiz/oitava; got {sequence}"
+    )
+    assert sequence[1] == 30, (
+        f"grau 2 (quinta) do contorno deve resolver para seu proprio tom "
+        f"(30), nao para o tom deslocado de outro grau; got {sequence}"
+    )
+    assert all(register[0] <= p <= register[1] for p in sequence)
 
 
 def test_generate_bass_never_leaves_narrow_register(tmp_path):
