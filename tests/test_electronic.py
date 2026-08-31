@@ -231,12 +231,49 @@ def test_sub_kick_mode_follows_kick_positions():
     assert [round(n.start_s, 6) for n in notes] == kicks
 
 
+def test_sub_kick_mode_deduplicates_layered_kick_onsets():
+    """Regressao do achado do Codex na review pos-merge da PR #68: bateria
+    em camadas (duas tracks de kick soando no mesmo instante) preserva as
+    duas ocorrencias em `analysis.kick_positions`. `_enforce_monophony` nao
+    resolve starts iguais (mantem duracao minima positiva), entao sem
+    deduplicar `follow=kick` virava polifonico apesar da garantia de
+    monofonia estrita do gerador."""
+    kicks = [0.0, 0.0, 0.5, 1.0, 1.0, 1.5]  # kick duplo em 0.0 e 1.0
+    analysis = _analysis(n_bars=1, bar_s=2.0, kick_positions=kicks)
+    layers = generate_sub(
+        analysis, _section(end_bar=1), register=(24, 40), follow="kick", seed=1,
+    )
+    notes = layers[0].notes
+    assert [round(n.start_s, 6) for n in notes] == [0.0, 0.5, 1.0, 1.5]
+    _assert_monophonic(sorted(notes, key=lambda n: n.start_s))
+
+
 def test_sub_rejects_unknown_follow_mode():
     analysis = _analysis(n_bars=1)
     with pytest.raises(ElectronicGeneratorError, match="follow"):
         generate_sub(
             analysis, _section(end_bar=1), register=(24, 40), follow="groove", seed=1,
         )
+
+
+def test_sub_riff_mode_interprets_degrees_as_scale_degrees():
+    """Regressao do achado do Codex na review pos-merge da PR #68:
+    `follow=riff` somava `degrees` como semitom direto sobre a raiz, mas a
+    convencao do plano inteiro (docs/arquitetura.md,
+    `tools.validators.harmony.degrees_pcs`) e grau de escala 1-based sobre
+    a escala do tom. Em C menor natural (`key_root=0`), grau 1 == tonica
+    (pitch class 0 == C) e grau 5 == quinta (pitch class 7 == G) — nao C#
+    e F, que e o que a soma direta de semitom produzia."""
+    analysis = _analysis(n_bars=1, key_root=0)
+    layers = generate_sub(
+        analysis, _section(end_bar=1), register=(24, 40),
+        follow="riff", degrees=(1, 5), seed=1,
+    )
+    notes = layers[0].notes
+    pitch_classes = [n.pitch % 12 for n in notes]
+    # Batidas alternam grau 1 (C, pc 0) e grau 5 (G, pc 7) — nunca C#
+    # (pc 1) ou F (pc 5), que era o resultado da soma direta de semitom.
+    assert pitch_classes == [0, 7, 0, 7]
 
 
 # --- sub_drop ---------------------------------------------------------------
@@ -259,12 +296,30 @@ def test_sub_drop_is_always_a_single_note():
 def test_sub_drop_pitch_bend_is_monotonic_descending():
     analysis = _analysis(n_bars=4)
     event = generate_sub_drop(analysis, boundary_s=0.0, register=(24, 40), seed=1)
-    values = [pb.value for pb in event.pitch_bend]
-    assert len(values) >= 2
-    assert values == sorted(values, reverse=True)
-    assert values[0] == 0
-    assert values[-1] == -8192
-    assert all(-8192 <= v <= 8191 for v in values)
+    # O ultimo evento e o reset de canal (0), acrescentado depois da curva
+    # de descida — ver test_sub_drop_resets_pitch_wheel_after_drop. A curva
+    # em si (tudo antes do reset) continua monotonica descendente.
+    descent = [pb.value for pb in event.pitch_bend[:-1]]
+    assert len(descent) >= 2
+    assert descent == sorted(descent, reverse=True)
+    assert descent[0] == 0
+    assert descent[-1] == -8192
+    assert all(-8192 <= v <= 8191 for v in descent)
+
+
+def test_sub_drop_resets_pitch_wheel_after_drop():
+    """Pitch bend e estado persistente de CANAL: sem reset, a curva termina
+    em -8192 e toda nota seguinte no mesmo canal (SUB_DROP_CHANNEL, canal 0,
+    compartilhado com outros roles gerados) continua desafinada ao maximo
+    em qualquer player SMF-compliant."""
+    analysis = _analysis(n_bars=4)
+    event = generate_sub_drop(analysis, boundary_s=0.0, register=(24, 40), seed=1)
+    last = event.pitch_bend[-1]
+    assert last.value == 0
+    # O reset nunca soa antes do drop terminar de descer, nem antes da nota
+    # de sub-drop terminar.
+    assert last.time_s >= event.pitch_bend[-2].time_s
+    assert last.time_s >= event.note.end_s
 
 
 def test_bars_in_section_shared_helper():
