@@ -677,6 +677,49 @@ def test_structural_pitch_permission_still_rejects_position_changes():
         registry.apply("drums.articulation_diff", _midi_with_two_notes(), seed=1)
 
 
+def test_structural_pitch_permission_rejects_one_to_many_note_expansion():
+    """Achado do review conjunto com o Codex no PR #55 (issue #56).
+
+    `allow_structural_pitch_change` so autoriza troca de pitch 1-para-1 da
+    mesma peca (ex.: `drums.articulation_diff`). Um aplicador que troca uma
+    nota estrutural de pitch E acrescenta outra nota extra com a mesma
+    (track, canal, inicio, duracao, velocity) nao pode passar so porque a
+    validacao antiga so checava formas FALTANTES (`before_shape -
+    after_shape`), nunca formas EXTRAS.
+    """
+    registry = TechniqueRegistry()
+
+    @registry.register(
+        "drums.articulation_diff",
+        "technique",
+        allow_structural_pitch_change=True,
+    )
+    def apply(
+        mid: mido.MidiFile,
+        *,
+        context: TechniqueContext,
+    ) -> mido.MidiFile:
+        _ = context
+        on = mid.tracks[1][1]
+        off = mid.tracks[1][2]
+        mid.tracks[1][1] = on.copy(note=40)
+        mid.tracks[1][2] = off.copy(note=40)
+        _insert_note(
+            mid.tracks[1],
+            channel=9,
+            note=41,
+            velocity=100,
+            start_tick=0,
+            end_tick=120,
+        )
+        return mid
+
+    source = _midi_with_notes("Drums", channel=9, notes=[(0, 120, 38, 100)])
+
+    with pytest.raises(TechniqueContractError, match="1-para-1"):
+        registry.apply("drums.articulation_diff", source, seed=1)
+
+
 def test_technique_application_is_idempotent_in_memory_byte_for_byte():
     registry = _ornament_registry()
     once = _apply_two_ornament_techniques(registry, _midi_with_drums_and_bass())

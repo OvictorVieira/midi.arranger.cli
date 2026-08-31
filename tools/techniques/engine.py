@@ -651,6 +651,13 @@ def _validate_technique_contract(
                 f"contrato technique violado por {technique.canonical}: troca "
                 "de articulacao removeu nota estrutural ou alterou posicao"
             )
+        extra = after_shape - before_shape
+        if extra:
+            raise TechniqueContractError(
+                f"contrato technique violado por {technique.canonical}: troca "
+                "de articulacao acrescentou nota estrutural em vez de trocar "
+                "pitch 1-para-1"
+            )
         return
 
     for key, before_note in before.notes.items():
