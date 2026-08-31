@@ -184,6 +184,17 @@ def test_referenced_tools_are_registered():
         "vocabulario de tecnica e fechado",
         "techniques.describe",
         "nao vira base de conhecimento",
+        # issue #44 — configuracao de instrumento de corda.
+        "instruments",
+        "quantas cordas",
+        "afinacao",
+        "guitar.drop_tuning",
+        "nao sei",
+        "altura escrita",
+        "altura soante",
+        "instrumento transpositor",
+        "finger",
+        "declaracao do usuario vence",
     ],
 )
 def test_body_carries_required_clauses(clause):
