@@ -200,6 +200,7 @@ def test_supported_techniques_is_derived_from_the_registry():
         "bass.let_ring",
         "bass.palm_mute",
         "bass.velocity_contour",
+        "drums.accent_hierarchy",
         "drums.accented_roll",
         "drums.articulation_diff",
         "drums.buzz_roll",
@@ -218,7 +219,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
     payload = {"notes": [38]}
 
     with pytest.raises(UnknownTechniqueError) as exc:
-        apply_technique("drums.accent_hierarchy", payload, seed=1)
+        apply_technique("bass.slide", payload, seed=1)
 
     assert exc.value.available == (
         "bass.attack_style",
@@ -227,6 +228,7 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
         "bass.let_ring",
         "bass.palm_mute",
         "bass.velocity_contour",
+        "drums.accent_hierarchy",
         "drums.accented_roll",
         "drums.articulation_diff",
         "drums.buzz_roll",
@@ -2037,12 +2039,12 @@ def test_apply_fails_without_target_or_generic_recipe_before_calling_function():
 def test_apply_technique_with_warnings_rejects_unimplemented_technique():
     with pytest.raises(UnknownTechniqueError):
         apply_technique_with_warnings(
-            "drums.accent_hierarchy",
+            "bass.slide",
             {"ok": True},
             seed=1,
             tool="maschine",
             index=_technique_index(
-                "drums.accent_hierarchy",
+                "bass.slide",
                 {"generic": {"notes": [38]}},
             ),
         )
@@ -3752,34 +3754,39 @@ def test_ghost_notes_toda_ghost_fica_perto_de_nota_estrutural():
     assert orfas == [], f"ghosts isoladas no vazio: {orfas}"
 
 
-def test_accent_hierarchy_esta_documentada_mas_fora_do_motor():
-    """`drums.accent_hierarchy` sai do motor enquanto a issue #50 nao fecha.
+def test_accent_hierarchy_esta_documentada_e_implementada_no_motor():
+    """`drums.accent_hierarchy` foi reimplementada apos a issue #50.
 
-    A tecnica destruia virada: sobre `DEIXE IR.mid` rebaixava 63 das 65
+    A versao antiga destruia virada: sobre `DEIXE IR.mid` rebaixava 63 das 65
     caixas em contratempo de velocity >= 110 para <= 45, e a mediana dos toms
     de 127 para 67. Decidia a camada so pela posicao metrica, sem nocao de
-    virada — e o limiar de virada e lacuna declarada no manual.
+    virada.
 
-    Este teste trava as duas pontas: a tecnica continua no MANUAL (nao
-    apagamos conhecimento) e continua FORA do motor (nao aplicamos o defeito).
-    Re-registrar sem fechar a #50 quebra aqui.
+    Este teste trava as duas pontas: a tecnica continua no MANUAL e agora
+    consta em `SUPPORTED_TECHNIQUES` — a reimplementacao usa deteccao de
+    virada (`tools/techniques/_fill_detection.py`) e a INVARIANTE DE PRESSAO
+    para nunca inverter a intencao da origem.
     """
     from tools.techniques import SUPPORTED_TECHNIQUES, build_index
 
     assert build_index().get("drums.accent_hierarchy") is not None, (
         "a tecnica tem que continuar documentada no manual"
     )
-    assert "drums.accent_hierarchy" not in SUPPORTED_TECHNIQUES, (
-        "nao re-registrar enquanto a issue #50 nao fechar"
+    assert "drums.accent_hierarchy" in SUPPORTED_TECHNIQUES, (
+        "issue #50 fechada: a tecnica precisa estar registrada no motor"
     )
 
 
-def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito(tmp_path):
-    """Declarar a tecnica parada tem que dar erro, nunca no-op silencioso.
+def test_plano_que_declara_tecnica_documentada_mas_nao_implementada_recebe_erro_explicito(tmp_path):
+    """Declarar tecnica parada tem que dar erro, nunca no-op silencioso.
 
     Tecnica documentada que o motor aceita e ignora e o vicio que esta base
     ja rejeitou duas vezes (`_identity_apply` e o gerador de bateria de
     andaime). O usuario precisa saber que pediu algo que nao vai acontecer.
+
+    `drums.accent_hierarchy` era o exemplo canonico enquanto a issue #50 nao
+    fechava; agora que a tecnica foi reimplementada, cobrimos com `bass.slide`,
+    que continua fora de `SUPPORTED_TECHNIQUES` (ver inventario em AGENTS.md).
     """
     import json as _json
 
@@ -3797,7 +3804,7 @@ def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito(tmp_path):
     brief_path = tmp_path / "arrangement-brief.json"
     brief_path.write_text(
         _json.dumps(
-            {"style": {"drums": {"authorized_techniques": ["drums.accent_hierarchy"]}}},
+            {"style": {"bass": {"authorized_techniques": ["bass.slide"]}}},
         ),
         encoding="utf-8",
     )
@@ -3812,19 +3819,19 @@ def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito(tmp_path):
         brief_ref=BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path)),
     )
     plan.style = {
-        "drums": FamilyStyle(
+        "bass": FamilyStyle(
             reference="X",
             researched_at="2026-08-26",
             sources=["https://example.test/x"],
             confidence="high",
-            techniques=[StyleTechnique(name="drums.accent_hierarchy")],
+            techniques=[StyleTechnique(name="bass.slide")],
             parameters={},
         ),
     }
 
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
-    assert exc.value.path == "style.drums.techniques[0].name"
+    assert exc.value.path == "style.bass.techniques[0].name"
     assert "not implemented by the engine" in exc.value.message
 
 

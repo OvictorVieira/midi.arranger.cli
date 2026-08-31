@@ -430,23 +430,28 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
 
 ### 7.1 Hierarquia de acento
 
-> **NÃO IMPLEMENTADA NO MOTOR — ver issue #50.** A técnica continua documentada aqui porque o
-> conhecimento está certo; o que estava errado era a implementação. Ela decidia a camada **só pela
-> posição métrica**, sem nenhuma noção de virada, então dentro de uma virada — onde quase toda nota
+> **HISTÓRICO — defeito e correção (issue #50).** A primeira implementação decidia a camada **só
+> pela posição métrica**, sem nenhuma noção de virada; dentro de uma virada — onde quase toda nota
 > é contratempo — rebaixava tudo. Medido sobre `tests/fixtures/corpus_drums/DEIXE IR.mid`: 63 das 65
 > caixas em contratempo com velocity de origem ≥ 110 saíam ≤ 45, e a mediana dos toms caía de 127
-> para 67. A hierarquia invertia a intenção: quem escreve 127 não está escrevendo ghost note.
+> para 67. A hierarquia invertia a intenção: quem escreve 127 não está escrevendo ghost note. A
+> técnica foi removida do motor no commit `0addf93` para não seguir corrompendo o material do
+> usuário.
 >
-> Note que a tabela de camadas da §2.2 já distingue **"acento de virada"** (105–120) de **"tom de
-> preenchimento"** (55–79). O motor nunca implementou a primeira e jogava todo tom na segunda —
-> era leitura errada deste manual, não falta de informação.
->
-> Reimplementar exige separar contexto de groove de contexto de virada, e o limiar quantitativo de
-> virada é **lacuna declarada** na §11. Qualquer limiar adotado entra como `CONVENÇÃO`, com
-> justificativa, nunca como número solto no dispatch.
->
-> Enquanto isso, plano que declare `drums.accent_hierarchy` recebe `PlanValidationError` explícito.
-> Não vira no-op silencioso.
+> **RESOLUÇÃO (issue #50, esta rodada).** A técnica voltou ao motor com duas correções estruturais
+> em cima da mesma base de conhecimento. (a) Detecção determinística de virada em
+> `tools/techniques/_fill_detection.py`, reusando o padrão de `roll_sequences` de
+> `drums.accented_roll` (agrupamento por gap ≤ `fill_max_gap_beats`, mínimo de `fill_min_notes`,
+> `fill_min_density_per_beat` e `fill_min_piece_variety`, filtrando hi-hat contínuo antes do
+> agrupamento). Dentro de janela de virada, tom/caixa/prato vão para a camada **"acento de
+> virada"** (105–120) da §2.2 — a camada que a implementação original nunca leu — em vez de cair
+> em ghost/soft. (b) Invariante de pressão em duas camadas dentro do aplicador: o piso
+> `soft_ceiling+1` impede que nota escrita no topo caia para ghost/soft, e o piso
+> `original - pressure_max_drop` (default 15, `CONVENÇÃO` neste bloco) limita quanto uma nota
+> pode ser rebaixada. Fora de virada, a lógica de posição métrica (quantização ao 16-avo, mapa GM
+> de peças) diferencia backbeat/downbeat das notas de fundo. Todos os limiares de virada e o teto
+> de rebaixamento são `parameters` com `source: "CONVENÇÃO — ..."` neste bloco, fechando a lacuna
+> declarada na §11.
 
 ```technique
 {
@@ -461,7 +466,12 @@ em silêncio faria o validador aceitar qualquer nome de técnica inventado pelo 
     {"name": "normal",     "range": [80, 100],  "source": "Toontrack"},
     {"name": "soft",       "range": [55, 79],   "source": "Toontrack"},
     {"name": "ghost",      "range": [20, 45],   "source": "Toontrack"},
-    {"name": "hard_ceiling", "value": 115,      "source": "Audient"}
+    {"name": "hard_ceiling", "value": 115,      "source": "Audient"},
+    {"name": "fill_max_gap_beats",       "value": 0.25, "source": "CONVENCAO — mesmo gap maximo (16-avo) que `drums.accented_roll` usa em `roll_sequences`; agrupa notas em run so quando o intervalo cabe numa semicolcheia. Fecha a lacuna da secao 11 (`Limiar quantitativo de virada 'de bom gosto' vs 'atulhada' — sem fonte`); e escolha do motor, nao medicao"},
+    {"name": "fill_min_notes",           "value": 4,    "source": "CONVENCAO — piso do run herdado do `drums.accented_roll` (minimo de 4 notas para chamar de sequencia). Fecha a lacuna da secao 11"},
+    {"name": "fill_min_density_per_beat","value": 3.0,  "source": "CONVENCAO — densidade em notas por tempo; abaixo disso e groove, nao virada. Fecha a lacuna da secao 11"},
+    {"name": "fill_min_piece_variety",   "value": 2,    "source": "CONVENCAO — minimo de familias GM distintas dentro do run (kick/snare/tom/hihat/cymbal). Ostinato de uma peca so (hihat, ride) nao e virada; ja duas pecas na mesma corrida rapida quase sempre e. Fecha a lacuna da secao 11"},
+    {"name": "pressure_max_drop",        "value": 15,   "source": "CONVENCAO — teto de rebaixamento por nota para notas cuja origem esta acima do teto suave. A hierarquia diferencia camadas, nao gutta o material do usuario: nota escrita em 127 nao pode sair em 80 mesmo respeitando o piso ghost/soft, porque a mediana por peca e por arquivo cai demais e a intencao original vira ruina. 15 pontos coincide com o piso do teste do corpus (issue #50, US-003): mediana global e mediana de toms nao caem mais de 15 pts por arquivo. Aplica-se em conjunto com o piso `soft_ceiling+1` do invariante de pressao"}
   ],
   "tools": {
     "generic": {"note": "aplique nas velocities existentes; nao gera nota nova"},

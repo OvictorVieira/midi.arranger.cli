@@ -147,14 +147,28 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
-  bateria de andaime). Hoje estão nessa situação `drums.accent_hierarchy` (issue #50) e as técnicas
-  de baixo `bass.slide`, `bass.vibrato`, `bass.string_selection` e `bass.harmonic` (fora do escopo
-  da issue #47). Inventário canônico do motor em `docs/arquitetura.md` (§4, "Inventário de técnicas
-  do motor"); o teste `test_supported_techniques_is_derived_from_the_registry` em
-  `tests/test_techniques_engine.py` afirma a tupla exata e quebra o build se um registro fantasma
-  aparecer. Inventário atual de bateria: `drums.accented_roll`, `drums.articulation_diff`,
+  bateria de andaime). Hoje estão nessa situação as técnicas de baixo `bass.slide`, `bass.vibrato`,
+  `bass.string_selection` e `bass.harmonic` (fora do escopo da issue #47). Inventário canônico do
+  motor em `docs/arquitetura.md` (§4, "Inventário de técnicas do motor"); o teste
+  `test_supported_techniques_is_derived_from_the_registry` em `tests/test_techniques_engine.py`
+  afirma a tupla exata e quebra o build se um registro fantasma aparecer. Inventário atual de
+  bateria: `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`,
   `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes` e `drums.microtiming`.
-  Inventário atual de teclas (issue #14): `keys.damper_pedal`, `keys.expression`,
+- `drums.accent_hierarchy` foi reintroduzida na issue #50 com detecção determinística de virada
+  (`tools/techniques/_fill_detection.py`, mesmo padrão de `roll_sequences` do `drums.accented_roll`)
+  e invariante de pressão em duas camadas: (a) piso `soft_ceiling+1` impede que nota escrita no
+  topo caia para ghost/soft, (b) piso `original - pressure_max_drop` (default 15, CONVENÇÃO no
+  manual) limita quanto uma nota pode ser rebaixada, garantindo que a mediana por peça por
+  arquivo não caia mais que 15 pontos. Dentro de janela classificada como virada, tom/caixa/prato
+  vão para `accent_ceiling` (não para ghost/soft), corrigindo o defeito que rebaixou 63 caixas de
+  127 para <=45 em DEIXE IR na primeira implementação. A invariante de pressão é aplicada DEPOIS do
+  clamp de `hard_ceiling`, não antes: `pressure_max_drop` configurado abaixo do default pode
+  ultrapassar o teto prático de ~115, porque a promessa do parâmetro manda sobre o teto comum (achado
+  do Codex no PR #59). Os quatro limiares de virada (`fill_max_gap_beats`, `fill_min_notes`,
+  `fill_min_density_per_beat`, `fill_min_piece_variety`) são resolvidos via
+  `context.parameters`/`recipe`/manual e repassados a `fill_windows`, não hardcoded no módulo de
+  detecção — mesma regra de "parâmetro não pode ser mentiroso" do restante deste arquivo.
+- Inventário atual de teclas (issue #14): `keys.damper_pedal`, `keys.expression`,
   `keys.modulation` e `keys.pitch_bend` — todas nível `technique`, só acrescentam CC/pitch bend,
   nunca mudam pitch/posição/duração da nota estrutural. As dez restantes documentadas no manual
   (`keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`,
