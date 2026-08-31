@@ -38,6 +38,15 @@ import pretty_midi
 
 from .analyze import Analysis, analyze
 from .edits import EditReport, apply_edits, collect_track_names, track_name
+from .palette.electronic import (
+    HAT_ELEC_ROLES,
+    SUB_DROP_ROLES,
+    SUB_ROLES,
+    bars_in_section,
+    generate_hat_elec,
+    generate_sub,
+    generate_sub_drop,
+)
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
@@ -121,6 +130,9 @@ DRONE_CHANNEL = 0
 RHYTHMIC_CHANNEL = 0
 MOTOR_CHANNEL = 0
 SHADOW_CHANNEL = 0
+HAT_ELEC_CHANNEL = 0
+SUB_CHANNEL = 0
+SUB_DROP_CHANNEL = 0
 SUSTAIN_CC = 64
 EXPRESSION_CC = 11
 KEYBOARD_PATTERN_FIELDS: frozenset[str] = frozenset({"use_sustain_cc64"})
@@ -139,6 +151,9 @@ SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
     "octave_shift", "tail_notes", "phrase_end_gap_s", "velocity_offset",
     "note_duration_s",
 })
+HAT_ELEC_PATTERN_FIELDS: frozenset[str] = frozenset({"pattern_mode"})
+SUB_PATTERN_FIELDS: frozenset[str] = frozenset({"follow"})
+SUB_DROP_PATTERN_FIELDS: frozenset[str] = frozenset()
 
 # Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
 # Exemplo literal (documentado em docs/arquitetura.md):
@@ -298,6 +313,12 @@ def _pattern_fields_for_role(role: str) -> frozenset[str]:
         return MOTOR_PATTERN_FIELDS
     if role in SHADOW_ROLES:
         return SHADOW_PATTERN_FIELDS
+    if role in HAT_ELEC_ROLES:
+        return HAT_ELEC_PATTERN_FIELDS
+    if role in SUB_ROLES:
+        return SUB_PATTERN_FIELDS
+    if role in SUB_DROP_ROLES:
+        return SUB_DROP_PATTERN_FIELDS
     return frozenset()
 
 
@@ -813,6 +834,7 @@ def _notes_to_track(
     track_name: str,
     channel: int,
     cc_events: list[tuple[float, int, int]] | None = None,
+    pitch_bend_events: list[tuple[float, int]] | None = None,
 ) -> mido.MidiTrack:
     """Converte lista de notas (segundos absolutos) em `mido.MidiTrack`
     com deltas em ticks. Aceita notas duck-typed com `pitch`, `velocity`,
@@ -823,14 +845,19 @@ def _notes_to_track(
     `cc_events` e lista de `(time_s, cc_number, value)` — CC64 do teclado
     e CC11 das strings vem por aqui. CC vem ANTES de note_on e DEPOIS de
     note_off no mesmo tick, para o motor de sustain do plugin nao
-    capturar a nota que estava tentando finalizar."""
+    capturar a nota que estava tentando finalizar.
+
+    `pitch_bend_events` e lista de `(time_s, value)` com `value` no range
+    bruto de pitchwheel (-8192..8191) — usado por `sub_drop`. Grava
+    `pitchwheel` bruto, sem negociar RPN de bend range (ver
+    `electronic.sub_drop` no manual)."""
     tr = mido.MidiTrack()
     tr.append(mido.MetaMessage("track_name", name=track_name, time=0))
 
-    # kind: 0 = note_off, 1 = cc, 2 = note_on. Ordem no mesmo tick:
-    # note_off (fecha nota anterior) -> cc (mudanca de estado) -> note_on
-    # (dispara nova nota). Isso evita que um CC64 down engula o note_off
-    # da nota que acabou de fechar.
+    # kind: 0 = note_off, 1 = cc, 2 = note_on, 3 = pitchwheel. Ordem no
+    # mesmo tick: note_off (fecha nota anterior) -> cc/pitchwheel (mudanca
+    # de estado) -> note_on (dispara nova nota). Isso evita que um CC64
+    # down engula o note_off da nota que acabou de fechar.
     events: list[tuple[int, int, int, int]] = []
     for n in notes:
         start_tick = int(round(pm.time_to_tick(n.start_s)))
@@ -843,6 +870,10 @@ def _notes_to_track(
         for time_s, cc_num, value in cc_events:
             tick = int(round(pm.time_to_tick(time_s)))
             events.append((tick, 1, int(cc_num), int(value)))
+    if pitch_bend_events:
+        for time_s, value in pitch_bend_events:
+            tick = int(round(pm.time_to_tick(time_s)))
+            events.append((tick, 3, 0, int(value)))
     events.sort()
 
     prev_tick = 0
@@ -857,6 +888,10 @@ def _notes_to_track(
             tr.append(mido.Message(
                 "control_change", channel=channel, control=pitch_or_cc,
                 value=vel_or_value, time=delta,
+            ))
+        elif kind == 3:
+            tr.append(mido.Message(
+                "pitchwheel", channel=channel, pitch=vel_or_value, time=delta,
             ))
         else:
             tr.append(mido.Message(
@@ -1293,6 +1328,106 @@ def _render_shadow_element(
     return _layers_to_tracks(element, layer_notes, pm, channel)
 
 
+def _render_hat_elec_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera tracks de hi-hat eletronico. Pitch/gate/velocity/offset vem do
+    manual (`electronic.hat_elec`) via `generate_hat_elec`. Controle via
+    `element.pattern`: `pattern_mode` (`sixteenth`/`gaps`/`half_time`)."""
+    layer_notes: list[list[RhythmicNote]] = [[] for _ in range(element.layers)]
+    pattern = element.pattern or {}
+    pattern_mode = str(pattern.get("pattern_mode", "sixteenth"))
+
+    for section, seed in _iter_element_sections(element, plan):
+        layers = generate_hat_elec(
+            analysis, section,
+            layers=element.layers,
+            pattern_mode=pattern_mode,
+            seed=seed,
+        )
+        for i, layer in enumerate(layers):
+            layer_notes[i].extend(layer.notes)
+
+    return _layers_to_tracks(element, layer_notes, pm, channel)
+
+
+def _render_sub_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera a track de sub-bass de breakdown. SEMPRE uma unica layer — nao
+    ha flag que ligue polifonia neste elemento (AGENTS.md). Controle via
+    `element.pattern`: `follow` (`tonic`/`kick`/`riff`); `riff` usa
+    `element.degrees`."""
+    layer_notes: list[RhythmicNote] = []
+    register = (int(element.register[0]), int(element.register[1]))
+    pattern = element.pattern or {}
+    follow = str(pattern.get("follow", "tonic"))
+    degrees = tuple(element.degrees) if element.degrees else None
+
+    for section, seed in _iter_element_sections(element, plan):
+        layers = generate_sub(
+            analysis, section,
+            register=register,
+            follow=follow,
+            degrees=degrees,
+            seed=seed,
+        )
+        layer_notes.extend(layers[0].notes)
+
+    return _layers_to_tracks(element, [layer_notes], pm, channel)
+
+
+def _render_sub_drop_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera a track de sub-drop: um evento pontual por secao declarada, na
+    fronteira (inicio) daquela secao. SEMPRE nota unica — nao ha branch
+    capaz de emitir mais de uma nota por evento."""
+    register = (int(element.register[0]), int(element.register[1]))
+    notes: list[RhythmicNote] = []
+    bends: list[tuple[float, int]] = []
+
+    for section, seed in _iter_element_sections(element, plan):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        event = generate_sub_drop(
+            analysis, boundary_s, register=register, seed=seed,
+        )
+        notes.append(event.note)
+        bends.extend((pb.time_s, pb.value) for pb in event.pitch_bend)
+
+    name = _element_track_name(element, 0, 1)
+    track = _notes_to_track(
+        notes, pm, name, channel, pitch_bend_events=bends or None,
+    )
+    rendered = RenderedTrack(
+        element_id=element.id,
+        track_name=name,
+        notes=tuple(
+            RenderedNote(
+                pitch=n.pitch, velocity=n.velocity,
+                start_s=n.start_s, end_s=n.end_s,
+            )
+            for n in notes
+        ),
+    )
+    return [track], [rendered]
+
+
 def _render_pad_element(
     element: Element,
     plan: ArrangementPlan,
@@ -1362,6 +1497,18 @@ def _build_role_renderers() -> dict[str, _RoleRenderer]:
         **{
             role: _RoleRenderer(_render_shadow_element, SHADOW_CHANNEL)
             for role in SHADOW_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_hat_elec_element, HAT_ELEC_CHANNEL)
+            for role in HAT_ELEC_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_sub_element, SUB_CHANNEL)
+            for role in SUB_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_sub_drop_element, SUB_DROP_CHANNEL)
+            for role in SUB_DROP_ROLES
         },
     }
 
