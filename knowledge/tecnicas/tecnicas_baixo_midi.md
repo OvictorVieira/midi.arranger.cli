@@ -204,11 +204,11 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "description": "Primeiro passo. Tempos fortes e picos de frase mais altos; passagens e aproximacoes mais baixas. O contorno coerente importa mais que a faixa exata — linha com acento organizado le como humana, linha com velocity sorteada nao. Ghost notes formam um cluster separado e NAO entram nesta distribuicao.",
   "parameters": [
     {"name": "span_tipico", "value": 40, "source": "MIDI Association — exemplo com nota mais fraca 70 e mais forte 110"},
-    {"name": "fingered_mediana", "value": 90, "range": [70, 110]},
-    {"name": "picked_mediana", "value": 100, "range": [80, 120]},
-    {"name": "slap_mediana", "value": 112, "range": [95, 127]},
-    {"name": "pop_mediana", "value": 115, "range": [100, 127]},
-    {"name": "picked_down_vs_up_delta", "range": [6, 10]}
+    {"name": "fingered_mediana", "value": 90, "range": [70, 110], "source": "CONVENCAO — centro da faixa da MIDI Association (70-110) para dedilhado; sem medicao publicada por estilo, calibrada para o motor (ver secao 7)"},
+    {"name": "picked_mediana", "value": 100, "range": [80, 120], "source": "CONVENCAO — deslocada acima do dedilhado por ataque mais firme da palheta; sem medicao publicada por estilo, calibrada para o motor (ver secao 7)"},
+    {"name": "slap_mediana", "value": 112, "range": [95, 127], "source": "CONVENCAO — proxima do teto por ataque percussivo do slap; sem medicao publicada por estilo, calibrada para o motor (ver secao 7)"},
+    {"name": "pop_mediana", "value": 115, "range": [100, 127], "source": "CONVENCAO — acima do slap thumb por ataque mais agressivo do pop; sem medicao publicada por estilo, calibrada para o motor (ver secao 7)"},
+    {"name": "picked_down_vs_up_delta", "range": [6, 10], "source": "CONVENCAO — golpe para baixo mais firme que para cima, delta sutil dentro do contorno; sem medicao publicada (ver secao 7)"}
   ],
   "tools": {
     "generic": {"note": "aplica nas velocities existentes; nao gera nota nova"},
@@ -227,9 +227,9 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "verified": false,
   "description": "Insira ENTRE notas estruturais, nunca no lugar delas. Toque na corda em que a mao ja esta — nao invente altura arbitraria. Posicione nas subdivisoes fracas (o 'e' e o 'a' da semicolcheia). No MODO BASS o gatilho e binario por keyswitch momentaneo: nao ha limiar de velocity documentado.",
   "parameters": [
-    {"name": "velocity", "range": [25, 50]},
-    {"name": "velocity_relativa_pct", "range": [20, 40], "source": null},
-    {"name": "gate_pct", "range": [10, 25]}
+    {"name": "velocity", "range": [25, 50], "source": "CONVENCAO — nao ha limiar de velocity documentado para ghost note no MODO BASS (gatilho e binario por keyswitch, secao 7); faixa baixa escolhida para o motor, sem medicao publicada"},
+    {"name": "velocity_relativa_pct", "range": [20, 40], "source": "CONVENCAO — mesma lacuna do parametro `velocity` acima; percentual relativo escolhido para o fallback generico, sem medicao publicada"},
+    {"name": "gate_pct", "range": [10, 25], "source": "CONVENCAO — nota curta e abafada tipica de ghost note; sem medicao publicada (ver secao 7)"}
   ],
   "tools": {
     "generic": {"note": "nota curta de velocity baixa na mesma corda; sem keyswitch"},
@@ -248,8 +248,8 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "verified": false,
   "description": "No MODO BASS o keyswitch habilita a tecnica e a sobreposicao das duas notas a produz — os dois sao necessarios. A nota ligada sai mais fraca que a atacada. NAO ha limiar de sobreposicao documentado em milissegundos; o requisito publicado e apenas 'as notas precisam se sobrepor'.",
   "parameters": [
-    {"name": "velocity_relativa", "range": [-30, -15]},
-    {"name": "overlap_ms", "range": [10, 40]}
+    {"name": "velocity_relativa", "range": [-30, -15], "source": "CONVENCAO — nota ligada sai mais fraca que a atacada; nao ha limiar publicado, valor escolhido para o motor (ver secao 7)"},
+    {"name": "overlap_ms", "range": [10, 40], "source": "CONVENCAO — o requisito publicado e apenas 'as notas precisam se sobrepor', sem limiar em ms (secao 7); janela escolhida para o motor"}
   ],
   "tools": {
     "generic": {"note": "sobreposicao legato de 10 a 40 ms; sem keyswitch"},
@@ -271,9 +271,9 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
     {"name": "slide_range_default_semitons", "value": 2, "source": "pagina CONTROL do plugin, MODO BASS 1.5.2, default de fabrica"},
     {"name": "bend_por_semitom_com_faixa_12", "value": 683, "source": "MIDI Association — 8191/12, aritmetica"},
     {"name": "bend_por_oitava_com_faixa_12", "value": 8191, "source": "MIDI Association"},
-    {"name": "duracao_curto_ms", "range": [40, 80]},
-    {"name": "duracao_longo_ms", "range": [100, 250]},
-    {"name": "resolucao_ms_por_evento", "range": [5, 10]}
+    {"name": "duracao_curto_ms", "range": [40, 80], "source": "CONVENCAO — forma e duracao da curva sao convencao, nao medicao (secao 4); janela para slide de 1-3 semitons escolhida para o motor"},
+    {"name": "duracao_longo_ms", "range": [100, 250], "source": "CONVENCAO — forma e duracao da curva sao convencao, nao medicao (secao 4); janela para slide de 5-12 semitons escolhida para o motor"},
+    {"name": "resolucao_ms_por_evento", "range": [5, 10], "source": "CONVENCAO — abaixo de dez pontos no slide inteiro fica degrau audivel (secao 4); intervalo entre eventos de bend escolhido para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"cc": "pitch_bend", "note": "faixa 12 semitons; curva S no slide longo; retorno obrigatorio ao centro"},
@@ -292,8 +292,8 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "verified": false,
   "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario atribuiu, ou a tecnica nao sai. Desenhe uma curva, nao um valor unico; articulacao por CC e gated por valor e sem o retorno a zero o mute fica preso.",
   "parameters": [
-    {"name": "velocity", "range": [60, 100]},
-    {"name": "gate_pct", "range": [25, 50]}
+    {"name": "velocity", "range": [60, 100], "source": "CONVENCAO — mute abafa timbre, nao reduz forca de ataque a niveis de ghost note; faixa media escolhida para o motor, sem medicao publicada"},
+    {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"}
   ],
   "tools": {
     "generic": {"note": "gate curto e velocity media; sem CC dedicado"},
@@ -314,8 +314,8 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "parameters": [
     {"name": "cc", "value": 1, "source": "pagina CONTROL do plugin, v1.5.2"},
     {"name": "vibrato_rate_default", "value": 4.0, "source": "knob VIBRATO RATE, default de fabrica"},
-    {"name": "atraso_de_inicio_ms", "range": [150, 300]},
-    {"name": "profundidade_cc", "range": [60, 90]}
+    {"name": "atraso_de_inicio_ms", "range": [150, 300], "source": "CONVENCAO — vibrato nunca comeca em t=0, mao real ataca e so depois vibra; janela de atraso escolhida para o motor, sem medicao publicada"},
+    {"name": "profundidade_cc", "range": [60, 90], "source": "CONVENCAO — rampa de subida, sustentacao e rampa de descida sobre CC 1; profundidade escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"cc": 1},
@@ -334,11 +334,11 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "verified": false,
   "description": "O estilo permanece ate outro keyswitch de estilo. Em slap, o plugin escolhe entre thumb e pop pelo registro e pela corda; para forcar, use os keyswitches 1 (slap) e 3 (pop) — as mesmas duas teclas carregam index/middle no estilo dedo e down/up no estilo palheta.",
   "parameters": [
-    {"name": "picked_downstroke_velocity", "range": [85, 120]},
-    {"name": "picked_upstroke_velocity", "range": [70, 100]},
-    {"name": "slap_velocity", "range": [95, 127]},
-    {"name": "pop_velocity", "range": [100, 127]},
-    {"name": "upstroke_atraso_ms", "range": [0, 8]}
+    {"name": "picked_downstroke_velocity", "range": [85, 120], "source": "CONVENCAO — golpe para baixo mais firme; faixa escolhida para o motor, sem medicao publicada por estilo (ver secao 7)"},
+    {"name": "picked_upstroke_velocity", "range": [70, 100], "source": "CONVENCAO — golpe para cima mais fraco que para baixo; faixa escolhida para o motor, sem medicao publicada por estilo (ver secao 7)"},
+    {"name": "slap_velocity", "range": [95, 127], "source": "CONVENCAO — ataque percussivo do thumb; faixa escolhida para o motor, sem medicao publicada por estilo (ver secao 7)"},
+    {"name": "pop_velocity", "range": [100, 127], "source": "CONVENCAO — pop mais agressivo que o thumb; faixa escolhida para o motor, sem medicao publicada por estilo (ver secao 7)"},
+    {"name": "upstroke_atraso_ms", "range": [0, 8], "source": "CONVENCAO — leve atraso da mao no golpe para cima; janela escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"note": "sem keyswitch: diferencie so por velocity e timing"},
@@ -415,7 +415,7 @@ registro é linha melódica, não riff.
   "summary": "Harmonico natural por keyswitch momentaneo.",
   "verified": false,
   "parameters": [
-    {"name": "velocity", "range": [60, 100]}
+    {"name": "velocity", "range": [60, 100], "source": "CONVENCAO — harmonico soa mais suave que nota atacada normal; faixa escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"note": "sem keyswitch, o fallback e tocar a altura do harmonico direto"},
