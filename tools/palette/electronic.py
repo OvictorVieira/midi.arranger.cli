@@ -19,6 +19,7 @@ from ..analyze import Analysis, BarAnalysis, find_bar
 from ..constants import VELOCITY_RANGES
 from ..plan import PlanSection
 from ..techniques.index import TechniqueError, build_index
+from ..validators.harmony import degrees_pcs
 
 # --- schema de saida ---------------------------------------------------------
 # Reexportado de .rhythmic para nao duplicar a dataclass — mesma nota
@@ -227,22 +228,37 @@ def generate_sub(
             _emit(pitch, bar.start, bar.end - MIN_NOTE_DURATION_S)
     elif follow == "kick" and bars:
         section_start_s, section_end_s = bars[0].start, bars[-1].end
-        kicks = sorted(
+        raw_kicks = sorted(
             t for t in analysis.kick_positions
             if section_start_s <= t < section_end_s
         )
+        # Bateria em camadas (duas tracks de kick soando no mesmo instante)
+        # preserva as duas ocorrencias em `analysis.kick_positions` — sem
+        # deduplicar aqui, `_enforce_monophony` nao resolve starts iguais
+        # (a duracao minima fica positiva) e o sub sai polifonico apesar da
+        # garantia de monofonia estrita deste gerador (AGENTS.md).
+        kicks: list[float] = []
+        for t in raw_kicks:
+            if kicks and t - kicks[-1] < MIN_NOTE_DURATION_S:
+                continue
+            kicks.append(t)
         pitch = _root_pitch_in_register(analysis.key_root, register)
         for i, k in enumerate(kicks):
             next_t = kicks[i + 1] if i + 1 < len(kicks) else section_end_s
             _emit(pitch, k, next_t - MIN_NOTE_DURATION_S)
     elif follow == "riff":
-        degs = degrees if degrees else (0,)
+        # Convencao do plano inteiro (docs/arquitetura.md, harmony.degrees_pcs):
+        # grau de escala 1-based sobre a escala do tom global, nunca semitom
+        # somado direto — e o mesmo calculo que o validador harmonico usa
+        # para checar `harmony=follow_chords`/`free` com `degrees` declarado.
+        degs = degrees if degrees else (1,)
         for bar in bars:
-            root_pc = bar.chord.root if bar.chord is not None else analysis.key_root
             beat_dur = (bar.end - bar.start) / 4.0
             for beat_i in range(4):
                 deg = degs[beat_i % len(degs)]
-                pitch = _root_pitch_in_register(root_pc + deg, register)
+                pcs = degrees_pcs(analysis.key_root, (deg,))
+                pc = next(iter(pcs)) if pcs else analysis.key_root % 12
+                pitch = _root_pitch_in_register(pc, register)
                 start = bar.start + beat_i * beat_dur
                 _emit(pitch, start, start + beat_dur - MIN_NOTE_DURATION_S)
 
@@ -277,7 +293,9 @@ def generate_sub_drop(
     """Evento pontual de sub-drop na fronteira `boundary_s` (inicio de
     secao). Nota unica no fundo de `register`, com curva de pitch bend
     MONOTONICA descendente de 0 ate -8192 ao longo de
-    `pitch_bend_curve_ms`. Nunca gera acorde — e sempre exatamente uma
+    `pitch_bend_curve_ms`, seguida de um reset final para 0 (pitch bend e
+    estado persistente de CANAL — sem reset, todo evento seguinte no mesmo
+    canal soaria desafinado). Nunca gera acorde — e sempre exatamente uma
     nota, por construcao (nao ha branch que emita mais de uma)."""
     params = _technique_params("bass.sub_drop")
     duration_beats = float(params["duration_beats"])
@@ -303,6 +321,14 @@ def generate_sub_drop(
         value = int(round(-8192 * frac))
         value = max(-8192, min(8191, value))
         curve.append(PitchBendEvent(time_s=t, value=value))
+
+    # Pitch bend e estado persistente de CANAL, nao da nota — sem reset, a
+    # curva termina em -8192 e todo evento seguinte no mesmo canal
+    # (SUB_DROP_CHANNEL e compartilhado com outros roles gerados) continua
+    # desafinado ao maximo. Centraliza no fim da nota, nao no fim da curva,
+    # para nunca soar o reset ANTES do drop terminar de descer.
+    reset_t = max(curve[-1].time_s, note.end_s) if curve else note.end_s
+    curve.append(PitchBendEvent(time_s=reset_t, value=0))
 
     return SubDropEvent(note=note, pitch_bend=tuple(curve))
 

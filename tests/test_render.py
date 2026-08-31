@@ -11,6 +11,7 @@ import pretty_midi
 import pytest
 
 from tools.brief_ref import brief_sha256
+from tools.palette.harmonic import PadNote
 from tools.plan import (
     ArrangementPlan,
     BriefRef,
@@ -29,6 +30,7 @@ from tools.render import (
     _apply_style_techniques_to_tracks,
     _canonical_style_technique,
     _element_seed,
+    _notes_to_track,
     _tool_target_for_element,
     format_render_report,
     render,
@@ -1510,12 +1512,50 @@ def test_render_sub_drop_is_single_note_with_monotonic_pitch_bend(tmp_path):
     assert drop.notes[0].start == pytest.approx(0.0, abs=1e-6)
 
     bends = sorted(drop.pitch_bends, key=lambda b: b.time)
-    assert len(bends) >= 2
+    assert len(bends) >= 3
     values = [b.pitch for b in bends]
-    assert values == sorted(values, reverse=True), "pitch bend curve must be monotonic descending"
-    assert values[0] == 0
-    assert values[-1] == -8192
+    # O ultimo evento e o reset de canal para 0 (achado do Codex na review
+    # pos-merge da PR #68): sem ele, todo evento seguinte no canal 0
+    # continuaria desafinado ao maximo. A curva de descida em si (tudo
+    # antes do reset) continua monotonica.
+    descent = values[:-1]
+    assert descent == sorted(descent, reverse=True), "pitch bend curve must be monotonic descending"
+    assert descent[0] == 0
+    assert descent[-1] == -8192
+    assert values[-1] == 0, "pitch wheel must reset to center after the drop"
     assert report.elements[0].rendered is True
+
+
+def test_notes_to_track_orders_pitchwheel_before_note_on_on_the_same_tick():
+    """Regressao do achado do Codex na review pos-merge da PR #68: com
+    varias secoes, o drop anterior deixa o pitch bend em -8192 e o bend
+    zerado do proximo drop pode compartilhar tick com o `note_on` dele.
+    `events.sort()` numerava pitchwheel como kind=3 e note_on como kind=2
+    — como 3 > 2, o note_on saia ANTES do reset no mesmo tick, e o drop
+    seguinte atacava com o bend ja no maximo. O comentario no codigo ja
+    especifica a ordem pretendida (pitchwheel antes de note_on no mesmo
+    tick); este teste crava essa ordem no MIDI escrito."""
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    track = _notes_to_track(
+        [PadNote(pitch=24, velocity=100, start_s=1.0, end_s=1.5)],
+        pm,
+        "Same Tick Bend",
+        channel=0,
+        pitch_bend_events=[(1.0, 0)],
+    )
+
+    msgs_at_note_on_tick = []
+    tick = 0
+    for msg in track:
+        tick += msg.time
+        if msg.type in {"note_on", "pitchwheel"}:
+            msgs_at_note_on_tick.append((tick, msg.type))
+
+    note_on_tick = next(t for t, kind in msgs_at_note_on_tick if kind == "note_on")
+    same_tick = [kind for t, kind in msgs_at_note_on_tick if t == note_on_tick]
+    assert same_tick == ["pitchwheel", "note_on"], (
+        "pitchwheel reset must be written before note_on on the same tick"
+    )
 
 
 def test_render_supports_motor_role(tmp_path):

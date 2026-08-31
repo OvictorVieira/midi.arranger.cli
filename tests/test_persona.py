@@ -259,6 +259,23 @@ def test_hook_route_accepts_rhythmic_machine():
     assert [i for i in issues if i.check == CHECK_ROUTE_PALETTE] == []
 
 
+def test_hook_route_accepts_electronic_roles():
+    """hat_elec, sub e sub_drop (issue #22) pertencem a paleta de
+    hook_eletronico_pesado — regressao do achado do Codex na review
+    pos-merge da PR #68: os roles eram renderizaveis e ja associados a
+    essa rota nos planos de integracao, mas ROUTE_PALETTES nao os listava,
+    o que disparava aviso falso (erro sob --strict-persona) em todo render
+    normal desses elementos."""
+    ana = _empty_analysis()
+    for role in ("hat_elec", "sub", "sub_drop"):
+        plan = _plan(
+            [_element("e", role=role, articulation="tight")],
+            route="hook_eletronico_pesado",
+        )
+        issues = validate_persona(plan, [], ana)
+        assert [i for i in issues if i.check == CHECK_ROUTE_PALETTE] == [], role
+
+
 # --- checagem 3: densidade x contagem ---------------------------------------
 
 def test_high_density_zero_elements_warns():
