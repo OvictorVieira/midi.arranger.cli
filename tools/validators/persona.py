@@ -57,6 +57,7 @@ ROUTE_PALETTES: dict[str, frozenset[str]] = {
     }),
     "hook_eletronico_pesado": frozenset({
         "arp", "rhythmic_machine", "motor", "drone", "shadow",
+        "hat_elec", "sub", "sub_drop",
     }),
 }
 """Paletas por rota. Elemento fora da paleta da rota declarada dispara
