@@ -472,6 +472,90 @@ def test_apply_edits_batch_reports_one_entry_per_edit(tmp_path):
     assert [r.track for r in reports] == ["Bass", "Drums"]
 
 
+def test_apply_edits_default_style_profile_is_byte_identical_to_none(tmp_path):
+    """Regressao AC #3: chamada sem style_profile deve produzir MIDI
+    byte-identico a chamada com StyleProfile.default() — a nova via so pode
+    reproduzir o baseline quando o perfil e o default."""
+    from tools.style_profile import StyleProfile
+
+    src = _build_grid_source(tmp_path, include_drums=True)
+    edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.7),
+        PlanEdit(track="Drums", profile="drums", intensity=0.6),
+    ]
+
+    def _render_bytes(kwargs):
+        mid = mido.MidiFile(str(src))
+        pm = pretty_midi.PrettyMIDI(str(src))
+        apply_edits(list(mid.tracks), edits, plan_seed=2026, pm=pm, **kwargs)
+        out = tmp_path / f"out_{'default' if kwargs else 'none'}.mid"
+        mid.save(str(out))
+        return out.read_bytes()
+
+    assert _render_bytes({}) == _render_bytes(
+        {"style_profile": StyleProfile.default()}
+    )
+
+
+def test_apply_edits_custom_style_profile_changes_gate_ratios(tmp_path):
+    """style_profile customizado com `tight` deslocado muda a duracao
+    resultante do baixo — prova que o perfil e de fato propagado ao
+    calculo de gate em apply_edit."""
+    from tools.style_profile import StyleProfile
+
+    src = _build_grid_source(tmp_path)
+    edits = [PlanEdit(track="Bass", profile="bass", intensity=1.0)]
+
+    baseline = StyleProfile.default()
+    custom_ratios = dict(baseline.gate_ratios)
+    custom_ratios["tight"] = (0.10, 0.15)
+    custom = StyleProfile(
+        velocity_ranges=baseline.velocity_ranges,
+        gate_ratios=custom_ratios,
+        timing_jitter_ms=baseline.timing_jitter_ms,
+    )
+
+    def _bass_durations(profile):
+        mid = mido.MidiFile(str(src))
+        pm = pretty_midi.PrettyMIDI(str(src))
+        apply_edits(
+            list(mid.tracks), edits, plan_seed=2026, pm=pm,
+            style_profile=profile,
+        )
+        # ordena por on_tick e extrai (off - on) por par
+        for track in mid.tracks:
+            has_bass = any(
+                m.is_meta and m.type == "track_name" and m.name == "Bass"
+                for m in track
+            )
+            if not has_bass:
+                continue
+            abs_tick, open_ons, pairs = 0, {}, []
+            for msg in track:
+                abs_tick += msg.time
+                if msg.is_meta:
+                    continue
+                if msg.type == "note_on" and msg.velocity > 0:
+                    open_ons.setdefault((msg.channel, msg.note), []).append(
+                        abs_tick,
+                    )
+                elif msg.type == "note_off" or (
+                    msg.type == "note_on" and msg.velocity == 0
+                ):
+                    key = (msg.channel, msg.note)
+                    if key in open_ons and open_ons[key]:
+                        pairs.append(abs_tick - open_ons[key].pop())
+            return pairs
+        return []
+
+    default_durations = _bass_durations(None)
+    custom_durations = _bass_durations(custom)
+
+    assert default_durations and custom_durations
+    # gate muito mais apertado -> duracoes menores em media
+    assert sum(custom_durations) < sum(default_durations)
+
+
 def test_downbeat_tolerance_hits_adjacent_tick():
     """Ancora e detectada mesmo com arredondamento de +/-1 tick — cobre o
     ramo de tolerancia de `_tick_near`."""

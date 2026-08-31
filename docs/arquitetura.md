@@ -135,6 +135,22 @@ de notas; `technique` pode acrescentar ornamentos, CC e pitch bend, mas preserva
 das notas estruturais. Nota estrutural é o material de entrada ou de gerador; nota ornamental é a
 nota adicionada pela técnica.
 
+A humanização por profile (`plan.edits[].profile` + `intensity`) que roda dentro de `apply_edits`
+antes do motor de técnicas é parametrizada por `tools.style_profile.StyleProfile`: dataclass
+imutável (`frozen=True`, mapas `MappingProxyType`) que carrega `velocity_ranges`, `gate_ratios` e
+`timing_jitter_ms` na mesma forma dos dicionários de `tools/constants.py`. `StyleProfile.default()`
+reproduz esses três dicionários byte a byte — `constants.py` continua sendo a fonte declarada do
+default e não é apagado nem movido. `tools/humanize.py` (base_velocity, VelocityEngine,
+MicrotimingEngine, DurationEngine) e `tools/edits.py` (apply_edits, apply_edit) aceitam o profile
+como keyword-only opcional no final da assinatura; toda chamada antiga continua válida e
+byte-idêntica porque cai em `StyleProfile.default()`. HOJE só `gate_ratios` chega efetivamente a
+`apply_edits` — `timing_jitter_ms` do perfil ainda não substitui o `sigma_ms` fixo por profile em
+`tools/edits.py::ProfileParams`; a monotonicidade desse dicionário está provada isoladamente em
+`MicrotimingEngine`, não ponta a ponta pelo pipeline de edits. Fechar essa propagação é trabalho
+futuro, não bug desta rodada. Perfil muda a FAIXA de sorteio, nunca a
+fórmula. O construtor valida sanidade física (velocity em [0,127], gate em [0,1], jitter em
+[0,250] ms) e levanta `ValueError` antes de qualquer render.
+
 A idempotência também fica no despacho central: ao reaplicar uma técnica, ornamentos com a mesma
 assinatura de track/canal/pitch/início/fim já presentes são descartados antes da validação do
 contrato, assim como CC e pitch bend com a mesma assinatura de track/canal/tick/valor. Depois que as
@@ -238,12 +254,22 @@ Estado atual do motor:
 |---|---|---|
 | `drums` | `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes`, `drums.microtiming` | — |
 | `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.string_selection`, `bass.harmonic` |
-| `keys` | — | tudo documentado |
+| `keys` | `keys.damper_pedal`, `keys.expression`, `keys.modulation`, `keys.pitch_bend` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`, `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`, `keys.human_articulation` |
 | `guitar` | — | tudo documentado |
 
 O teste `test_supported_techniques_is_derived_from_the_registry` em
 `tests/test_techniques_engine.py` afirma a tupla exata para que registro fantasma
-(aplicador stub, `_identity_apply`) quebre o build.
+(aplicador stub, `_identity_apply`) quebre o build. O teste
+`test_keys_engine_inventory_matches_the_issue_14_contract` no mesmo arquivo trava
+o inventário da família `keys` e afirma que as dez técnicas restantes
+documentadas continuam fora do motor.
+
+As quatro técnicas de teclas implementadas são todas nível `technique` e só
+acrescentam CC/pitch bend — nunca mudam pitch/posição/duração da nota
+estrutural. `filtro` (CC74) e `portamento` (CC5/CC65), citados na issue #14
+original, **não** têm bloco de técnica próprio em `knowledge/tecnicas/tecnicas_teclas_midi.md`
+(só aparecem discutidos em prosa na §7.4). São pesquisa futura, não bug desta
+rodada — inventar bloco de técnica novo em cima deles é escopo novo.
 
 ### Carimbo de plugin/preset em toda track tocada pelo arranjador
 
@@ -300,7 +326,7 @@ midi.arranger.cli/
 ├── tools/                       o maquinário determinístico, Python
 │   ├── cli.py                   entrypoint: midi-arranger-tool <nome>
 │   ├── analyze.py  sections.py  plan.py  render.py  learn.py
-│   ├── humanize.py  voicing.py  constants.py  tracks.py
+│   ├── humanize.py  voicing.py  constants.py  style_profile.py  tracks.py
 │   ├── techniques/              motor de técnicas por família
 │   ├── palette/                 geradores
 │   ├── validators/              harmônico, placement, persona, artificialidade, não-cópia, colisão

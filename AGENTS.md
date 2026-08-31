@@ -96,6 +96,22 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   origem editadas), depois o render por elemento com o motor de técnicas de estilo no loop, e por
   último os carimbos (`_stamp_element_tracks` inline no loop, `_stamp_edit_tracks` numa passada
   única no fim).
+- O motor de humanização por profile (`plan.edits[].profile` + `intensity`, executado por
+  `tools/humanize.py` e `tools/edits.py`) é SEPARADO do motor de técnicas de
+  `style.<familia>.techniques` (`tools/techniques/engine.py`) e roda ANTES dele. Ele lê
+  `velocity_ranges`, `gate_ratios` e `timing_jitter_ms` de um `tools.style_profile.StyleProfile`
+  imutável (frozen dataclass, mapas `MappingProxyType`), cujo `StyleProfile.default()` reproduz
+  byte a byte `VELOCITY_RANGES`, `GATE_RATIOS` e `TIMING_JITTER_MS` de `tools/constants.py` — os
+  dicionários do `constants.py` continuam sendo a fonte declarada do default e não devem ser
+  movidos nem apagados. O construtor rejeita configuração fora do domínio físico (velocity em
+  [0,127], gate em [0,1], timing jitter em [0,250] ms) com `ValueError`, antes de qualquer render.
+- Retrocompatibilidade obrigatória do `StyleProfile`: `tools/humanize.py`
+  (`base_velocity`, `VelocityEngine`, `MicrotimingEngine`, `DurationEngine`) e
+  `tools/edits.py` (`apply_edits`, `apply_edit`) aceitam `profile`/`style_profile` como
+  keyword-only opcional no FINAL da assinatura. Chamador antigo (inclusive `tools/render.py`) que
+  não passa nada continua byte-idêntico, porque a implementação cai em `StyleProfile.default()`.
+  Perfil muda a FAIXA de sorteio, nunca a fórmula de cálculo — se alguma story exigir mudar a
+  fórmula interna dos motores, PARE E REPORTE em vez de inventar.
 - Toda nota vinda do MIDI de origem é estrutural por definição — sobre ela o nível `technique` só
   pode acrescentar ornamento; nunca substitui pitch, posição ou duração da nota estrutural.
 - Toda track de saída tocada pelo arranjador — elemento gerado ou track de `plan.edits` — carrega
@@ -145,7 +161,23 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   manual) limita quanto uma nota pode ser rebaixada, garantindo que a mediana por peça por
   arquivo não caia mais que 15 pontos. Dentro de janela classificada como virada, tom/caixa/prato
   vão para `accent_ceiling` (não para ghost/soft), corrigindo o defeito que rebaixou 63 caixas de
-  127 para <=45 em DEIXE IR na primeira implementação.
+  127 para <=45 em DEIXE IR na primeira implementação. A invariante de pressão é aplicada DEPOIS do
+  clamp de `hard_ceiling`, não antes: `pressure_max_drop` configurado abaixo do default pode
+  ultrapassar o teto prático de ~115, porque a promessa do parâmetro manda sobre o teto comum (achado
+  do Codex no PR #59). Os quatro limiares de virada (`fill_max_gap_beats`, `fill_min_notes`,
+  `fill_min_density_per_beat`, `fill_min_piece_variety`) são resolvidos via
+  `context.parameters`/`recipe`/manual e repassados a `fill_windows`, não hardcoded no módulo de
+  detecção — mesma regra de "parâmetro não pode ser mentiroso" do restante deste arquivo.
+- Inventário atual de teclas (issue #14): `keys.damper_pedal`, `keys.expression`,
+  `keys.modulation` e `keys.pitch_bend` — todas nível `technique`, só acrescentam CC/pitch bend,
+  nunca mudam pitch/posição/duração da nota estrutural. As dez restantes documentadas no manual
+  (`keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`,
+  `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`,
+  `keys.hammond_dynamics`, `keys.human_articulation`) continuam FORA de `SUPPORTED_TECHNIQUES` —
+  plano que as declare recebe `PlanValidationError` explícito. `filtro` (CC74) e `portamento`
+  (CC5/CC65), citados na issue #14 original, NÃO têm bloco de técnica próprio no manual (só
+  aparecem em prosa na §7.4 de `tecnicas_teclas_midi.md`): são pesquisa futura, não bug desta
+  rodada — não inventar bloco de técnica novo em cima deles.
 - Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
   no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
   63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por
