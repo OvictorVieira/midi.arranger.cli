@@ -871,17 +871,20 @@ def _notes_to_track(
     tr = mido.MidiTrack()
     tr.append(mido.MetaMessage("track_name", name=track_name, time=0))
 
-    # kind: 0 = note_off, 1 = cc, 2 = note_on, 3 = pitchwheel. Ordem no
+    # kind: 0 = note_off, 1 = cc, 2 = pitchwheel, 3 = note_on. Ordem no
     # mesmo tick: note_off (fecha nota anterior) -> cc/pitchwheel (mudanca
     # de estado) -> note_on (dispara nova nota). Isso evita que um CC64
-    # down engula o note_off da nota que acabou de fechar.
+    # down engula o note_off da nota que acabou de fechar, e garante que um
+    # reset de pitch bend no mesmo tick do proximo note_on (ex.: drops de
+    # sub_drop em sequencia) seja escrito ANTES do note_on — kind=2 <
+    # kind=3 no `events.sort()` abaixo.
     events: list[tuple[int, int, int, int]] = []
     for n in notes:
         start_tick = int(round(pm.time_to_tick(n.start_s)))
         end_tick = int(round(pm.time_to_tick(n.end_s)))
         if end_tick <= start_tick:
             end_tick = start_tick + 1
-        events.append((start_tick, 2, int(n.pitch), int(n.velocity)))
+        events.append((start_tick, 3, int(n.pitch), int(n.velocity)))
         events.append((end_tick, 0, int(n.pitch), 0))
     if cc_events:
         for time_s, cc_num, value in cc_events:
@@ -890,13 +893,13 @@ def _notes_to_track(
     if pitch_bend_events:
         for time_s, value in pitch_bend_events:
             tick = int(round(pm.time_to_tick(time_s)))
-            events.append((tick, 3, 0, int(value)))
+            events.append((tick, 2, 0, int(value)))
     events.sort()
 
     prev_tick = 0
     for tick, kind, pitch_or_cc, vel_or_value in events:
         delta = tick - prev_tick
-        if kind == 2:
+        if kind == 3:
             tr.append(mido.Message(
                 "note_on", channel=channel, note=pitch_or_cc,
                 velocity=vel_or_value, time=delta,
@@ -906,7 +909,7 @@ def _notes_to_track(
                 "control_change", channel=channel, control=pitch_or_cc,
                 value=vel_or_value, time=delta,
             ))
-        elif kind == 3:
+        elif kind == 2:
             tr.append(mido.Message(
                 "pitchwheel", channel=channel, pitch=vel_or_value, time=delta,
             ))
