@@ -24,6 +24,7 @@ from tools.plan import (
     dump,
     from_dict,
     load,
+    load_brief_instrument_tuning,
     normalize_style_defaults,
     to_dict,
     validate,
@@ -230,6 +231,82 @@ def test_validate_rejects_brief_sha256_mismatch(tmp_path: Path):
 
     assert exc.value.path == "brief_ref.sha256"
     assert "mismatch" in exc.value.message
+
+
+# --- issue #44 / PR #64 (achado P1) — instruments alimenta o pipeline ------
+
+def _write_brief_with_instruments(
+    tmp_path: Path, instruments: dict,
+) -> tuple[Path, str]:
+    style_dict = {
+        family: {"authorized_techniques": []}
+        for family in ("bass", "drums", "guitar", "keys")
+    }
+    brief = {"style": style_dict, "instruments": instruments}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps(brief, indent=2), encoding="utf-8")
+    return brief_path, brief_sha256(brief_path)
+
+
+def test_load_brief_instrument_tuning_reads_declared_notes(tmp_path: Path):
+    """A declaracao de `instruments.guitar.tuning.notes` (issue #44) tem que
+    chegar ao chamador do render — antes desta correcao, `instruments` era
+    validado e ignorado (achado P1 do PR #64)."""
+    plan = _valid_plan()
+    instruments = {
+        "guitar": {
+            "known": True,
+            "strings": 7,
+            "tuning": {"name": None, "notes": [32, 37, 42, 47, 51, 56, 61]},
+        },
+    }
+    brief_path, sha = _write_brief_with_instruments(tmp_path, instruments)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    tuning = load_brief_instrument_tuning(plan, tmp_path)
+
+    assert tuning == {"guitar": (32, 37, 42, 47, 51, 56, 61)}
+
+
+def test_load_brief_instrument_tuning_resolves_name_when_notes_absent(
+    tmp_path: Path,
+):
+    plan = _valid_plan()
+    instruments = {
+        "guitar": {
+            "known": True,
+            "strings": 6,
+            "tuning": {"name": "E padrao", "notes": []},
+        },
+    }
+    brief_path, sha = _write_brief_with_instruments(tmp_path, instruments)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    tuning = load_brief_instrument_tuning(plan, tmp_path)
+
+    assert tuning.get("guitar") == (40, 45, 50, 55, 59, 64)
+
+
+def test_load_brief_instrument_tuning_skips_unknown_family(tmp_path: Path):
+    plan = _valid_plan()
+    instruments = {
+        "bass": {
+            "known": False,
+            "strings": None,
+            "tuning": None,
+            "playing_style": None,
+            "notation": None,
+        },
+    }
+    brief_path, sha = _write_brief_with_instruments(tmp_path, instruments)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    assert load_brief_instrument_tuning(plan, tmp_path) == {}
+
+
+def test_load_brief_instrument_tuning_empty_without_brief_ref():
+    plan = _valid_plan()
+    assert load_brief_instrument_tuning(plan, None) == {}
 
 
 def test_validate_accepts_authorized_style_technique(tmp_path: Path):

@@ -390,6 +390,74 @@ def _load_brief_authorized_techniques(
     return authorized
 
 
+def load_brief_instrument_tuning(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> dict[str, tuple[int, ...]]:
+    """Le `brief.instruments.<familia>` (issue #44) e devolve a afinacao
+    declarada, resolvida para MIDI ints grave->agudo, por familia de corda.
+
+    Caminho MINIMO da integracao pedida pelo review do PR #64 (achado P1):
+    a declaracao do usuario alimenta `TechniqueContext.parameters["tuning"]`
+    (`tools/render.py`), que `tools/techniques/physical.py` ja sabe ler para
+    checar plausibilidade fisica de ornamento — sem isso, `instruments` era
+    validado e ignorado, o "parametro mentiroso" que o AGENTS.md proibe.
+
+    So familia com `known=true` e `tuning` resolvivel entra no dict —
+    familia ausente, `known=false` ou brief sem `instruments` nao aparecem
+    (o chamador cai no default fisico de `physical.py` para essa familia,
+    igual a hoje). Reusa o mesmo brief ja lido/validado por
+    `_load_brief_authorized_techniques` (mesma checagem de sha256), mas
+    fica FORA do escopo de aviso de conflito com a inferencia automatica de
+    `tools/tuning.py` (#35) e de propagacao para todo ponto do render —
+    isso fica para uma issue de acompanhamento; ver AGENTS.md sobre nao
+    inventar arquitetura nova sob pressao de review.
+    """
+    from . import tuning as tuning_mod
+    from .brief_ref import brief_sha256
+
+    ref = plan.brief_ref
+    if ref is None:
+        return {}
+    brief_path = Path(ref.path).expanduser()
+    if not brief_path.is_absolute() and plan_dir is not None:
+        brief_path = plan_dir / brief_path
+    if not brief_path.is_file():
+        return {}
+    try:
+        if brief_sha256(brief_path) != ref.sha256:
+            return {}
+        brief = json.loads(brief_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(brief, dict):
+        return {}
+    instruments = brief.get("instruments")
+    if not isinstance(instruments, dict):
+        return {}
+
+    result: dict[str, tuple[int, ...]] = {}
+    for family in ("guitar", "bass"):
+        entry = instruments.get(family)
+        if not isinstance(entry, dict) or entry.get("known") is not True:
+            continue
+        tuning = entry.get("tuning")
+        strings = entry.get("strings")
+        if not isinstance(tuning, dict) or not isinstance(strings, int):
+            continue
+        notes = tuning.get("notes")
+        if isinstance(notes, list) and notes and all(
+            isinstance(n, int) for n in notes
+        ):
+            result[family] = tuple(notes)
+            continue
+        name = tuning.get("name")
+        if isinstance(name, str) and name:
+            resolved = tuning_mod.resolve_tuning_name(name, strings)
+            if resolved is not None:
+                result[family] = resolved
+    return result
+
+
 def _reject_style_techniques_without_brief(plan_style: Any) -> None:
     """Sem `brief_ref` nenhuma tecnica pode ser autorizada.
 

@@ -184,6 +184,25 @@ def test_referenced_tools_are_registered():
         "vocabulario de tecnica e fechado",
         "techniques.describe",
         "nao vira base de conhecimento",
+        # issue #44 — configuracao de instrumento de corda.
+        "instruments",
+        "quantas cordas",
+        "afinacao",
+        "guitar.drop_tuning",
+        "nao sei",
+        "altura escrita",
+        "altura soante",
+        "instrumento transpositor",
+        "finger",
+        "declaracao do usuario vence",
+        # PR #64 achado P2#2 — familia por patch REGENTE, nunca historico.
+        "governing_programs",
+        # PR #64 achado P2#3 — presenca de familia nao depende so da
+        # classificacao automatica ter tido sucesso.
+        "nao e o unico sinal de presenca",
+        # PR #64 achado P2#5 — comando de lookup usa arquivo/stdin real,
+        # nunca substituicao de processo.
+        "--input -",
     ],
 )
 def test_body_carries_required_clauses(clause):
@@ -191,6 +210,21 @@ def test_body_carries_required_clauses(clause):
     _, body = _split_frontmatter(text)
     assert clause.lower() in body.lower(), (
         f"clausula ausente no corpo da SKILL.md: {clause!r}"
+    )
+
+
+def test_body_does_not_use_process_substitution_for_tool_input():
+    """Regressao do achado P2#5 do PR #64: `tools.cli.py::_read_payload`
+    so aceita `-` (stdin) ou arquivo regular para `--input` — substituicao
+    de processo (`<(echo ...)`) cria um FIFO cujo `Path.is_file()` e
+    False, e a chamada retorna `E_INPUT_FILE`. Nenhum exemplo de comando
+    no corpo da skill pode usar essa sintaxe."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+    matches = re.findall(r"--input\s+<\(", body)
+    assert not matches, (
+        "SKILL.md usa substituicao de processo (`--input <(...)`) em "
+        "exemplo de comando — falha com E_INPUT_FILE em Bash real"
     )
 
 

@@ -75,6 +75,7 @@ from .plan import (
     _load_brief_authorized_techniques,
     _reject_style_techniques_without_brief,
     load,
+    load_brief_instrument_tuning,
     normalize_style_defaults,
     validate_edits_against_midi,
 )
@@ -423,6 +424,7 @@ def _style_technique_parameters(
     style_parameters: dict[str, float | list[float]],
     density: float | None,
     style: str | None = None,
+    tuning: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = dict(style_parameters)
     if density is not None:
@@ -433,6 +435,14 @@ def _style_technique_parameters(
         # `StyleTechnique.style`, ja validado em `plan.validate`, nunca de
         # texto livre.
         parameters["style"] = style
+    if tuning is not None:
+        # Afinacao declarada em `brief.instruments.<familia>` (issue #44),
+        # repassada por `tools.plan.load_brief_instrument_tuning` — NAO vem
+        # de `style.parameters` (schema restrito a numero/par) e sim de um
+        # canal separado, exatamente como `tools/techniques/physical.py`
+        # ja sabe ler (`_tuning_from_parameters`): sem isso a declaracao do
+        # usuario e um parametro mentiroso, validada e ignorada.
+        parameters["tuning"] = tuning
     return parameters
 
 
@@ -479,6 +489,7 @@ def _run_style_pipeline(
     tool_target: str | None,
     index: TechniqueIndex,
     edit_track: str | None = None,
+    tuning: tuple[int, ...] | None = None,
 ) -> tuple[mido.MidiFile, list[str]]:
     """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
 
@@ -504,6 +515,7 @@ def _run_style_pipeline(
                     style.parameters,
                     technique.density,
                     technique.style,
+                    tuning,
                 ),
                 tool=tool_target,
                 index=index,
@@ -535,6 +547,7 @@ def _apply_style_techniques_to_tracks(
     ticks_per_beat: int,
     midi_type: int,
     index: TechniqueIndex | None,
+    tuning_by_family: dict[str, tuple[int, ...]] | None = None,
 ) -> tuple[list[mido.MidiTrack], list[str], bool]:
     """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
 
@@ -563,6 +576,7 @@ def _apply_style_techniques_to_tracks(
         style=style,
         tool_target=tool_target,
         index=index,
+        tuning=(tuning_by_family or {}).get(family),
     )
     return list(current.tracks), warnings, True
 
@@ -572,6 +586,7 @@ def _apply_style_techniques_to_edit_tracks(
     *,
     plan: ArrangementPlan,
     index: TechniqueIndex | None,
+    tuning_by_family: dict[str, tuple[int, ...]] | None = None,
 ) -> list[str]:
     """Aplica `style.<family>` sobre as tracks da origem nomeadas em `plan.edits`.
 
@@ -625,6 +640,7 @@ def _apply_style_techniques_to_edit_tracks(
             tool_target=None,
             index=index,
             edit_track=edit.track,
+            tuning=(tuning_by_family or {}).get(family),
         )
         warnings.extend(edit_warnings)
         for slot, new_track in zip(
@@ -1455,6 +1471,12 @@ def render(
         if plan.style and any(style.techniques for style in plan.style.values())
         else None
     )
+    # Afinacao declarada em `brief.instruments.<familia>` (issue #44) —
+    # caminho MINIMO ate `TechniqueContext.parameters["tuning"]`, ver
+    # `tools.plan.load_brief_instrument_tuning`. Familia ausente do brief,
+    # `known=false` ou brief sem `instruments` devolvem dict vazio e o
+    # motor de tecnicas cai no default fisico de `physical.py`, igual antes.
+    tuning_by_family = load_brief_instrument_tuning(plan, plan_dir)
     # Ordem: primeiro `apply_edits` (humanizacao por profile), depois o motor
     # de tecnicas nas mesmas tracks da origem. Assim as tecnicas de estilo
     # alcancam a bateria real do usuario — sem esse passo, `style.<familia>`
@@ -1462,6 +1484,7 @@ def render(
     warnings.extend(
         _apply_style_techniques_to_edit_tracks(
             out_mid, plan=plan, index=style_index,
+            tuning_by_family=tuning_by_family,
         )
     )
     for e in plan.elements:
@@ -1498,6 +1521,7 @@ def render(
                 ticks_per_beat=out_mid.ticks_per_beat,
                 midi_type=out_mid.type,
                 index=style_index,
+                tuning_by_family=tuning_by_family,
             )
             warnings.extend(technique_warnings)
             element_family = _style_family_for_role(e.role)
