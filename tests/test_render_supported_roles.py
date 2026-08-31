@@ -17,9 +17,42 @@ from tests.test_render import (
     _shadow_element,
     _strings_element,
 )
+from tools.palette.bass import BASS_ROLES, DEFAULT_BASS_REGISTER
+from tools.palette.drums import DRUMS_ROLES
 from tools.palette.harmonic import DRONE_ROLES, KEYBOARD_ROLES, STRINGS_ROLES, PadNote
 from tools.palette.rhythmic import MOTOR_ROLES, RHYTHMIC_ROLES, SHADOW_ROLES
+from tools.plan import Element
 from tools.render import SUPPORTED_ROLES, _notes_to_track, render
+
+
+def _bass_element() -> Element:
+    return Element(
+        id="bass_main",
+        role="bass",
+        sections=["MAIN"],
+        register=list(DEFAULT_BASS_REGISTER),
+        layers=1,
+        sync_role="kick_support",
+        articulation="tight",
+        harmony="follow_chords",
+        instrument={"plugin": "Trilian", "preset": "Fingered Bass", "verified": True},
+        rationale="Baixo gerado do zero seguindo o campo harmonico.",
+    )
+
+
+def _drums_element() -> Element:
+    return Element(
+        id="drums_main",
+        role="drums",
+        sections=["MAIN"],
+        register=[0, 127],
+        layers=1,
+        sync_role="exact_anchor",
+        articulation="tight",
+        harmony="percussion",
+        instrument={"plugin": "Superior Drummer", "preset": "Metal Kit", "verified": True},
+        rationale="Bateria gerada do zero coerente com o mapa de energia.",
+    )
 
 
 def _element_for_role(role: str):
@@ -37,6 +70,10 @@ def _element_for_role(role: str):
         return _motor_element()
     if role in SHADOW_ROLES:
         return _shadow_element()
+    if role in BASS_ROLES:
+        return _bass_element()
+    if role in DRUMS_ROLES:
+        return _drums_element()
     raise AssertionError(f"test helper missing role factory for {role!r}")
 
 
