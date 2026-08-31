@@ -112,15 +112,91 @@ E marque no `style` da familia: `reference: null`, `sources: []`,
 `confidence: "default"`, `techniques: []`, `authorized_techniques: []`,
 `suggested_techniques: []`.
 
-### Configuracao de instrumento — a mesma conversa
+### Configuracao de instrumento de corda — a mesma conversa (issue #44)
 
 A pergunta de estilo/referencia por familia **e a mesma conversa** que a
-configuracao de instrumento coberta pela issue #44 (plugin/patch/verified
-por familia). Nao pergunte duas vezes: agrupe estilo, referencia e
-instrumento por familia na mesma linha da entrevista, e depois, na etapa
-de autorizacao (abaixo), aproveite a apresentacao das tecnicas para
-confirmar tambem o instrumento marcado. O usuario responde uma vez por
-familia; voce distribui a resposta pelos campos do brief.
+configuracao de instrumento de corda (guitarra e baixo). Nao pergunte duas
+vezes: agrupe estilo, referencia e instrumento de corda na mesma linha da
+entrevista. O usuario responde uma vez por familia; voce distribui a
+resposta pelos campos `style` e `instruments` do brief.
+
+**Por que isso importa.** Configuracao de instrumento e informacao POR
+MUSICA — nunca conhecimento de repositorio, nunca algo que a IA "lembra"
+de perguntar. Caso real que motivou esta regra: o arranjador humanizou um
+arquivo sem nunca perguntar a afinacao; o usuario informou depois
+"guitarras 7 cordas Drop G#, baixo 4 cordas Drop G# finger" — e a
+informacao batia exatamente com o arquivo (guitarra ritmica com minimo em
+MIDI 32, o piso exato do Drop G# de 7 cordas, zero notas abaixo
+disso). Sem perguntar, a ferramenta so tem palpite. Tres coisas dependem
+da afinacao declarada: a inferencia automatica de `tools.tuning`, o piso
+fisico que o motor de tecnicas usa para recusar nota abaixo da corda
+solta mais grave, e o export achatado (um canal por track, nao por
+corda) — onde a deteccao automatica simplesmente nao funciona.
+
+**Pergunte SO pela familia que existe no MIDI de origem.** Olhe o
+`tuning_inference` que o `analyze` do passo 1 devolveu: track com
+`is_stringed: true` cujo nome ou `gm_programs` (24-31 = guitarra, 32-37 =
+baixo) indicam guitarra vira pergunta de guitarra; indicam baixo vira
+pergunta de baixo. MIDI sem nenhuma track de baixo NAO pergunta
+configuracao de baixo — a pergunta so aparece pra familia presente.
+
+**Para cada familia de corda presente, pergunte em uma linha:**
+
+*"Pra [guitarra/baixo]: quantas cordas, e qual a afinacao (nome como
+'Drop C', 'Drop G#', 'E padrão' — ou, se preferir, as notas de cada
+corda solta, da mais grave pra mais aguda)? Se nao souber, tudo bem, diga
+'nao sei'."* Para baixo, acrescente na mesma linha: *"e e tocado com dedo,
+palheta ou slap?"* mais *"a track de baixo esta escrita na altura que
+soa, ou uma oitava ACIMA de como soa? Baixo e instrumento transpositor —
+soa uma oitava abaixo do que esta escrito na partitura/piano-roll na
+convencao padrao (altura escrita); se a track ja guarda a nota que
+realmente soa, e altura soante."*
+
+**Resposta "nao sei" e aceita e vira ausencia declarada, nunca um
+chute.** Grave `instruments.<familia>.known: false` com `strings`,
+`tuning`, e (para baixo) `playing_style`/`notation` todos `null`. Nao
+adivinhe um numero porque "a maioria das guitarras tem 6 cordas" — isso e
+exatamente o vicio que a issue #44 corrigiu.
+
+**Resolvendo o nome da afinacao.** Quando o usuario responder por nome
+("Drop C", "Drop G#", "E padrão"), rode
+`python3 -m tools.cli tool techniques.describe --input <(echo '{"name":
+"guitar.drop_tuning"}')` para ver `tools.generic.afinacoes` — a tabela de
+afinacoes conhecidas do manual, por numero de cordas. **Nunca resolva o
+nome de cabeca ou com uma tabela sua** — so o manual conta. Se o nome
+declarado (com aquele numero de cordas) nao aparecer na tabela — como
+"Drop G#" de 7 cordas no caso real acima, que nao esta documentado —
+**pergunte as notas de cada corda solta (numero MIDI ou nome de nota
+com oitava), da mais grave pra mais aguda**, e grave as duas coisas: o nome que
+o usuario deu (`tuning.name`, so como registro) e as notas que ele
+confirmou (`tuning.notes`). Nao grave so o nome quando ele nao resolveu —
+`brief.validate` recusa em `E_BRIEF_TUNING_NAME_UNKNOWN`.
+
+**A declaracao do usuario vence a deteccao automatica.** `tools.tuning`
+(a inferencia automatica de afinacao) continua rodando por conta propria
+a partir da distribuicao de canais do MIDI. Quando ela e a declaracao do
+usuario concordam, otimo — reforca a confianca. Quando discordam, **o
+relatorio mostra os dois valores e diz que esta usando o declarado** —
+contradicao e aviso, nunca erro, e nunca silenciosamente ignorada.
+
+Grave a estrutura em `instruments`:
+
+```
+instruments: {
+  guitar: { known, strings, tuning: { name, notes } | null },
+  bass: {
+    known, strings, tuning: { name, notes } | null,
+    playing_style: "finger" | "pick" | "slap" | null,
+    notation: "written" | "sounding" | null,
+  },
+}
+```
+
+`instruments` NUNCA carrega o mesmo texto duas vezes em formatos
+diferentes — `tuning.notes` e a UNICA fonte de verdade numerica; `strings`
+e a contagem que ela tem que bater. Familia ausente do MIDI de origem
+simplesmente nao aparece em `instruments` — nao grave entrada vazia so
+pra "completar".
 
 ## Pesquisa e confianca
 
@@ -270,5 +346,11 @@ sobre o que mudar).
   `confidence: "low"` no brief, nao vira `confidence: "high"` maquiado.
 - Nao persista o perfil pesquisado fora do `arrangement-brief.json` desta
   musica. Perfil pesquisado vive no brief, nao vira base de conhecimento.
+- Nao pergunte configuracao de instrumento de corda pra familia ausente do
+  MIDI de origem, e nao chute numero de cordas/afinacao quando o usuario
+  disser "nao sei" — grave `instruments.<familia>.known: false` com tudo
+  `null`. Nao resolva nome de afinacao de cabeca: so o manual
+  `guitar.drop_tuning` (via `techniques.describe`) resolve; nome que nao
+  aparece la vira pergunta pelas notas das cordas soltas.
 - Nao rode `midi-arranger run` a partir daqui. Isto e a fase interativa. A
   execucao headless e outra fase, invocada pelo usuario.

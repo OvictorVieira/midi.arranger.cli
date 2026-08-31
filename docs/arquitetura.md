@@ -462,6 +462,55 @@ Declarar corda no plano e emitir keyswitch de forçar corda ficam para rodada se
 os mesmos arquivos da issue #10. Esta rodada **não** altera `tools/render.py`, `tools/plan.py` nem
 `tools/techniques/`.
 
+### Configuração de instrumento declarada no brief (issue #44)
+
+A detecção acima é automática e roda sem entrevista. Mas dois casos ela não resolve sozinha: export
+achatado (um canal por track, não por corda — as três travas não têm o que separar) e afinação sem
+assinatura ambígua o bastante para desambiguar por prefixo. Os dois só se resolvem perguntando —
+**e configuração de instrumento é por música**, nunca conhecimento de repositório.
+
+`arrangement-brief.json` carrega `instruments.<familia>` (`guitar`, `bass` — as duas famílias de
+corda dedilhada; bateria e teclas não têm afinação a declarar), estruturado por
+`tools/brief_schema.py`:
+
+```
+instruments: {
+  guitar: { known, strings, tuning: { name, notes } | null },
+  bass: {
+    known, strings, tuning: { name, notes } | null,
+    playing_style: "finger" | "pick" | "slap" | null,
+    notation: "written" | "sounding" | null,
+  },
+}
+```
+
+- `known: false` é ausência DECLARADA ("o usuário não sabe") — os demais campos ficam `null`; nunca
+  um palpite maquiado de dado. `known: true` sem `tuning` é erro — se a configuração é conhecida, a
+  afinação faz parte dela.
+- `tuning.name` (`"Drop C"`, `"Drop G#"`, `"E padrão"`) resolve contra o MESMO manual
+  `guitar.drop_tuning` que `tools.tuning` usa (`tools.tuning.resolve_tuning_name`, nunca uma tabela
+  paralela) — por `(número de cordas, nome canônico)`, porque `Drop A` de 6 cordas e `Drop A` de 7
+  cordas são instrumentos diferentes com pisos diferentes. O manual só documenta guitarra (6/7/8
+  cordas); baixo nunca resolve por nome hoje — pede `tuning.notes` sempre, o que é o comportamento
+  correto (nunca inventar "guitarra menos uma oitava" sem fonte).
+- Nome sem entrada no manual para aquele número de cordas — como `Drop G#` de 7 cordas, o caso real
+  que abriu a issue #44 — **não é aceito em silêncio**: `brief.validate` recusa com
+  `E_BRIEF_TUNING_NAME_UNKNOWN` e pede `tuning.notes` explícito (MIDI das cordas soltas,
+  grave→agudo). `tuning.notes` tem que ter o mesmo tamanho de `strings` e vir em ordem estritamente
+  ascendente; nome e notas declarados juntos têm que concordar (`E_BRIEF_TUNING_NAME_MISMATCH`
+  quando não concordam).
+- `bass.notation` existe porque baixo é instrumento TRANSPOSITOR — soa uma oitava abaixo do que
+  está escrito na convenção padrão (`written`). Medindo o caso real: 82% dos ataques do baixo
+  estavam em uníssono ESCRITO com a nota mais grave da guitarra, que soa uma oitava abaixo dela.
+  Ler a track como altura soante (`sounding`) quando na verdade é escrita faz o arranjador
+  escrever a linha uma oitava no lugar errado e o baixo deixa de sustentar a guitarra.
+- **A declaração do usuário vence a detecção automática.** `tools.tuning` continua rodando —
+  confirma ou contradiz a declaração; contradição vira aviso no relatório (mostrando os dois
+  valores e qual está sendo usado), nunca erro que trava o brief.
+- A entrevista que preenche isso vive em `skills/midi-brief/SKILL.md` — pergunta só pela família
+  presente no MIDI de origem (lida a partir do `tuning_inference` que o `analyze` do passo 1 já
+  devolveu), na mesma linha da pergunta de estilo/referência daquela família.
+
 ---
 
 ## 8. Prompts driver
