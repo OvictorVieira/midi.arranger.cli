@@ -196,6 +196,33 @@ _ROLE_SPECS: dict[str, dict] = {
         "sync_role": "exact_anchor",
         "pattern": None,
     },
+    "hat_elec": {
+        "route": "hook_eletronico_pesado",
+        "register": [70, 70],
+        "articulation": "staccato",
+        "harmony": "free",
+        "sync_role": "response",
+        "pattern": {"pattern_mode": "sixteenth"},
+    },
+    "sub": {
+        "route": "hook_eletronico_pesado",
+        "register": [24, 40],
+        "articulation": "sustained",
+        "harmony": "free",
+        "sync_role": "sustain_through",
+        "pattern": {"follow": "tonic"},
+    },
+    "sub_drop": {
+        "route": "hook_eletronico_pesado",
+        "register": [24, 40],
+        "articulation": "staccato",
+        "harmony": "free",
+        "sync_role": "exact_anchor",
+        "pattern": {},
+        "instrument": {
+            "plugin": "Logic Sampler", "preset": "Sub Drop", "verified": True,
+        },
+    },
 }
 
 
@@ -212,7 +239,7 @@ def _build_plan(source: Path, role: str) -> ArrangementPlan:
         harmony=spec["harmony"],
         pattern=spec["pattern"],
         dynamics={"shape": "hold"},
-        instrument=dict(_INSTRUMENT_OMNI),
+        instrument=dict(spec.get("instrument", _INSTRUMENT_OMNI)),
         rationale=f"Integration coverage for {role}.",
     )
     return ArrangementPlan(

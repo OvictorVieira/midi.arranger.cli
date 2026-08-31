@@ -87,6 +87,7 @@ ROLE_STYLE_FAMILIES = {
     "growl_bass": "bass",
     "drums": "drums",
     "drum_groove": "drums",
+    "hat_elec": "drums",
     "perc_elec": "drums",
     "impact": "drums",
     "snare_bomb": "drums",

@@ -1264,6 +1264,260 @@ def _shadow_element(*, layers: int = 1) -> Element:
     )
 
 
+def _hat_elec_element(*, pattern_mode: str = "sixteenth", layers: int = 1) -> Element:
+    return Element(
+        id="hat_elec_main",
+        role="hat_elec",
+        sections=["MAIN"],
+        register=[70, 70],
+        layers=layers,
+        sync_role="response",
+        articulation="staccato",
+        harmony="free",
+        pattern={"pattern_mode": pattern_mode},
+        dynamics={"shape": "hold"},
+        instrument={
+            "plugin": "Addictive Drums 2",
+            "preset": "Electronic Hat",
+            "verified": True,
+        },
+        rationale="Electronic hi-hat drives the eletronico ritmico groove.",
+    )
+
+
+def _sub_element(*, follow: str = "tonic", degrees: list[int] | None = None) -> Element:
+    return Element(
+        id="sub_main",
+        role="sub",
+        sections=["MAIN"],
+        register=[24, 40],
+        layers=1,
+        sync_role="sustain_through",
+        articulation="sustained",
+        harmony="free",
+        pattern={"follow": follow},
+        degrees=degrees,
+        dynamics={"shape": "hold"},
+        instrument={
+            "plugin": "Omnisphere",
+            "preset": "Breakdown Sub",
+            "verified": True,
+        },
+        rationale="Sub-bass carries the breakdown.",
+    )
+
+
+def _sub_drop_element() -> Element:
+    return Element(
+        id="sub_drop_main",
+        role="sub_drop",
+        sections=["MAIN"],
+        register=[24, 40],
+        layers=1,
+        sync_role="exact_anchor",
+        articulation="staccato",
+        harmony="free",
+        pattern={},
+        dynamics={"shape": "hold"},
+        instrument={
+            "plugin": "Logic Sampler",
+            "preset": "Sub Drop",
+            "verified": True,
+        },
+        rationale="Sub-drop marks the section boundary.",
+    )
+
+
+def test_render_supports_hat_elec_role(tmp_path):
+    """AC (issue #22): hi-hat eletronico gera pitch fixo, 100% monofonico,
+    velocity/gate/offset lidos do manual via build_index()."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _hat_elec_element()
+    out = tmp_path / "out.mid"
+    report = render(plan, out)
+
+    src_mid = mido.MidiFile(str(src))
+    out_mid = mido.MidiFile(str(out), charset="utf-8")
+    hat_track = out_mid.tracks[len(src_mid.tracks)]
+
+    notes = []
+    t = 0
+    open_note = None
+    for msg in hat_track:
+        t += msg.time
+        if msg.type == "note_on" and msg.velocity > 0:
+            open_note = (msg.note, t)
+        elif msg.type in ("note_off",) or (msg.type == "note_on" and msg.velocity == 0):
+            assert open_note is not None
+            notes.append((open_note[0], open_note[1], t))
+            open_note = None
+    assert notes
+    pitches = {n[0] for n in notes}
+    assert pitches == {70}, "hat_elec pitch must never vary within the track"
+    # 100% monofonico: nenhum note_on comeca antes do note_off anterior.
+    notes.sort(key=lambda n: n[1])
+    for i in range(len(notes) - 1):
+        assert notes[i][2] <= notes[i + 1][1], "hat_elec must be zero-overlap"
+    assert report.elements[0].rendered is True
+
+
+def test_render_hat_elec_statistics_match_manual(tmp_path):
+    """Estatistica de velocity/offset/gate bate com o que o manual declara
+    (issue #22): velocity media ~95 desvio ~8 em [79,113], gate escalando
+    com o BPM real do arquivo (120bpm neste fixture, nao 174 da referencia),
+    offset com vies negativo (levemente adiantado)."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _hat_elec_element()
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    hat = next(i for i in out_pm.instruments if i.name and "hat_elec" in i.name)
+    assert len(hat.notes) == 128  # 8 bars * 16 steps (pattern 'sixteenth')
+
+    velocities = [n.velocity for n in hat.notes]
+    assert all(79 <= v <= 113 for v in velocities)
+    mean_v = sum(velocities) / len(velocities)
+    assert 87 <= mean_v <= 103, f"mean velocity {mean_v} should be near 95"
+
+    # Passo real de 16a a 120bpm = 125ms; gate scala proporcional ao gate
+    # medido a 174bpm (83-86ms), entao aqui o teto sobe (< 125ms sempre).
+    step_ms_at_120bpm = 60_000.0 / 120.0 / 4.0
+    durations_ms = sorted((n.end - n.start) * 1000 for n in hat.notes)
+    assert all(d <= step_ms_at_120bpm + 1e-6 for d in durations_ms)
+    median_ms = durations_ms[len(durations_ms) // 2]
+    assert median_ms > step_ms_at_120bpm * 0.7, "gate should stay close to the full step"
+
+    hat.notes.sort(key=lambda n: n.start)
+    overlaps = sum(
+        1 for i in range(len(hat.notes) - 1)
+        if hat.notes[i].end > hat.notes[i + 1].start
+    )
+    assert overlaps == 0
+
+
+def test_render_hat_elec_pattern_modes_change_density(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+
+    counts = {}
+    for mode in ("sixteenth", "gaps", "half_time"):
+        plan = _build_plan(src)
+        plan.elements[0] = _hat_elec_element(pattern_mode=mode)
+        out = tmp_path / f"hat_{mode}.mid"
+        render(plan, out)
+        out_pm = pretty_midi.PrettyMIDI(str(out))
+        hat = next(i for i in out_pm.instruments if i.name and "hat_elec" in i.name)
+        counts[mode] = len(hat.notes)
+
+    assert counts["sixteenth"] == 128
+    assert counts["gaps"] == 96          # 3 de cada 4 steps ativos * 8 bars * 16
+    assert counts["half_time"] == 64     # metade da densidade continua
+
+
+def test_render_hat_elec_rejects_unknown_pattern_mode(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _hat_elec_element(pattern_mode="triplet")
+    out = tmp_path / "out.mid"
+    with pytest.raises(ValueError, match="pattern_mode"):
+        render(plan, out)
+
+
+def _build_source_with_kick(tmp_path: Path, name: str = "source_kick.mid") -> Path:
+    """Como `_build_synthetic_source`, mas com uma track de bateria com
+    kick (nota 36) em cada beat — necessaria para `sub` `follow=kick`."""
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    piano = pretty_midi.Instrument(program=0, name="Piano")
+    bass = pretty_midi.Instrument(program=32, name="Bass")
+    drums = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    bar_len = 2.0
+    beat_len = bar_len / 4
+    for bar in range(8):
+        start = bar * bar_len
+        for pc in (60, 64, 67):
+            piano.notes.append(pretty_midi.Note(
+                velocity=80, pitch=pc, start=start, end=start + bar_len,
+            ))
+        for beat in range(4):
+            bass.notes.append(pretty_midi.Note(
+                velocity=90, pitch=36, start=start + beat * beat_len,
+                end=start + (beat + 1) * beat_len,
+            ))
+        drums.notes.append(pretty_midi.Note(
+            velocity=100, pitch=36, start=start, end=start + 0.1,
+        ))
+    pm.instruments.extend([piano, bass, drums])
+    dest = tmp_path / name
+    pm.write(str(dest))
+    return dest
+
+
+def test_render_sub_role_is_strictly_monophonic_never_a_chord(tmp_path):
+    """AC (issue #22): 'Nunca gera acorde no sub — nota unica sempre, sem
+    excecao nem flag'. Testa as tres modalidades de `follow`."""
+    src = _build_synthetic_source(tmp_path)
+    src_kick = _build_source_with_kick(tmp_path)
+    for follow in ("tonic", "kick", "riff"):
+        plan = _build_plan(src_kick if follow == "kick" else src)
+        plan.elements[0] = _sub_element(follow=follow, degrees=[0, 3, 7])
+        out = tmp_path / f"sub_{follow}.mid"
+        report = render(plan, out)
+
+        out_pm = pretty_midi.PrettyMIDI(str(out))
+        sub = next(i for i in out_pm.instruments if i.name and "sub_main" in i.name)
+        sub.notes.sort(key=lambda n: n.start)
+        assert sub.notes, f"follow={follow} produced no notes"
+        for i in range(len(sub.notes) - 1):
+            assert sub.notes[i].end <= sub.notes[i + 1].start + 1e-6, (
+                f"follow={follow}: overlapping notes -> would sound like a chord"
+            )
+        assert report.elements[0].rendered is True
+
+
+def test_render_sub_role_accents_first_impact(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _sub_element(follow="tonic")
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    sub = next(i for i in out_pm.instruments if i.name and "sub_main" in i.name)
+    sub.notes.sort(key=lambda n: n.start)
+    assert len(sub.notes) >= 2
+    first_vel = sub.notes[0].velocity
+    later_vels = [n.velocity for n in sub.notes[1:]]
+    assert first_vel > max(later_vels), (
+        "first impact of the section should be louder than the repeats"
+    )
+
+
+def test_render_sub_drop_is_single_note_with_monotonic_pitch_bend(tmp_path):
+    """AC (issue #22): evento pontual, nota unica, curva de pitch bend
+    monotonica descendente."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _sub_drop_element()
+    out = tmp_path / "out.mid"
+    report = render(plan, out)
+
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    drop = next(i for i in out_pm.instruments if i.name and "sub_drop" in i.name)
+    assert len(drop.notes) == 1, "sub_drop must always emit a single note"
+    assert drop.notes[0].start == pytest.approx(0.0, abs=1e-6)
+
+    bends = sorted(drop.pitch_bends, key=lambda b: b.time)
+    assert len(bends) >= 2
+    values = [b.pitch for b in bends]
+    assert values == sorted(values, reverse=True), "pitch bend curve must be monotonic descending"
+    assert values[0] == 0
+    assert values[-1] == -8192
+    assert report.elements[0].rendered is True
+
+
 def test_render_supports_motor_role(tmp_path):
     src = _build_synthetic_source(tmp_path)
     plan = _build_plan(src)
