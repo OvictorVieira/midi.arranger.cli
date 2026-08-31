@@ -540,6 +540,9 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
                 "stringed_source": ti.stringed_source,
                 "discard_reason": ti.discard_reason,
                 "gm_programs": [int(p) for p in ti.gm_programs],
+                "governing_programs": [
+                    int(p) for p in ti.governing_programs
+                ],
                 "candidate_channels": [
                     _channel_stats_dict(c) for c in ti.candidate_channels
                 ],
@@ -774,6 +777,12 @@ ANALYZE_TOOL = Tool(
                                 "type": "integer", "minimum": 0, "maximum": 127,
                             },
                         },
+                        "governing_programs": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer", "minimum": 0, "maximum": 127,
+                            },
+                        },
                         "candidate_channels": _CHANNEL_STATS_SCHEMA,
                         "discarded_channels": {
                             "type": "array",
@@ -862,6 +871,7 @@ ANALYZE_TOOL = Tool(
                     "required": [
                         "track_index", "track_name", "is_stringed",
                         "stringed_source", "discard_reason", "gm_programs",
+                        "governing_programs",
                         "candidate_channels", "discarded_channels",
                         "tuning_intervals", "tuning_class", "tuning_name",
                         "lowest_string_pitch", "confidence",

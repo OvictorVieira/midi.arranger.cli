@@ -665,8 +665,17 @@ class TrackTuningInference:
     - `is_stringed`: True quando ha evidencia de instrumento de corda.
     - `stringed_source`: origem da evidencia (`track_name`, `gm_program`
       ou `declared`); None quando a track nao passa na TRAVA 1.
-    - `gm_programs`: programas GM observados na track, em ordem crescente.
-      Existe para o relatorio expor por que a TRAVA 1 disparou (ou nao).
+    - `gm_programs`: TODOS os programas GM observados na track (historico
+      completo de `program_change`, qualquer canal, qualquer momento), em
+      ordem crescente — existe para o relatorio expor tudo que a track
+      declarou, mesmo o que nunca regeu nota nenhuma.
+    - `governing_programs`: SO os programas GM que regem pelo menos uma
+      nota (`_governing_programs_by_channel`), em ordem crescente — e o
+      que a classificacao de familia (guitarra vs baixo) tem que usar, NUNCA
+      `gm_programs` bruto: track com `program_change` de baixo seguido de
+      guitarra antes da primeira nota tem `gm_programs=(24,32)` mas
+      `governing_programs=(24,)` — so a guitarra soa (achado do Codex no
+      PR #64, issue #44).
     - `candidate_channels`: canais que sobraram apos aplicar as tres travas.
     - `discarded_channels`: canais que caiam nas travas 2 ou 3 e o motivo.
       Track que nao passou na TRAVA 1 tem `candidate_channels` vazio e
@@ -725,6 +734,7 @@ class TrackTuningInference:
     low_strings_top3_percentage: float | None = None
     name_patch_conflict: NamePatchConflict | None = None
     inference_incomplete: bool = False
+    governing_programs: tuple[int, ...] = ()
 
 
 def _iter_track_programs(track: mido.MidiTrack) -> dict[int, list[int]]:
@@ -957,6 +967,9 @@ def tuning_inference(
             p for progs in _iter_track_programs(track).values() for p in progs
         ]
         governing_by_channel = _governing_programs_by_channel(track)
+        governing_programs = tuple(sorted({
+            p for progs in governing_by_channel.values() for p in progs
+        }))
         channels_with_notes = frozenset(s.channel for s in all_stats)
         is_stringed, source, discard_reason, conflict, gm_channels = (
             _classify_stringed(
@@ -975,6 +988,7 @@ def tuning_inference(
                 discarded_channels=(),
                 discard_reason=discard_reason,
                 name_patch_conflict=conflict,
+                governing_programs=governing_programs,
             ))
             continue
 
@@ -1049,6 +1063,7 @@ def tuning_inference(
             string_concentrations=concentrations,
             low_strings_top3_percentage=top3,
             inference_incomplete=bool(discarded),
+            governing_programs=governing_programs,
         ))
 
     return result

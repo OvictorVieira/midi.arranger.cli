@@ -993,6 +993,44 @@ def test_trava1_gm_patch_on_same_channel_as_notes_authorizes_normally():
         assert {c.channel for c in ti.candidate_channels} == {0, 1, 2}
 
 
+def test_governing_programs_excludes_patch_replaced_before_first_note():
+    """Regressao do achado P2#2 do PR #64: quando o mesmo canal declara
+    `program_change` de baixo (32) e depois de guitarra (24) ANTES da
+    primeira nota, so a guitarra rege — `is_stringed` ja refletia isso
+    corretamente, mas `gm_programs` (historico bruto) ainda listava os
+    dois, o que fazia a skill perguntar configuracao de baixo que nao
+    existe de verdade nessa track. `governing_programs` expoe SO o que
+    realmente rege nota, para a skill classificar familia por ele."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, "bass_then_guitar.mid")
+        mid = mido.MidiFile(ticks_per_beat=480)
+        t = mido.MidiTrack()
+        t.append(mido.MetaMessage("track_name", name="Rhy DI", time=0))
+        t.append(mido.Message(
+            "program_change", channel=0, program=32, time=0,
+        ))
+        t.append(mido.Message(
+            "program_change", channel=0, program=24, time=0,
+        ))
+        for pitch in (40, 45, 50):
+            t.append(mido.Message(
+                "note_on", channel=0, note=pitch, velocity=100, time=0,
+            ))
+            t.append(mido.Message(
+                "note_off", channel=0, note=pitch, velocity=0, time=120,
+            ))
+        mid.tracks.append(t)
+        mid.save(p)
+
+        ti = tuning.tuning_inference(p)[0]
+        assert ti.is_stringed is True
+        # `gm_programs` continua reportando o historico completo (32 e 24).
+        assert set(ti.gm_programs) == {24, 32}
+        # `governing_programs` so reporta o que rege nota — nunca o baixo,
+        # que foi substituido antes da primeira nota deste canal.
+        assert ti.governing_programs == (24,)
+
+
 def test_trava1_mixed_patches_only_stringed_channels_enter_inference():
     """Quando canais diferentes da mesma track tem patches diferentes, so os
     canais com patch de corda entram na inferencia. Canal com patch nao-corda
