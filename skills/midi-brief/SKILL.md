@@ -18,8 +18,11 @@ Leia antes de comecar: `AGENTS.md`, `docs/arquitetura.md` (secoes 2, 3 e 4) e
 
 - **Entrada:** o caminho do MIDI de origem que o usuario passou.
 - **Saida:** `arrangement-brief.json` na raiz do projeto, valido contra
-  `tools.brief_schema` (rode `python3 -m tools.cli tool brief.validate
-  --input <(echo '{"brief": <o brief>}')` antes de gravar em definitivo).
+  `tools.brief_schema` (rode `echo '{"brief": <o brief>}' | python3 -m
+  tools.cli tool brief.validate --input -` antes de gravar em
+  definitivo — `--input` so aceita `-` para stdin ou um arquivo
+  regular; substituicao de processo tipo `<(...)` NAO e arquivo regular
+  e falha com `E_INPUT_FILE`).
 - **Fronteira que nao se cruza:** nada de conteudo musical dentro de `style`.
   Nem melodia, nem riff, nem sequencia de notas. So parametro de tecnica e
   nome de tecnica que exista no manual local. O schema recusa e a tool
@@ -27,8 +30,8 @@ Leia antes de comecar: `AGENTS.md`, `docs/arquitetura.md` (secoes 2, 3 e 4) e
 
 ## O fluxo, em ordem
 
-1. **Analise o MIDI.** Rode `python3 -m tools.cli tool analyze --input
-   <(echo '{"midi_path": "<caminho>"}')`. Mostre ao usuario, em portugues
+1. **Analise o MIDI.** Rode `echo '{"midi_path": "<caminho>"}' | python3
+   -m tools.cli tool analyze --input -`. Mostre ao usuario, em portugues
    claro, o que o `analyze` devolveu: tempo, tom, formula de compasso,
    numero de compassos, mapa de secoes (com o marcador `inferred` quando o
    analyze inferiu), tracks encontradas com nome e range, densidade por
@@ -135,10 +138,41 @@ corda) — onde a deteccao automatica simplesmente nao funciona.
 
 **Pergunte SO pela familia que existe no MIDI de origem.** Olhe o
 `tuning_inference` que o `analyze` do passo 1 devolveu: track com
-`is_stringed: true` cujo nome ou `gm_programs` (24-31 = guitarra, 32-37 =
-baixo) indicam guitarra vira pergunta de guitarra; indicam baixo vira
-pergunta de baixo. MIDI sem nenhuma track de baixo NAO pergunta
-configuracao de baixo — a pergunta so aparece pra familia presente.
+`is_stringed: true` cujo nome ou `governing_programs` (24-31 = guitarra,
+32-37 = baixo) indicam guitarra vira pergunta de guitarra; indicam baixo
+vira pergunta de baixo. **Use `governing_programs`, NUNCA `gm_programs`**
+para decidir a familia: `gm_programs` e o historico bruto de TODO
+`program_change` que a track ja declarou, mesmo o que nunca tocou nota
+nenhuma; `governing_programs` e so o patch que realmente rege pelo menos
+uma nota (o que soa). Uma track com `program_change` de baixo (32)
+substituido por guitarra (24) antes da primeira nota tem
+`gm_programs=[24,32]` mas `governing_programs=[24]` — perguntar
+configuracao de baixo nesse caso seria perguntar por um instrumento que
+nao existe de verdade na track.
+
+**`is_stringed: true` NAO e o unico sinal de presenca.** A classificacao
+automatica (`tools.tuning`) so confirma corda quando ha nome inequivoco
+ou patch GM regente — o proprio caso real que motivou a issue #44 e um
+export ACHATADO (`Deixe Ir - MIX`, um canal por track, nao por corda),
+onde a deteccao automatica **nao funciona**, e a track de guitarra pode
+sair com nome generico de DAW (`Rhy DI`, `Gtr Print`) sem patch GM
+nenhum: `is_stringed: false`, `discard_reason: not_stringed`. Exigir
+`is_stringed: true` antes de perguntar reproduziria exatamente o defeito
+que a issue #44 corrigiu — nao pergunta justo onde a pergunta mais
+importa. Por isso a familia conta como presente quando QUALQUER destes
+sinais aparece:
+- alguma track tem `is_stringed: true` para aquela familia (sinal
+  automatico), OU
+- o usuario, na pergunta 3 da entrevista ("estilo e referencia por
+  familia"), deu uma referencia real para guitarra/baixo — nome de
+  musico, banda, produtor ou corpus proprio — em vez de silencio/default.
+  Uma referencia de guitarra so faz sentido se ha guitarra na musica;
+  tratar isso como sinal fecha o buraco do export achatado sem inventar
+  heuristica nova de classificacao automatica.
+
+MIDI sem nenhum dos dois sinais para aquela familia NAO pergunta
+configuracao de corda — a pergunta so aparece pra familia presente por
+pelo menos um caminho.
 
 **Para cada familia de corda presente, pergunte em uma linha:**
 
@@ -159,18 +193,30 @@ adivinhe um numero porque "a maioria das guitarras tem 6 cordas" — isso e
 exatamente o vicio que a issue #44 corrigiu.
 
 **Resolvendo o nome da afinacao.** Quando o usuario responder por nome
-("Drop C", "Drop G#", "E padrão"), rode
-`python3 -m tools.cli tool techniques.describe --input <(echo '{"name":
-"guitar.drop_tuning"}')` para ver `tools.generic.afinacoes` — a tabela de
-afinacoes conhecidas do manual, por numero de cordas. **Nunca resolva o
-nome de cabeca ou com uma tabela sua** — so o manual conta. Se o nome
-declarado (com aquele numero de cordas) nao aparecer na tabela — como
-"Drop G#" de 7 cordas no caso real acima, que nao esta documentado —
-**pergunte as notas de cada corda solta (numero MIDI ou nome de nota
-com oitava), da mais grave pra mais aguda**, e grave as duas coisas: o nome que
-o usuario deu (`tuning.name`, so como registro) e as notas que ele
+("Drop C", "Drop G#", "E padrão"), rode `echo '{"name":
+"guitar.drop_tuning"}' | python3 -m tools.cli tool techniques.describe
+--input -` para ver `tools.generic.afinacoes` — a tabela de afinacoes
+conhecidas do manual, por numero de cordas. **Nunca resolva o nome de
+cabeca ou com uma tabela sua** — so o manual conta. Se o nome declarado
+(com aquele numero de cordas) nao aparecer na tabela — como "Drop G#" de
+7 cordas no caso real acima, que nao esta documentado — **pergunte as
+notas de cada corda solta (numero MIDI ou nome de nota com oitava), da
+mais grave pra mais aguda**, e grave as duas coisas: o nome que o
+usuario deu (`tuning.name`, so como registro) e as notas que ele
 confirmou (`tuning.notes`). Nao grave so o nome quando ele nao resolveu —
 `brief.validate` recusa em `E_BRIEF_TUNING_NAME_UNKNOWN`.
+
+**Convertendo nome de nota com oitava para MIDI.**
+`tools.brief_schema` so aceita `tuning.notes` como inteiros MIDI —
+`brief.validate` recusa string. Se o usuario responder com nome de nota
+com oitava (ex.: `G#1`), converta ANTES de gravar, usando a mesma
+convencao cientifica que `pretty_midi` (ja dependencia deste repo) usa —
+Do central e a oitava 4, e o MIDI 0 comeca na oitava -1: rode `python3 -c
+"import pretty_midi as pm; print(pm.note_name_to_number(nome_da_nota))"`
+para cada nota, nunca calcule de cabeca nem invente tabela propria. Confirme
+com o usuario o numero MIDI resultante antes de gravar (a conversao de
+oitava e um ponto classico de erro por um). Se preferir, peca direto o
+numero MIDI e pule a conversao inteiramente.
 
 **A declaracao do usuario vence a deteccao automatica.** `tools.tuning`
 (a inferencia automatica de afinacao) continua rodando por conta propria
@@ -241,10 +287,11 @@ vai virar brief antes de o brief virar arquivo.**
 `style.<familia>.techniques[].name` **so vale se existir no manual local**
 em `knowledge/tecnicas/`. Use duas tools:
 
-- `python3 -m tools.cli tool techniques.list --input <(echo '{"family":
-  "<familia>"}')` para ver o vocabulario disponivel para a familia.
-- `python3 -m tools.cli tool techniques.describe --input <(echo '{"name":
-  "<tecnica>"}')` para ler a receita completa da tecnica — o que e
+- `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
+  techniques.list --input -` para ver o vocabulario disponivel para a
+  familia.
+- `echo '{"name": "<tecnica>"}' | python3 -m tools.cli tool
+  techniques.describe --input -` para ler a receita completa da tecnica — o que e
   musicalmente, como se traduz em parametro MIDI (nota, keyswitch, CC,
   velocity, gate, offset, curva) e as fontes de cada numero.
 
@@ -262,8 +309,8 @@ com tecnica fora de `authorized_techniques`; a barreira e real, nao aviso.
 Faca assim, depois da pesquisa e antes de gravar o brief:
 
 1. Para cada familia com estilo/referencia declarado, rode
-   `python3 -m tools.cli tool techniques.list --input <(echo '{"family":
-   "<familia>"}')` e, para as tecnicas que a pesquisa sugeriu, rode
+   `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
+   techniques.list --input -` e, para as tecnicas que a pesquisa sugeriu, rode
    `techniques.describe` para ter o resumo em maos.
 2. **Apresente ao usuario, familia por familia**, a lista das tecnicas
    disponiveis com uma linha de resumo cada. Destaque as que a pesquisa
