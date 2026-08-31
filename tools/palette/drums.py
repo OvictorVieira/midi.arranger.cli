@@ -242,15 +242,20 @@ def _emit_hit(
     pitch: int,
     onset_s: float,
     velocity: int,
+    bar_start: float,
     duration_s: float = DRUMS_HIT_DURATION_S,
     accent_boost: int = 0,
 ) -> RhythmicNote | None:
     if not budget.try_add(step_ordinal, pitch):
         return None
-    # Piso em 0.0 — jitter com sinal pode empurrar o primeiro golpe do
-    # arquivo (bar 0, step 0) para antes do tempo zero, o que produziria
-    # tick negativo e delta-time invalido no SMF de saida.
-    onset_s = max(0.0, onset_s)
+    # Piso no inicio do bar ATUAL (nao 0.0 absoluto) — jitter com sinal
+    # pode empurrar um golpe (tipicamente o hat/kick/crash do step 0) para
+    # antes do proprio bar. Quando o bar e o primeiro do arquivo,
+    # `bar_start` ja e 0.0 e o comportamento e identico ao piso absoluto
+    # de antes; quando a secao comeca depois do bar 0, sem esse piso o
+    # onset vazava para o bar ANTERIOR (fora da secao declarada do
+    # elemento), produzindo posicionamento errado com seeds comuns.
+    onset_s = max(bar_start, onset_s)
     end_s = onset_s + duration_s
     velocity = max(1, min(127, velocity + accent_boost))
     return RhythmicNote(pitch=pitch, velocity=velocity, start_s=onset_s, end_s=end_s)
@@ -276,6 +281,7 @@ def _groove_bar_notes(
         onset = bar_start + step * step_dur_s + _jitter_s("normal", rng)
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=hat_pitch,
             onset_s=onset,
@@ -299,6 +305,7 @@ def _groove_bar_notes(
         kick_bucket = DRUMS_DOWNBEAT_VELOCITY_BUCKET if step == 0 else DRUMS_KICK_VELOCITY_BUCKET
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=GM_KICK,
             onset_s=onset,
@@ -312,6 +319,7 @@ def _groove_bar_notes(
         onset = bar_start + step * step_dur_s + _jitter_s("anchor", rng)
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=GM_SNARE,
             onset_s=onset,
@@ -324,6 +332,7 @@ def _groove_bar_notes(
         onset = bar_start + _jitter_s("anchor", rng)
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base,
             pitch=GM_CRASH,
             onset_s=onset,
@@ -356,6 +365,7 @@ def _fill_bar_notes(
         onset = bar_start + step * step_dur_s + _jitter_s("normal", rng)
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=hat_pitch,
             onset_s=onset,
@@ -367,6 +377,7 @@ def _fill_bar_notes(
         onset = bar_start + step * step_dur_s + _jitter_s("anchor", rng)
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=GM_KICK,
             onset_s=onset,
@@ -381,6 +392,7 @@ def _fill_bar_notes(
         onset = bar_start + step * step_dur_s + _jitter_s("fill", rng)
         note = _emit_hit(
             budget=budget,
+            bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=pitch,
             onset_s=onset,
@@ -440,14 +452,17 @@ def generate_drums(
     instabilidade = _energy_axis(section, "instabilidade")
     bucket = _density_bucket(densidade)
 
-    bar_dur_s = bars[0].end - bars[0].start
-    step_dur_s = bar_dur_s / STEPS_PER_BAR
-
     result: list[RhythmicLayer] = []
     for layer_idx in range(layers):
         layer_rng = random.Random(seed + (layer_idx + 1) * 1_000_003)
         notes: list[RhythmicNote] = []
         for bar_pos, bar in enumerate(bars):
+            # step_dur_s recalculado POR BAR: em MIDI com mudanca de
+            # tempo/compasso, bars depois do primeiro tem duracao
+            # diferente (bar.end - bar.start varia) — derivar de bars[0]
+            # uma unica vez fora do loop comprimia/atrasava a levada nos
+            # bars seguintes.
+            step_dur_s = (bar.end - bar.start) / STEPS_PER_BAR
             step_ordinal_base = bar_pos * STEPS_PER_BAR
             is_last_bar = bar_pos == len(bars) - 1
             if is_last_bar and len(bars) > 1:
