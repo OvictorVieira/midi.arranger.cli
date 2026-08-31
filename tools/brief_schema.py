@@ -515,14 +515,32 @@ def _validate_instruments(brief: dict[str, Any]) -> None:
         strings = entry.get("strings")
         tuning = entry.get("tuning")
         if known is False:
-            if strings is not None or tuning is not None:
+            conflicting = strings is not None or tuning is not None
+            if family == "bass":
+                conflicting = conflicting or any(
+                    entry.get(field) is not None
+                    for field in ("playing_style", "notation")
+                )
+            if conflicting:
                 raise ToolError(
                     "E_BRIEF_INSTRUMENT_KNOWN_CONFLICT",
-                    f"{path}.known=false mas strings/tuning nao sao "
-                    f"null — 'nao sei' e ausencia declarada, nao pode "
-                    f"vir acompanhado de numero",
+                    f"{path}.known=false mas strings/tuning"
+                    + (
+                        "/playing_style/notation"
+                        if family == "bass"
+                        else ""
+                    )
+                    + " nao sao todos null — 'nao sei' e ausencia "
+                    "declarada, nao pode vir acompanhado de fato parcial",
                     path=path,
-                    hint="known=false so aceita strings=null, tuning=null",
+                    hint=(
+                        "known=false so aceita strings=null, tuning=null"
+                        + (
+                            ", playing_style=null, notation=null"
+                            if family == "bass"
+                            else ""
+                        )
+                    ),
                 )
             continue
         if strings is None:

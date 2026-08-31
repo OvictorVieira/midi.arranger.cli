@@ -230,6 +230,35 @@ def test_known_false_with_a_number_present_is_a_conflict():
     assert exc.value.code == "E_BRIEF_INSTRUMENT_KNOWN_CONFLICT"
 
 
+def test_known_false_with_playing_style_or_notation_present_is_a_conflict():
+    """Regressao do achado P2#1 do PR #64: `known=false` com `strings` e
+    `tuning` nulos mas `playing_style`/`notation` preenchidos passava direto
+    (o `continue` disparava antes de olhar esses dois campos), deixando o
+    brief logicamente inconsistente — 'nao sei' tem que zerar TODOS os
+    campos de baixo, nao so numero/afinacao."""
+    brief = _brief_with_instruments({
+        "bass": {
+            "known": False, "strings": None, "tuning": None,
+            "playing_style": "slap", "notation": "written",
+        },
+    })
+    with pytest.raises(ToolError) as exc:
+        validate_brief(brief)
+    assert exc.value.code == "E_BRIEF_INSTRUMENT_KNOWN_CONFLICT"
+
+
+def test_known_false_with_only_notation_present_is_a_conflict():
+    brief = _brief_with_instruments({
+        "bass": {
+            "known": False, "strings": None, "tuning": None,
+            "playing_style": None, "notation": "sounding",
+        },
+    })
+    with pytest.raises(ToolError) as exc:
+        validate_brief(brief)
+    assert exc.value.code == "E_BRIEF_INSTRUMENT_KNOWN_CONFLICT"
+
+
 def test_known_true_without_tuning_fails():
     brief = _brief_with_instruments({
         "guitar": {"known": True, "strings": 6, "tuning": None},
