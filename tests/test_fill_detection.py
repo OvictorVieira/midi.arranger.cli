@@ -14,6 +14,7 @@ from tools.techniques._fill_detection import (
     classify_window,
     fill_windows,
     is_fill_run,
+    piece_family,
 )
 
 TPB = 480  # ticks por semi (semininma); semicolcheia = TPB // 4 = 120
@@ -175,3 +176,58 @@ def test_convencoes_sao_lidas_do_manual():
             f"{nome} precisa declarar CONVENCAO com a razao no campo `source`, "
             f"nao so em prosa (regra do AGENTS.md)"
         )
+
+
+# --- Regressao: achados do Codex no PR #59 (review r3882332323/333) --------
+
+
+def test_fill_windows_aceita_limiares_sobrescritos():
+    """Achado do Codex: um plano que sobrescreva `fill_min_piece_variety` (ou
+    os outros tres limiares) tinha que mudar o resultado — antes desta
+    correcao `fill_windows` sempre usava as constantes do modulo, entao a
+    sobrescrita do plano era aceita na validacao e ignorada no render.
+
+    O trecho denso abaixo bate variedade 2 (tom + caixa) por default e
+    portanto conta como virada; pedindo `min_piece_variety=3` explicitamente
+    tem que derrubar essa mesma corrida para groove.
+    """
+
+    fill = _dense_fill_bar()
+    assert fill_windows(fill, ticks_per_beat=TPB) != ()
+    assert (
+        fill_windows(fill, ticks_per_beat=TPB, min_piece_variety=3) == ()
+    )
+
+
+def test_fill_windows_aceita_min_notes_e_min_density_sobrescritos():
+    """Mesmo achado, cobrindo os outros dois limiares numericos."""
+
+    fill = _dense_fill_bar()
+    assert fill_windows(fill, ticks_per_beat=TPB, min_notes=len(fill) + 1) == ()
+    assert (
+        fill_windows(fill, ticks_per_beat=TPB, min_density_per_beat=999.0) == ()
+    )
+
+
+def test_fill_windows_aceita_max_gap_beats_sobrescrito():
+    """`max_gap_beats` menor que o gap real do trecho corta o agrupamento em
+    runs curtos demais, que caem abaixo de `FILL_MIN_NOTES` e desaparecem."""
+
+    fill = _dense_fill_bar()
+    assert fill_windows(fill, ticks_per_beat=TPB, max_gap_beats=0.0) == ()
+
+
+def test_piece_family_reconhece_aliases_do_kit_real():
+    """Achado do Codex: o kit real do usuario (knowledge/tecnicas/
+    tecnicas_bateria_midi.md secao 5, `alias kickR 36 34 35` e
+    `alias snareR 38 6 33 39 66 68 69 70 125`) tinha 33/34 sem familia
+    nenhuma e 66/68 caindo em tom por engano."""
+
+    assert piece_family(33) == "snare"
+    assert piece_family(34) == "kick"
+    assert piece_family(66) == "snare"
+    assert piece_family(68) == "snare"
+    # 65 e 67 continuam tom puro (SD3 Core, secao 1.2) — so os quatro
+    # numeros citados pelo Codex mudam de familia.
+    assert piece_family(65) == "tom"
+    assert piece_family(67) == "tom"

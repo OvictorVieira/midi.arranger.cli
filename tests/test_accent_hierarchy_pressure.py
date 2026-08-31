@@ -310,3 +310,73 @@ def test_ticks_por_beat_invalido_nao_altera_o_midi():
 
     out = apply_technique("drums.accent_hierarchy", mid, seed=1)
     assert _drum_notes(out) == src_notes
+
+
+# --- Regressao: achados do Codex no PR #59 (review r3882332323/331) --------
+
+
+def test_pressure_max_drop_zero_ultrapassa_o_teto_duro():
+    """Achado do Codex: `pressure_max_drop=0` prometia rebaixamento zero,
+    mas o clamp de `hard_ceiling` aplicado por ultimo derrubava a nota de
+    127 para 115 mesmo assim — o parametro era aceito e ignorado.
+
+    Com o piso de pressao aplicado DEPOIS do teto duro, origem 127 dentro de
+    virada com `pressure_max_drop=0` tem que sair exatamente 127.
+    """
+
+    src = _fill_fixture_all_at(127)
+    out = apply_technique(
+        "drums.accent_hierarchy",
+        src,
+        seed=1,
+        parameters={"pressure_max_drop": 0},
+    )
+    out_notes = _drum_notes(out)
+    dropped = [(pitch, vel, tick) for pitch, vel, tick in out_notes if vel != 127]
+    assert not dropped, (
+        f"pressure_max_drop=0 tem que preservar a origem exatamente: {dropped}"
+    )
+
+
+def test_pressure_max_drop_default_continua_respeitando_o_teto_duro():
+    """Regressao do comportamento comum: com o default (15), o piso fica
+    abaixo do teto duro e a saida continua dentro de [soft_ceiling+1,
+    hard_ceiling], como o manual documenta."""
+
+    src = _fill_fixture_all_at(127)
+    out = apply_technique("drums.accent_hierarchy", src, seed=1)
+    out_notes = _drum_notes(out)
+    assert all(vel <= 115 for _pitch, vel, _tick in out_notes)
+
+
+def test_plano_sobrescrevendo_fill_min_piece_variety_muda_a_classificacao():
+    """Achado do Codex: os quatro limiares de virada (`fill_max_gap_beats`,
+    `fill_min_notes`, `fill_min_density_per_beat`, `fill_min_piece_variety`)
+    eram aceitos pela validacao do plano mas `_apply_drums_accent_hierarchy`
+    so passava `ticks_per_beat` para `fill_windows`, entao a sobrescrita
+    nunca chegava na deteccao de virada.
+
+    A fixture tem tom+caixa (variedade 2); pedir `fill_min_piece_variety=3`
+    tem que tirar o trecho da classificacao de virada e portanto baixar a
+    caixa/tom fora do backbeat/downbeat para a camada de groove (soft/ghost)
+    em vez do acento de virada (accent_hi).
+    """
+
+    src = _fill_fixture_all_at(100)
+
+    default_out = _drum_notes(
+        apply_technique("drums.accent_hierarchy", src, seed=1)
+    )
+    overridden_out = _drum_notes(
+        apply_technique(
+            "drums.accent_hierarchy",
+            src,
+            seed=1,
+            parameters={"fill_min_piece_variety": 3},
+        )
+    )
+
+    assert default_out != overridden_out, (
+        "sobrescrever fill_min_piece_variety nao mudou nada — o parametro "
+        "continua sendo ignorado pela deteccao de virada"
+    )

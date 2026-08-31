@@ -1385,14 +1385,24 @@ def _apply_drums_accent_hierarchy(
       - Camadas vem do manual via `load_range_resolver`, com precedencia
         `context.parameters` > `context.recipe` > manual.
       - INVARIANTE DE PRESSAO: nota com velocity de origem > teto suave nunca
-        sai <= teto suave. Somada ao teto duro (~115), a saida cabe entre
-        `soft_ceiling+1` e `hard_ceiling`. Esta invariante e o que impede a
+        sai <= teto suave. No caso comum a saida cabe entre `soft_ceiling+1`
+        e `hard_ceiling`, mas o piso `original - pressure_max_drop` e
+        aplicado DEPOIS do teto duro e pode ultrapassa-lo quando o plano
+        configurar um `pressure_max_drop` pequeno — a promessa do parametro
+        manda sobre o teto pratico. Esta invariante e o que impede a
         inversao que motivou a remocao original.
       - Notas ja em faixa suave/ghost na origem NAO sao empurradas para cima.
       - `density=0` desliga (via `density_disabled`), como as demais tecnicas.
     """
 
-    from ._fill_detection import fill_windows, piece_family
+    from ._fill_detection import (
+        FILL_MAX_GAP_BEATS,
+        FILL_MIN_DENSITY_PER_BEAT,
+        FILL_MIN_NOTES,
+        FILL_MIN_PIECE_VARIETY,
+        fill_windows,
+        piece_family,
+    )
     from ._helpers import density_disabled, iter_note_dicts, rebuild_track
     from ._param_range import load_range_resolver
 
@@ -1419,6 +1429,12 @@ def _apply_drums_accent_hierarchy(
             return default
         return int(round(rng[1]))
 
+    def _float(name: str, default: float) -> float:
+        rng = _range(name)
+        if rng is None:
+            return default
+        return (rng[0] + rng[1]) / 2
+
     accent_mid = _mid("accent", 112)
     accent_hi = _hi("accent", 120)
     primary_mid = _mid("primary", 107)
@@ -1430,6 +1446,18 @@ def _apply_drums_accent_hierarchy(
     normal_floor = _lo("normal", 80)
     hard_ceiling = _mid("hard_ceiling", 115)
     pressure_max_drop = _mid("pressure_max_drop", 15)
+
+    # `fill_*`: resolvidos igual as camadas acima, senao um plano que
+    # sobrescreva esses quatro parametros (declarados no manual, validados
+    # na faixa e repassados via context.parameters) seria aceito e
+    # silenciosamente ignorado pela deteccao de virada — o "parametro
+    # mentiroso" que o AGENTS.md proibe.
+    fill_max_gap_beats = _float("fill_max_gap_beats", FILL_MAX_GAP_BEATS)
+    fill_min_notes = _mid("fill_min_notes", FILL_MIN_NOTES)
+    fill_min_density_per_beat = _float(
+        "fill_min_density_per_beat", FILL_MIN_DENSITY_PER_BEAT
+    )
+    fill_min_piece_variety = _mid("fill_min_piece_variety", FILL_MIN_PIECE_VARIETY)
 
     ticks_per_beat = mid.ticks_per_beat
     if ticks_per_beat <= 0:
@@ -1443,7 +1471,14 @@ def _apply_drums_accent_hierarchy(
         ]
         if not drum_notes:
             continue
-        windows = fill_windows(drum_notes, ticks_per_beat=ticks_per_beat)
+        windows = fill_windows(
+            drum_notes,
+            ticks_per_beat=ticks_per_beat,
+            max_gap_beats=fill_max_gap_beats,
+            min_notes=fill_min_notes,
+            min_density_per_beat=fill_min_density_per_beat,
+            min_piece_variety=fill_min_piece_variety,
+        )
 
         velocity_by_index: dict[int, int] = {}
         for note in drum_notes:
@@ -1482,10 +1517,19 @@ def _apply_drums_accent_hierarchy(
                 else:
                     target = normal_mid
 
+            # `hard_ceiling` primeiro: e o teto pratico do manual (~115) no
+            # caso comum. A INVARIANTE DE PRESSAO vem depois e pode
+            # ultrapassar esse teto quando `pressure_max_drop` configurado
+            # exige um piso mais alto — a promessa de nao rebaixar mais que
+            # `pressure_max_drop` pontos manda sobre o teto pratico, senao o
+            # parametro seria aceito e ignorado (achado do Codex no PR #59:
+            # `pressure_max_drop=0` sobre origem 127 tinha que devolver 127,
+            # mas o clamp de hard_ceiling aplicado por ultimo derrubava para
+            # 115).
+            target = max(1, min(hard_ceiling, target))
             if original > soft_ceiling:
                 floor = max(soft_ceiling + 1, original - pressure_max_drop)
                 target = max(floor, min(target, original))
-            target = max(1, min(hard_ceiling, target))
             if target != original:
                 velocity_by_index[int(note["note_on_index"])] = target
 
