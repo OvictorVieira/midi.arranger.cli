@@ -229,12 +229,22 @@ Estado atual do motor:
 |---|---|---|
 | `drums` | `drums.ghost_notes` | `drums.accent_hierarchy` (issue #50) |
 | `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.string_selection`, `bass.harmonic` |
-| `keys` | — | tudo documentado |
+| `keys` | `keys.damper_pedal`, `keys.expression`, `keys.modulation`, `keys.pitch_bend` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`, `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`, `keys.human_articulation` |
 | `guitar` | — | tudo documentado |
 
 O teste `test_supported_techniques_is_derived_from_the_registry` em
 `tests/test_techniques_engine.py` afirma a tupla exata para que registro fantasma
-(aplicador stub, `_identity_apply`) quebre o build.
+(aplicador stub, `_identity_apply`) quebre o build. O teste
+`test_keys_engine_inventory_matches_the_issue_14_contract` no mesmo arquivo trava
+o inventário da família `keys` e afirma que as dez técnicas restantes
+documentadas continuam fora do motor.
+
+As quatro técnicas de teclas implementadas são todas nível `technique` e só
+acrescentam CC/pitch bend — nunca mudam pitch/posição/duração da nota
+estrutural. `filtro` (CC74) e `portamento` (CC5/CC65), citados na issue #14
+original, **não** têm bloco de técnica próprio em `knowledge/tecnicas/tecnicas_teclas_midi.md`
+(só aparecem discutidos em prosa na §7.4). São pesquisa futura, não bug desta
+rodada — inventar bloco de técnica novo em cima deles é escopo novo.
 
 ### Carimbo de plugin/preset em toda track tocada pelo arranjador
 

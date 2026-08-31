@@ -207,6 +207,10 @@ def test_supported_techniques_is_derived_from_the_registry():
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
+        "keys.damper_pedal",
+        "keys.expression",
+        "keys.modulation",
+        "keys.pitch_bend",
     )
 
 
@@ -230,6 +234,10 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
+        "keys.damper_pedal",
+        "keys.expression",
+        "keys.modulation",
+        "keys.pitch_bend",
     )
 
 
@@ -3817,4 +3825,105 @@ def test_plano_que_declara_accent_hierarchy_recebe_erro_explicito(tmp_path):
     with pytest.raises(PlanValidationError) as exc:
         validate(plan)
     assert exc.value.path == "style.drums.techniques[0].name"
+    assert "not implemented by the engine" in exc.value.message
+
+
+_KEYS_IMPLEMENTED = (
+    "keys.damper_pedal",
+    "keys.expression",
+    "keys.modulation",
+    "keys.pitch_bend",
+)
+
+_KEYS_DOCUMENTED_BUT_UNIMPLEMENTED = (
+    "keys.bass_anticipation",
+    "keys.hammond_dynamics",
+    "keys.hand_asynchrony",
+    "keys.human_articulation",
+    "keys.melody_lead",
+    "keys.rhodes_touch",
+    "keys.rolled_chord",
+    "keys.syncopated_pedal",
+    "keys.vibrato",
+    "keys.voice_dynamics",
+)
+
+
+def test_keys_engine_inventory_matches_the_issue_14_contract():
+    """Trava o inventario exato de `keys` no motor.
+
+    Registro fantasma (aplicador stub ou no-op) OU registro alem das quatro
+    tecnicas de expressao continua da issue #14 quebra aqui. As dez restantes
+    documentadas continuam fora do motor por design — sao pesquisa futura,
+    nao bug desta rodada.
+    """
+    from tools.techniques import SUPPORTED_TECHNIQUES, build_index
+
+    keys_in_engine = tuple(t for t in SUPPORTED_TECHNIQUES if t.startswith("keys."))
+    assert keys_in_engine == _KEYS_IMPLEMENTED
+
+    idx = build_index()
+    for canonical in _KEYS_DOCUMENTED_BUT_UNIMPLEMENTED:
+        assert idx.get(canonical) is not None, (
+            f"{canonical} tem que continuar documentada no manual"
+        )
+        assert canonical not in SUPPORTED_TECHNIQUES, (
+            f"{canonical} nao pode entrar no motor sem aplicador real"
+        )
+
+
+@pytest.mark.parametrize("canonical", _KEYS_DOCUMENTED_BUT_UNIMPLEMENTED)
+def test_plano_que_declara_tecnica_de_keys_nao_implementada_recebe_erro(
+    tmp_path, canonical
+):
+    """Cada uma das dez tecnicas de teclas fora do motor tem que dar erro.
+
+    Aceitar-e-ignorar e o vicio ja rejeitado duas vezes nesta base. Usuario
+    que autoriza tecnica documentada mas nao implementada precisa saber que o
+    motor nao vai aplicar nada.
+    """
+    import json as _json
+
+    from tools.brief_ref import brief_sha256
+    from tools.plan import (
+        ArrangementPlan,
+        BriefRef,
+        FamilyStyle,
+        PlanValidationError,
+        SourceMidi,
+        StyleTechnique,
+        validate,
+    )
+
+    brief_path = tmp_path / f"arrangement-brief-{canonical.split('.')[-1]}.json"
+    brief_path.write_text(
+        _json.dumps(
+            {"style": {"keys": {"authorized_techniques": [canonical]}}},
+        ),
+        encoding="utf-8",
+    )
+
+    plan = ArrangementPlan(
+        version=1,
+        seed=1,
+        source_midi=SourceMidi(path="/tmp/x.mid", sha256="0" * 64),
+        route="cinematica_emocional",
+        sections=[],
+        elements=[],
+        brief_ref=BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path)),
+    )
+    plan.style = {
+        "keys": FamilyStyle(
+            reference="X",
+            researched_at="2026-08-26",
+            sources=["https://example.test/x"],
+            confidence="high",
+            techniques=[StyleTechnique(name=canonical)],
+            parameters={},
+        ),
+    }
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.keys.techniques[0].name"
     assert "not implemented by the engine" in exc.value.message

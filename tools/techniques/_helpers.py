@@ -174,6 +174,247 @@ def selected_by_track(
     return by_track
 
 
+def positive_density(context: Any) -> float | None:
+    """Retorna densidade positiva do plano ou None se ausente/desligada.
+
+    Usada por técnicas em que `density=0` (ou ausencia) significa NO-OP,
+    nao "minimo de um".
+    """
+    density = context.parameters.get("density")
+    if not isinstance(density, (int, float)) or isinstance(density, bool):
+        return None
+    value = float(density)
+    return value if value > 0.0 else None
+
+
+def manual_int_param(context: Any, technique: Technique, name: str) -> int:
+    """Le parametro inteiro do manual, com erro explicito quando falta."""
+    for param in technique.parameters:
+        if param.name == name and isinstance(param.value, (int, float)):
+            return int(param.value)
+    raise ValueError(
+        f"tecnica {context.canonical!r} precisa declarar {name} no manual"
+    )
+
+
+def structural_notes(
+    track: mido.MidiTrack,
+    *,
+    skip_drum_channel: bool = False,
+) -> list[dict[str, int]]:
+    """Reconstroi notas estruturais (`channel`, `pitch`, `start`, `end`) da track.
+
+    Pareia `note_on`/`note_off` por (canal, altura), descarta orfaos e — se
+    `skip_drum_channel=True` — remove canal 9 (bateria).
+    """
+    entries: list[dict[str, int]] = []
+    pending: dict[tuple[int, int], list[dict[str, int]]] = {}
+    tick = 0
+    for msg in track:
+        tick += msg.time
+        if msg.is_meta:
+            continue
+        if msg.type == "note_on" and msg.velocity > 0:
+            key = (int(msg.channel), int(msg.note))
+            entry: dict[str, int] = {
+                "channel": key[0],
+                "pitch": key[1],
+                "start": int(tick),
+                "end": None,  # type: ignore[assignment]
+            }
+            pending.setdefault(key, []).append(entry)
+            entries.append(entry)
+            continue
+        if msg.type == "note_off" or (
+            msg.type == "note_on" and msg.velocity == 0
+        ):
+            stack = pending.get((int(msg.channel), int(msg.note)))
+            if stack:
+                stack.pop(0)["end"] = int(tick)
+    return [
+        e for e in entries
+        if e["end"] is not None
+        and (not skip_drum_channel or e["channel"] != 9)
+    ]
+
+
+def din_msgs_per_second_ceiling(canonical: str) -> int:
+    """Teto fisico da porta DIN, sourced em `keys.pitch_bend`.
+
+    Reusado por tecnicas de CC continuo cujos manuais deixam
+    `eventos_por_segundo_recomendados` como lacuna sourced null; e limite
+    da porta, nao da tecnica.
+    """
+    manual = build_index().get("keys.pitch_bend")
+    if manual is None:
+        raise ValueError(
+            f"tecnica {canonical!r}: manual de keys.pitch_bend nao "
+            "encontrado para derivar teto de eventos"
+        )
+    for param in manual.parameters:
+        if param.name == "teto_mensagens_por_segundo_din" and isinstance(
+            param.value, (int, float)
+        ):
+            return int(param.value)
+    return 1042
+
+
+def structural_candidates(
+    structural: list[dict[str, int]],
+    track_index: int,
+) -> list[dict[str, int]]:
+    """Anexa `track_index` a cada nota estrutural — formato de candidate."""
+    return [
+        {
+            "track_index": track_index,
+            "start": entry["start"],
+            "pitch": entry["pitch"],
+            "channel": entry["channel"],
+            "end": entry["end"],
+        }
+        for entry in structural
+    ]
+
+
+def technique_setup(
+    context: Any,
+) -> tuple[float, Technique, Callable[[str], int]] | None:
+    """Boilerplate compartilhado por tecnicas de CC continuo com `density`.
+
+    Devolve `(density, technique, int_param)` ou `None` quando `density` esta
+    ausente/zerada (NO-OP). `int_param(name)` le parametro inteiro do manual
+    da tecnica com erro explicito se faltar.
+    """
+    density = positive_density(context)
+    if density is None:
+        return None
+    technique = technique_from_manual(context)
+
+    def _int_param(name: str) -> int:
+        return manual_int_param(context, technique, name)
+
+    return density, technique, _int_param
+
+
+def cc_envelope_setup(
+    context: Any,
+    mid: mido.MidiFile,
+    *,
+    rng_key: str,
+) -> tuple[float, Technique, Callable[[str], int], int, float, Any] | None:
+    """Boilerplate completo para tecnicas de envelope de CC continuo.
+
+    Devolve `(density, technique, int_param, teto_msgs, ticks_per_second, rng)`
+    ou `None` para NO-OP (density ausente/zero ou `ticks_per_beat` invalido).
+    `teto_msgs` sai de `din_msgs_per_second_ceiling`; `rng` de
+    `context.rng(rng_key)`.
+    """
+    setup = technique_setup(context)
+    if setup is None:
+        return None
+    density, technique, int_param = setup
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return None
+    ticks_per_second = ticks_per_beat * 1_000_000 / first_tempo(mid)
+    teto_msgs = din_msgs_per_second_ceiling(context.canonical)
+    return (
+        density, technique, int_param, teto_msgs,
+        ticks_per_second, context.rng(rng_key),
+    )
+
+
+def iter_track_selections(
+    mid: mido.MidiFile,
+    *,
+    density: float,
+    rng: Any,
+    skip_drum_channel: bool = True,
+):
+    """Itera (track, selected_candidates) por track de `mid`.
+
+    Reduz o boilerplate `structural_notes -> structural_candidates ->
+    select_by_density -> continue` replicado por tecnicas de CC continuo.
+    Tracks sem notas estruturais ou sem selecao sao puladas silenciosamente.
+    """
+    for track_index, track in enumerate(mid.tracks):
+        structural = structural_notes(track, skip_drum_channel=skip_drum_channel)
+        if not structural:
+            continue
+        selected = select_by_density(
+            structural_candidates(structural, track_index),
+            density=density,
+            rng=rng,
+            sort_key=sort_by_track_start_pitch,
+        )
+        if selected:
+            yield track, selected
+
+
+def apply_symmetric_cc_envelope(
+    track: mido.MidiTrack,
+    selected: list[dict[str, int]],
+    *,
+    cc: int,
+    rest_value: int,
+    extreme_value: int,
+    ticks_per_second: float,
+    teto_msgs: int,
+    steps_target: int = 8,
+) -> None:
+    """Emite envelope simetrico rest -> extreme -> rest por nota selecionada.
+
+    Compartilhado por `keys.modulation` (rest=0, extreme=peak) e
+    `keys.expression` (rest=127, extreme=valley). Passos limitados pelo teto
+    fisico da DIN (`teto_msgs`) e pelo numero de ticks disponivel.
+    """
+    from ._track_rebuild import collect_absolute, sort_and_flush
+
+    absolute = collect_absolute(track)
+    order = len(absolute)
+
+    for candidate in selected:
+        start = candidate["start"]
+        end = candidate["end"]
+        channel = candidate["channel"]
+        duration = end - start
+        if duration <= 1:
+            continue
+        midpoint = start + duration // 2
+
+        for low_tick, high_tick, low_value, high_value in (
+            (start, midpoint, rest_value, extreme_value),
+            (midpoint, end, extreme_value, rest_value),
+        ):
+            span_ticks = max(1, high_tick - low_tick)
+            span_seconds = span_ticks / ticks_per_second
+            max_by_rate = (
+                max(2, int(span_seconds * teto_msgs))
+                if span_seconds > 0
+                else 2
+            )
+            max_by_ticks = max(2, span_ticks)
+            n_steps = max(2, min(steps_target, max_by_rate, max_by_ticks))
+            for i in range(1, n_steps + 1):
+                frac = i / n_steps
+                value = int(round(low_value + (high_value - low_value) * frac))
+                value = max(0, min(127, value))
+                step_tick = low_tick + int(round(span_ticks * frac))
+                step_tick = max(low_tick, min(high_tick, step_tick))
+                absolute.append((
+                    step_tick, -2, order,
+                    mido.Message(
+                        "control_change",
+                        channel=channel,
+                        control=cc,
+                        value=value,
+                    ),
+                ))
+                order += 1
+
+    sort_and_flush(absolute, track)
+
+
 def first_tempo(mid: mido.MidiFile) -> int:
     for track in mid.tracks:
         for msg in track:
