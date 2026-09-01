@@ -167,6 +167,18 @@ def test_normalize_kind_leading_cue_beats_named_destination():
     assert sections.normalize_kind("CHORUS DROP") == "chorus"
 
 
+def test_normalize_kind_outro_synonym_beats_coexisting_modifier():
+    # Achado do Codex na PR: 'ending'/'final'/'coda'/'tag' sao sinonimo
+    # direto de 'outro' (documentado no comentario do modulo), mas estavam
+    # classificados como MODIFIER — deixava um modificador de outra familia
+    # vencer quando coexistia no mesmo rotulo ('CODA SOLO' virava 'bridge',
+    # 'TAG HOLD' virava 'interlude', 'ENDING BUILD' virava 'pre'). Movidos
+    # pra CANONICAL, mesma regra de precedencia de 'CHORUS DROP'.
+    assert sections.normalize_kind("CODA SOLO") == "outro"
+    assert sections.normalize_kind("TAG HOLD") == "outro"
+    assert sections.normalize_kind("ENDING BUILD") == "outro"
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
