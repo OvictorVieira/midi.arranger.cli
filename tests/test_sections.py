@@ -154,6 +154,19 @@ def test_normalize_kind_treats_underscore_as_cue_separator():
     assert sections.normalize_kind("BUILD_UP") == "pre"
 
 
+def test_normalize_kind_leading_cue_beats_named_destination():
+    # Achado do Codex na PR: rotulo qualificado por destino ('BUILD TO
+    # CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE') descreve o trecho
+    # ATUAL (o cue a esquerda), nao o destino nomeado depois de 'to'/'into'
+    # — a precedencia canonical nao pode deixar o nome do destino vencer.
+    assert sections.normalize_kind("BUILD TO CHORUS") == "pre"
+    assert sections.normalize_kind("TRANSITION TO VERSE") == "interlude"
+    assert sections.normalize_kind("RISER INTO CHORUS") == "pre"
+    assert sections.normalize_kind("BUILD_TO_CHORUS") == "pre"
+    # Sem 'to'/'into', a precedencia canonical normal continua valendo.
+    assert sections.normalize_kind("CHORUS DROP") == "chorus"
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
