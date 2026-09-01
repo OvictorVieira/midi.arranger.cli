@@ -42,6 +42,8 @@ pesquisado por familia — com fontes, data e confianca.
 from __future__ import annotations
 
 import difflib
+import re
+from datetime import datetime
 from typing import Any
 
 from . import techniques as techniques_mod
@@ -66,6 +68,26 @@ REQUISITO_FAMILIES = (
 )
 
 STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
+
+# --- issue #96 — sessao de trabalho ---------------------------------------
+#
+# `session` e a fronteira de trabalho do brief: identifica UMA rodada
+# focada, com um intent (o que o usuario quer fazer nessa passada) e um
+# escopo de familias em jogo. Vocabulario FECHADO para `intent` — a lista
+# vive aqui como fonte unica de verdade e nao aceita string livre.
+#
+# O bloco e OPCIONAL: brief antigo sem `session` continua carregando
+# byte-identico ao atual — o schema anterior nao exigia session e nada
+# do maquinario aponta para ela ate a issue #96.
+SESSION_INTENTS = ("edit", "create", "layer", "transition", "mixed")
+
+# ISO-8601 em UTC: `YYYY-MM-DDTHH:MM:SS[.fff]Z`. O `Z` e obrigatorio para
+# marcar UTC — outros offsets ficam fora do escopo desta issue, sessao de
+# trabalho e um evento pontual da rodada, nao um registro de fuso local.
+_SESSION_CREATED_AT_PATTERN = (
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"
+)
+_SESSION_CREATED_AT_RE = re.compile(_SESSION_CREATED_AT_PATTERN)
 
 _SHA256_RE = r"^[0-9a-f]{64}$"
 
@@ -167,12 +189,38 @@ def _family_style_schema() -> dict[str, Any]:
     }
 
 
+def _session_schema() -> dict[str, Any]:
+    """JSON Schema do bloco `session` do brief (issue #96).
+
+    Todos os campos sao obrigatorios QUANDO a chave `session` existe;
+    ausencia do bloco inteiro no brief e valida (compat com brief antigo).
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "intent": {"enum": list(SESSION_INTENTS)},
+            "families_in_scope": {
+                "type": "array",
+                "items": {"enum": list(STYLE_FAMILIES)},
+            },
+            "created_at": {
+                "type": "string",
+                "pattern": _SESSION_CREATED_AT_PATTERN,
+            },
+        },
+        "required": ["id", "intent", "families_in_scope", "created_at"],
+        "additionalProperties": False,
+    }
+
+
 def brief_schema() -> dict[str, Any]:
     """JSON Schema estrito do arrangement-brief.json."""
     return {
         "type": "object",
         "properties": {
             "version": {"type": "integer", "const": BRIEF_SCHEMA_VERSION},
+            "session": _session_schema(),
             "source_midi": {
                 "type": "object",
                 "properties": {
@@ -566,6 +614,48 @@ def _validate_instruments(brief: dict[str, Any]) -> None:
                     )
 
 
+def _validate_session(brief: dict[str, Any]) -> None:
+    """Regras semanticas do bloco `session` (issue #96).
+
+    O JSON Schema ja garantiu vocabulario (`intent`, cada familia em
+    `families_in_scope`), tipo (`id` string, `created_at` string com
+    formato ISO-8601 UTC) e presenca dos quatro campos. Aqui restam duas
+    checagens que schema puro nao expressa bem:
+    - `families_in_scope` sem duplicatas — subconjunto de STYLE_FAMILIES,
+      nao multi-conjunto.
+    - `created_at` e uma data real do calendario alem de bater com o
+      padrao ISO — `datetime.fromisoformat` recusa `2026-02-30T...` etc.
+    Bloco ausente e ok — brief antigo continua valido.
+    """
+    session = brief.get("session")
+    if not isinstance(session, dict):
+        return
+    families = session.get("families_in_scope", [])
+    if isinstance(families, list) and len(families) != len(set(families)):
+        raise ToolError(
+            "E_BRIEF_SESSION_INVALID",
+            (
+                f"session.families_in_scope tem duplicatas ({families!r}); "
+                "declare cada familia no maximo uma vez"
+            ),
+            path="session.families_in_scope",
+        )
+    created_at = session.get("created_at")
+    if isinstance(created_at, str) and _SESSION_CREATED_AT_RE.match(created_at):
+        # `datetime.fromisoformat` no Python 3.11+ aceita `Z` como UTC.
+        try:
+            datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise ToolError(
+                "E_BRIEF_SESSION_INVALID",
+                (
+                    f"session.created_at={created_at!r} nao e uma data/hora "
+                    "real do calendario"
+                ),
+                path="session.created_at",
+            ) from None
+
+
 def validate_brief(brief: Any) -> None:
     """Valida `brief` contra o schema e as regras semanticas.
 
@@ -616,6 +706,7 @@ def validate_brief(brief: Any) -> None:
         _validate_family_techniques(family, entry, idx)
 
     _validate_instruments(brief)
+    _validate_session(brief)
 
 
 # --- tool -----------------------------------------------------------------
@@ -671,6 +762,7 @@ __all__ = [
     "CONFIDENCE_LEVELS",
     "REQUISITO_FAMILIES",
     "REQUISITO_TYPES",
+    "SESSION_INTENTS",
     "STYLE_FAMILIES",
     "brief_schema",
     "validate_brief",

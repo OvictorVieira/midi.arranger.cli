@@ -47,6 +47,7 @@ from .plan import (
     SCHEMA_VERSION,
     SECTION_KINDS,
     SECTION_SOURCES,
+    SESSION_INTENTS,
     STYLE_CONFIDENCE_LEVELS,
     STYLE_FAMILIES,
     ArrangementPlan,
@@ -219,6 +220,28 @@ def _plan_schema() -> dict[str, Any]:
                     "sha256": {"type": "string", "pattern": SHA256_PATTERN},
                 },
                 "required": ["path", "sha256"],
+                "additionalProperties": False,
+            },
+            "session": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "intent": {"enum": list(SESSION_INTENTS)},
+                    "families_in_scope": {
+                        "type": "array",
+                        "items": {"enum": list(STYLE_FAMILIES)},
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "pattern": (
+                            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+                            r"(\.\d+)?Z$"
+                        ),
+                    },
+                },
+                "required": [
+                    "id", "intent", "families_in_scope", "created_at",
+                ],
                 "additionalProperties": False,
             },
             "route": {"enum": list(ROUTES)},
