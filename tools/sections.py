@@ -119,8 +119,12 @@ def normalize_kind(label: str) -> str | None:
     CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE') descreve o trecho
     ATUAL (o cue a esquerda de 'to'/'into'), nao o destino nomeado depois —
     'BUILD TO CHORUS' e o build-up que antecede o refrao, nao o refrao em
-    si. Por isso o rotulo e truncado em 'to'/'into' antes do match, para que
-    o destino explicito nao vença o cue real por precedencia canonical.
+    si. Por isso o rotulo e testado primeiro truncado em 'to'/'into'. Mas
+    so USA esse resultado quando o fragmento a esquerda classifica sozinho
+    ('BUILD' classifica); se nao classificar ('FADE TO OUTRO', 'COUNT IN TO
+    INTRO', 'SWELL INTO CHORUS' — 'fade'/'count in'/'swell' nao sao cue
+    conhecido), cai de volta pro rotulo inteiro, senao o unico nome de
+    secao presente (o destino) seria descartado a toa.
 
     Retorna None quando o rotulo nao casa com nenhuma familia conhecida —
     quem chama decide se levanta erro ou trata como generico.
@@ -133,12 +137,18 @@ def normalize_kind(label: str) -> str | None:
     # `_` como separador explicito (`pre[-\s_]?chorus` etc.) continuam
     # casando, porque o `\s` deles cobre o espaco resultante.
     s = re.sub(r"_+", " ", label.strip().lower())
+
+    def _match(text: str) -> str | None:
+        return _search_kind_patterns(
+            text, _CANONICAL_KIND_PATTERNS
+        ) or _search_kind_patterns(text, _MODIFIER_KIND_PATTERNS)
+
     leading = re.split(r"\bto\b|\binto\b", s, maxsplit=1)[0].strip()
-    if leading:
-        s = leading
-    return _search_kind_patterns(s, _CANONICAL_KIND_PATTERNS) or _search_kind_patterns(
-        s, _MODIFIER_KIND_PATTERNS
-    )
+    if leading and leading != s:
+        leading_kind = _match(leading)
+        if leading_kind is not None:
+            return leading_kind
+    return _match(s)
 
 
 @dataclass
