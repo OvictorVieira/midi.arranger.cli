@@ -2088,3 +2088,38 @@ def test_edit_without_tool_falls_back_to_generic_without_keyswitch(tmp_path):
     # a receita e `generic` (sem keyswitch) por design — nao e erro, so
     # nao ha ferramenta especifica pedida. Continua sem keyswitch 13.
     assert not _has_note_on(out, 13)
+
+
+def test_edit_tool_modo_bass_palm_mute_without_cc_raises_render_error(tmp_path):
+    """Achado do Codex na PR: `edit.tool="MODO Bass"` com `bass.palm_mute`
+    autorizado mas sem `style.bass.parameters.cc` levantava `ValueError` puro
+    de dentro do aplicador — nao traduzido por `_run_style_pipeline` (que so
+    capturava `TechniqueContractError`/`TechniquePhysicalError`/
+    `TechniqueRecipeError`/`UnknownTechniqueError`), escapando ate o facade
+    da CLI como `E_INTERNAL` mesmo com `plan.validate()` tendo aceitado o
+    plano. Corrigido trocando o `raise ValueError` do guard por
+    `TechniqueRecipeError` (ja e a excecao que `_run_style_pipeline` traduz
+    para `RenderError`/`E_RENDER`)."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com palm mute",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.palm_mute", density=1.0, rationale="mute",
+            )],
+            parameters={},  # sem "cc" — MODO BASS nao tem CC de fabrica
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    with pytest.raises(RenderError, match="cc"):
+        render(plan, out)

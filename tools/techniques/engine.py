@@ -2617,7 +2617,12 @@ def _apply_bass_palm_mute(
     if context.tool == "modo_bass" and context.recipe.get("cc") is None:
         cc_param = context.parameters.get("cc")
         if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
-            raise ValueError(
+            # `TechniqueRecipeError` (nao `ValueError` puro) porque essa e a
+            # excecao que `_run_style_pipeline` (tools/render.py) ja traduz
+            # para `RenderError` -> `E_RENDER`; um `ValueError` cru escapava
+            # ate o facade da CLI sem tradutor e virava `E_INTERNAL` (achado
+            # do Codex na PR #93, exposto pelo novo caminho de `edit.tool`).
+            raise TechniqueRecipeError(
                 f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
                 "de style.bass.parameters.cc (0-127) declarado no plano — o "
                 "MODO BASS nao tem CC de fabrica para palm mute"
