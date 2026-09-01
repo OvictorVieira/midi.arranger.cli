@@ -203,6 +203,23 @@ def test_referenced_tools_are_registered():
         # PR #64 achado P2#5 — comando de lookup usa arquivo/stdin real,
         # nunca substituicao de processo.
         "--input -",
+        # Issue #97 — pergunta 0 de escopo da sessao antes de perguntar
+        # familias.
+        "Escopo da sessao",
+        "families_in_scope",
+        "session.id",
+        "session.intent",
+        "session.created_at",
+        # Vocabulario fechado de intent.
+        "`edit`",
+        "`create`",
+        "`layer`",
+        "`transition`",
+        "`mixed`",
+        # Pergunta 3 (e demais por-familia) filtra por escopo.
+        "roda SO para as familias em `families_in_scope`",
+        # Nota sobre retomada de sessao (fora do escopo).
+        ".midiarranger/sessions/",
     ],
 )
 def test_body_carries_required_clauses(clause):

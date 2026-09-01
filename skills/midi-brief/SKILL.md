@@ -27,6 +27,27 @@ Leia antes de comecar: `AGENTS.md`, `docs/arquitetura.md` (secoes 2, 3 e 4) e
   Nem melodia, nem riff, nem sequencia de notas. So parametro de tecnica e
   nome de tecnica que exista no manual local. O schema recusa e a tool
   `brief.validate` recusa. Voce tambem recusa.
+- **Escopo da sessao.** Todo brief carrega um bloco `session` no topo,
+  descrevendo o recorte que o usuario declarou nesta rodada:
+
+  ```
+  session: {
+    id: <UUID v4 gerado agora>,
+    intent: "edit" | "create" | "layer" | "transition" | "mixed",
+    families_in_scope: [<subconjunto de "bass","drums","guitar","keys">],
+    created_at: <timestamp ISO 8601 UTC do momento da entrevista>,
+  }
+  ```
+
+  `session.id` e `session.created_at` sao capturados por comando shell
+  explicito, uma vez, no comeco da entrevista — nao invente valor de
+  cabeca. Rode `python3 -c "import uuid; print(uuid.uuid4())"` para o
+  `id`, e `date -u +%Y-%m-%dT%H:%M:%SZ` (ou `python3 -c "from datetime
+  import datetime, timezone;
+  print(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))"`)
+  para o `created_at`. O valor CAPTURADO vira o campo do brief; o brief
+  guarda o carimbo, e nao ha determinismo violado (o valor entra como
+  dado, nao como computacao do plano).
 
 ## O fluxo, em ordem
 
@@ -62,7 +83,46 @@ Leia antes de comecar: `AGENTS.md`, `docs/arquitetura.md` (secoes 2, 3 e 4) e
 ## A entrevista
 
 A entrevista **nao e formulario**. Nao pergunte uma coisa de cada vez.
-**No maximo cinco perguntas agrupadas.** Agrupe assim, nesta ordem:
+**Uma pergunta 0 de escopo da sessao, seguida de no maximo cinco perguntas
+agrupadas.** Agrupe assim, nesta ordem:
+
+0. **Escopo da sessao.** ANTES de qualquer outra pergunta, faca DUAS coisas
+   na mesma rodada e nao siga adiante enquanto nao tiver as duas
+   respostas.
+
+   (a) **Intencao.** *"o que voce quer atacar nesta sessao? editar tracks
+   existentes (`edit`), gerar tracks novas (`create`), acrescentar camada
+   em cima do que ja existe (`layer`), so peca de transicao entre secoes
+   (`transition`), ou uma mistura de tudo isso (`mixed`)?"* Vocabulario
+   FECHADO: `edit`, `create`, `layer`, `transition`, `mixed`. Resposta
+   fora dessa lista **nao e inferida** — repita a pergunta ate o usuario
+   escolher um dos cinco. "arranjo do zero, quero tudo" ou variantes do
+   fluxo antigo mapeiam para `mixed` com `families_in_scope` =
+   `["bass","drums","guitar","keys"]` (retrocompatibilidade explicita).
+
+   (b) **Familias em escopo.** *"e quais familias entram nesta sessao —
+   bateria, baixo, guitarra, teclas?"* Vocabulario FECHADO: subconjunto
+   NAO-VAZIO de `bass`, `drums`, `guitar`, `keys`. **Unica excecao:**
+   quando `intent` = `transition`, `families_in_scope` pode ficar
+   **vazia** — a sessao so gera pecas de transicao entre secoes e nao
+   toca as familias musicais direto.
+
+   Sugira default segundo o `intent` (o usuario pode aceitar ou trocar):
+   - `edit`: default = familias detectadas no MIDI de origem (o `analyze`
+     do passo 1 ja rodou; se ainda nao rodou, pergunte diretamente sem
+     sugestao).
+   - `create`: default = familias AUSENTES do MIDI de origem.
+   - `layer`: default = familias PRESENTES no MIDI de origem.
+   - `transition`: default = vazio (o usuario pode sobrepor familias se
+     quiser incluir alguma).
+   - `mixed`: sem default automatico — peca ao usuario listar.
+
+   **A partir deste ponto, TODA pergunta por-familia (a de referencia na
+   pergunta 3, a de instrumento de corda, a apresentacao de tecnicas para
+   autorizacao) roda SO para as familias em `families_in_scope`.** Familia
+   fora de escopo NAO e perguntada, mesmo que exista no MIDI de origem —
+   ela nao entra em `style`, nao entra em `instruments`, nao entra em
+   `edits`.
 
 1. **Emocao e narrativa.** *"Que sensacao esse arranjo precisa provocar?
    qual o arco emocional — comeca sussurro e explode? entra pesado e alivia
@@ -72,12 +132,14 @@ A entrevista **nao e formulario**. Nao pergunte uma coisa de cada vez.
    vivo, producao eletronica, cinematografico, hibrido? uma palavra ja
    basta."* Isso mapeia para `route` (vocabulario fechado em
    `tools.plan.ROUTES`).
-3. **Estilo e referencia por familia.** Uma pergunta so, cobrindo as quatro
-   familias: *"para cada familia — bateria, baixo, teclas, guitarra — me
-   diga em uma linha o estilo ou a referencia. pode ser nome de musico, nome
-   de banda/produtor, ou 'no estilo das nossas musicas' + caminho(s) do(s)
-   MIDI(s) de referencia. familia que voce nao mencionar, eu assumo o
-   default da persona e declaro a suposicao."*
+3. **Estilo e referencia por familia.** Uma pergunta so, cobrindo **apenas
+   as familias em `families_in_scope`**: *"para cada familia em escopo — me
+   diga em uma linha o estilo ou a referencia. pode ser nome de musico,
+   nome de banda/produtor, ou 'no estilo das nossas musicas' + caminho(s)
+   do(s) MIDI(s) de referencia. familia que voce nao mencionar, eu assumo
+   o default da persona e declaro a suposicao."* Se `families_in_scope`
+   estiver vazia (sessao `transition` sem sobreposicao), **pule esta
+   pergunta inteira** e siga para a 4.
 4. **Antirreferencias.** *"tem alguma coisa que voce NAO quer que soe? um
    estilo, um artista, um clichê a evitar?"*
 5. **Restricoes.** *"algum veto duro? tipo 'nada de double kick', 'sem
@@ -136,7 +198,9 @@ fisico que o motor de tecnicas usa para recusar nota abaixo da corda
 solta mais grave, e o export achatado (um canal por track, nao por
 corda) — onde a deteccao automatica simplesmente nao funciona.
 
-**Pergunte SO pela familia que existe no MIDI de origem.** Olhe o
+**Pergunte SO pela familia que existe no MIDI de origem E esta em
+`families_in_scope`.** Familia fora do escopo declarado na pergunta 0 nao
+recebe pergunta de instrumento de corda mesmo que exista no MIDI. Olhe o
 `tuning_inference` que o `analyze` do passo 1 devolveu: track com
 `is_stringed: true` cujo nome ou `governing_programs` (24-31 = guitarra,
 32-37 = baixo) indicam guitarra vira pergunta de guitarra; indicam baixo
@@ -306,7 +370,9 @@ familias (drums, bass, guitar, keys). Ausencia de autorizacao significa
 NENHUMA tecnica, nunca todas. `plan.validate` e `render` recusam plano
 com tecnica fora de `authorized_techniques`; a barreira e real, nao aviso.
 
-Faca assim, depois da pesquisa e antes de gravar o brief:
+Faca assim, depois da pesquisa e antes de gravar o brief — **somente para
+as familias em `families_in_scope`**; familia fora do escopo nao recebe
+apresentacao de tecnicas nem `authorized_techniques`:
 
 1. Para cada familia com estilo/referencia declarado, rode
    `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
@@ -359,6 +425,13 @@ assumiu e que ele pode editar o brief a mao antes de rodar o `run`.
 
 Modo rapido default:
 
+- `session.intent`: `mixed` (o padrao antigo, "arranjo do zero, tudo em
+  jogo").
+- `session.families_in_scope`: `["bass", "drums", "guitar", "keys"]` —
+  todas as quatro. Modo rapido nao restringe escopo por conta propria.
+- `session.id` e `session.created_at`: capturados como no fluxo normal
+  (`uuid.uuid4()` e `date -u +%Y-%m-%dT%H:%M:%SZ`). Sao carimbos, nao
+  decisoes de arranjo.
 - `demanda`: se o usuario nao deu nenhuma, use *"arranjo com defaults; sem
   entrevista"*.
 - `route`: `banda` (ou o primeiro valor de `tools.plan.ROUTES` que couber).
@@ -377,6 +450,11 @@ perguntar**. Mostre o brief atual (resumo em portugues) e ofereca tres
 opcoes: *continuar de onde parou* (nao mexer), *refazer do zero* (apagar e
 comecar nova entrevista), ou *editar campo especifico* (pergunta cirurgica
 sobre o que mudar).
+
+> Nota: se existir sessao anterior arquivada em `.midiarranger/sessions/`,
+> **nao ofereca retomada aqui**. Retomar sessao arquivada e escopo de
+> issue separada (P2); esta skill so lida com o `arrangement-brief.json`
+> atual na raiz do projeto.
 
 ## O que nunca fazer nesta skill
 
