@@ -4017,3 +4017,25 @@ def test_plano_que_declara_tecnica_de_keys_nao_implementada_recebe_erro(
         validate(plan)
     assert exc.value.path == "style.keys.techniques[0].name"
     assert "not implemented by the engine" in exc.value.message
+
+
+def test_technique_context_importable_with_dataclass_mutable_default_check():
+    """`TechniqueContext` uses `default_factory` for Mapping fields.
+
+    Python 3.11 patch releases with the stricter dataclasses mutable-default
+    check (`__hash__ is None`) reject a bare `MappingProxyType({})` default at
+    class-definition time. Import in a subprocess so the module (and its
+    import chain via `tools.contract`) is loaded fresh, independent of
+    whatever already sits in `sys.modules` for this test run.
+    """
+
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import tools.contract"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

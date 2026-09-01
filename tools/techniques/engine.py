@@ -15,7 +15,7 @@ import inspect
 import random
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from types import MappingProxyType
 from typing import Any, Literal
@@ -67,10 +67,10 @@ class TechniqueContext:
 
     seed: int
     canonical: str
-    parameters: Mapping[str, Any] = MappingProxyType({})
+    parameters: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     tool: str = "generic"
     requested_tool: str | None = None
-    recipe: Mapping[str, Any] = MappingProxyType({})
+    recipe: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         if not isinstance(self.seed, int):
