@@ -88,6 +88,23 @@ def test_normalize_kind_wider_production_cue_vocabulary():
     assert sections.normalize_kind("Tag") == "outro"
 
 
+def test_normalize_kind_numbered_variants_of_new_cue_vocabulary():
+    # Achado do Codex na PR: os padroes ancorados em string inteira
+    # ("^hook$") nao reconheciam variante numerada/com letra, ao contrario
+    # do resto do arquivo ("CHORUS 2" ja casava com "chorus" por substring).
+    assert sections.normalize_kind("HOOK 1") == "chorus"
+    assert sections.normalize_kind("GANCHO A") == "chorus"
+    assert sections.normalize_kind("SOLO 2") == "bridge"
+    assert sections.normalize_kind("CODA FINAL") == "outro"
+    assert sections.normalize_kind("TAG 1") == "outro"
+    assert sections.normalize_kind("BUILD 1") == "pre"
+    assert sections.normalize_kind("HOLD 2") == "interlude"
+    assert sections.normalize_kind("PRE-DROP 2") == "pre"
+    # Palavra composta que so acidentalmente comeca com o mesmo prefixo nao
+    # deve casar — a fronteira de palavra (\b) protege isso.
+    assert sections.normalize_kind("Hooked") is None
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.

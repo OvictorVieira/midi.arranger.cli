@@ -55,17 +55,17 @@ CANONICAL_KINDS = (
 #   contraste dentro da musica.
 # - 'outro': 'coda' e 'tag' sao sinonimos de encerramento.
 _KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre$", r"^prechorus$",
-                    r"build[-\s_]?up", r"^build$", r"riser",
-                    r"pre[-\s_]?drop", r"^predrop$")),
-    ("interlude", (r"interlude", r"interl[uú]dio", r"^hold$",
+    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre\b", r"^prechorus\b",
+                    r"build[-\s_]?up", r"^build\b", r"riser",
+                    r"pre[-\s_]?drop", r"^predrop\b")),
+    ("interlude", (r"interlude", r"interl[uú]dio", r"^hold\b",
                     r"transi[cç][aã]o", r"transition", r"turnaround", r"vamp")),
     ("breakdown", (r"breakdown", r"break", r"quebra", r"drop")),
-    ("bridge",    (r"bridge", r"ponte", r"^solo$")),
-    ("chorus",    (r"chorus", r"refr[aã]o", r"^hook$", r"^gancho$", r"refrain")),
+    ("bridge",    (r"bridge", r"ponte", r"^solo\b")),
+    ("chorus",    (r"chorus", r"refr[aã]o", r"^hook\b", r"^gancho\b", r"refrain")),
     ("verse",     (r"verse", r"verso", r"estrofe")),
     ("intro",     (r"intro", r"introdu[cç][aã]o")),
-    ("outro",     (r"outro", r"ending", r"final", r"^coda$", r"^tag$")),
+    ("outro",     (r"outro", r"ending", r"final", r"^coda\b", r"^tag\b")),
 )
 
 
