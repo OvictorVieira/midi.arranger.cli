@@ -26,7 +26,6 @@ from tools.plan import (
 )
 from tools.render import render
 from tools.techniques.engine import apply_technique
-from tools.techniques.errors import TechniqueRecipeError
 
 
 def _bass_track(events) -> mido.MidiFile:
@@ -85,14 +84,19 @@ def test_hammer_pull_continua_idempotente_apos_reconhecer_ligado_natural():
     assert snapshot(once) == snapshot(twice)
 
 
-def test_palm_mute_modo_bass_falha_sem_fallback_generico():
-    """MODO nao pode receber gate/velocity como se fosse o CC de mute."""
+def test_palm_mute_modo_bass_emite_cc9_sem_fallback_generico():
+    """MODO recebe a automacao real de muting, nao gate/velocity generico."""
     events = [(0, 480, 40, 100)]
-    with pytest.raises(TechniqueRecipeError, match="MUTING Off"):
-        apply_technique(
-            "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-            parameters={"density": 1.0},
-        )
+    out = apply_technique(
+        "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
+        parameters={"density": 1.0, "amount": [28, 28]},
+    )
+    cc9 = [
+        msg.value
+        for track in out.tracks for msg in track
+        if msg.type == "control_change" and msg.control == 9
+    ]
+    assert cc9 == [28, 0]
 
 
 def test_palm_mute_density_zero_e_noop_antes_da_guarda_modo_bass():

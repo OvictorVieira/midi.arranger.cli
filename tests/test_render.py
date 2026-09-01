@@ -2228,8 +2228,8 @@ def test_bass_string_selection_noop_without_modo_tool_omitted_from_stamp(tmp_pat
     assert "bass.string_selection" not in stamp
 
 
-def test_edit_tool_modo_bass_palm_mute_fails_without_mapping(tmp_path):
-    """Render nao usa fallback para um alvo MODO sem evento de mute."""
+def test_edit_tool_modo_bass_palm_mute_emits_cc9(tmp_path):
+    """MODO Bass recebe a automacao real de muting, nunca fallback."""
     src = _build_synthetic_source(tmp_path)
     plan = _build_plan(src)
     plan.elements = []
@@ -2251,8 +2251,12 @@ def test_edit_tool_modo_bass_palm_mute_fails_without_mapping(tmp_path):
     _attach_brief_authorizing_techniques(plan, tmp_path)
     out = tmp_path / "out.mid"
 
-    with pytest.raises(RenderError, match="MUTING Off"):
-        render(plan, out)
+    render(plan, out)
+    rendered = mido.MidiFile(str(out))
+    assert any(
+        msg.type == "control_change" and msg.control == 9 and msg.value > 0
+        for track in rendered.tracks for msg in track
+    )
 
 
 def _stamp_text(path: Path, track_name_value: str) -> str:
