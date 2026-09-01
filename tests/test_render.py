@@ -2090,6 +2090,108 @@ def test_edit_without_tool_falls_back_to_generic_without_keyswitch(tmp_path):
     assert not _has_note_on(out, 13)
 
 
+def _build_bass_string_switch_source(tmp_path: Path) -> Path:
+    """Baixo com riff em duas cordas: metade em pitch alcancavel so pela
+    corda E (padrao 4 cordas), metade so pela corda D — pra exercitar
+    bass.string_selection de ponta a ponta pelo pipeline de render real."""
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    piano = pretty_midi.Instrument(program=0, name="Piano")
+    bass = pretty_midi.Instrument(program=32, name="Bass")
+    bar_len = 2.0
+    beat_len = bar_len / 4
+    for bar in range(8):
+        start = bar * bar_len
+        for pc in (60, 64, 67):
+            piano.notes.append(pretty_midi.Note(
+                velocity=80, pitch=pc, start=start, end=start + bar_len,
+            ))
+        # 4 primeiros compassos: pitch 30, so alcancavel pela corda E
+        # (28..52 com max_fret=24). Ultimos 4: pitch 60, so alcancavel pela
+        # corda D (38..62; a corda E para em 52, nao alcanca).
+        pitch = 30 if bar < 4 else 60
+        for beat in range(4):
+            bass.notes.append(pretty_midi.Note(
+                velocity=90, pitch=pitch, start=start + beat * beat_len,
+                end=start + (beat + 1) * beat_len,
+            ))
+    pm.instruments.append(piano)
+    pm.instruments.append(bass)
+    dest = tmp_path / "bass_string_switch.mid"
+    pm.write(str(dest))
+    return dest
+
+
+def _bass_string_selection_brief_ref(tmp_path: Path) -> BriefRef:
+    """Brief autorizando bass.string_selection e declarando a afinacao
+    padrao de 4 cordas (E-A-D-G) via instruments.bass.tuning — mesmo
+    caminho (`tools.plan.load_brief_instrument_tuning`) que ja alimenta
+    `TechniqueContext.parameters["tuning"]` pra elemento gerado e edit."""
+    payload = {
+        "style": {
+            fam: {
+                "authorized_techniques": (
+                    ["bass.string_selection"] if fam == "bass" else []
+                ),
+            }
+            for fam in ("bass", "drums", "guitar", "keys")
+        },
+        "instruments": {
+            "bass": {
+                "known": True,
+                "strings": 4,
+                "tuning": {"name": "Standard", "notes": [28, 33, 38, 43]},
+                "playing_style": "finger",
+                "notation": "sounding",
+            },
+        },
+    }
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps(payload), encoding="utf-8")
+    return BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+
+
+def test_bass_string_selection_reachable_end_to_end_via_real_render(tmp_path):
+    """Teste de integracao pedido em revisao humana na PR: exercita o
+    caminho REAL de render (nao `apply_technique` direto) com
+    `instruments.bass.tuning` declarado no brief, `bass.string_selection`
+    autorizada e aplicada via `plan.edits[].tool="MODO Bass"`, confirmando
+    que a saida carrega os keyswitches de corda esperados pelo manual
+    (tecnicas_baixo_midi.md, secao 5.9) para cada trecho do riff."""
+    src = _build_bass_string_switch_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.0, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo em drop, riff trocando de corda",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="bass.string_selection")],
+            parameters={},
+        ),
+    }
+    plan.brief_ref = _bass_string_selection_brief_ref(tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    # keyswitch_corda_E = 16, keyswitch_corda_D = 14 no manual
+    # (tecnicas_baixo_midi.md, secao 5.9, tools.modo_bass) — os dois
+    # precisam aparecer, um pra cada metade do riff que trocou de corda.
+    assert _has_note_on(out, 16), (
+        "riff nos primeiros 4 compassos (pitch 30) so alcanca a corda E "
+        "com a afinacao declarada — keyswitch_corda_E (16) precisa sair"
+    )
+    assert _has_note_on(out, 14), (
+        "riff nos ultimos 4 compassos (pitch 60) so alcanca a corda D "
+        "com a afinacao declarada — keyswitch_corda_D (14) precisa sair"
+    )
+
+
 def test_edit_tool_modo_bass_palm_mute_reports_generic_fallback(tmp_path):
     """Render nao promete a curva CC que o MODO BASS nao documenta."""
     src = _build_synthetic_source(tmp_path)
