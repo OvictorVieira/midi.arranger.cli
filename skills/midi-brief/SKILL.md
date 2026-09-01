@@ -287,9 +287,11 @@ vai virar brief antes de o brief virar arquivo.**
 `style.<familia>.techniques[].name` **so vale se existir no manual local**
 em `knowledge/tecnicas/`. Use duas tools:
 
-- `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
-  techniques.list --input -` para ver o vocabulario disponivel para a
-  familia.
+- `echo '{"family": "<familia>", "implemented_only": true}' | python3 -m
+  tools.cli tool techniques.list --input -` para ver o vocabulario que o
+  motor consegue executar hoje — a lista que voce pode oferecer ao usuario
+  para autorizar. Tecnica com `implemented=false` e capacidade futura e
+  `brief.validate` recusa em `authorized_techniques`.
 - `echo '{"name": "<tecnica>"}' | python3 -m tools.cli tool
   techniques.describe --input -` para ler a receita completa da tecnica — o que e
   musicalmente, como se traduz em parametro MIDI (nota, keyswitch, CC,
