@@ -73,8 +73,8 @@ CANONICAL_KINDS = (
 # 'VOCAL HOOK') — sem casar prefixo de palavra composta ('Hooked' continua
 # fora, porque 'hook' + 'ed' nao tem fronteira de palavra entre 'k' e 'e').
 _CANONICAL_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"\bpre\b", r"\bprechorus\b",
-                    r"pre[-\s_]?drop", r"\bpredrop\b")),
+    ("pre",       (r"pr[eé][-\s_]?chorus", r"pr[eé][-\s_]?refr[aã]o", r"\bpr[eé]\b",
+                    r"\bpr[eé]chorus\b", r"pr[eé][-\s_]?drop", r"\bpr[eé]drop\b")),
     ("interlude", (r"interlude", r"interl[uú]dio")),
     ("breakdown", (r"breakdown", r"quebra")),
     ("bridge",    (r"bridge", r"ponte")),
@@ -116,10 +116,11 @@ def normalize_kind(label: str) -> str | None:
     'breakdown', mesmo com o modificador de outra familia tambem presente.
 
     Excecao a essa precedencia: rotulo qualificado por DESTINO ('BUILD TO
-    CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE') descreve o trecho
-    ATUAL (o cue a esquerda de 'to'/'into'), nao o destino nomeado depois —
-    'BUILD TO CHORUS' e o build-up que antecede o refrao, nao o refrao em
-    si. Por isso o rotulo e testado primeiro truncado em 'to'/'into'. Mas
+    CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE', 'BUILD PARA O
+    REFRAO' em portugues) descreve o trecho ATUAL (o cue a esquerda de
+    'to'/'into'/'para'), nao o destino nomeado depois — 'BUILD TO CHORUS'
+    e o build-up que antecede o refrao, nao o refrao em si. Por isso o
+    rotulo e testado primeiro truncado nesses marcadores de destino. Mas
     so USA esse resultado quando o fragmento a esquerda classifica sozinho
     ('BUILD' classifica); se nao classificar ('FADE TO OUTRO', 'COUNT IN TO
     INTRO', 'SWELL INTO CHORUS' — 'fade'/'count in'/'swell' nao sao cue
@@ -143,7 +144,7 @@ def normalize_kind(label: str) -> str | None:
             text, _CANONICAL_KIND_PATTERNS
         ) or _search_kind_patterns(text, _MODIFIER_KIND_PATTERNS)
 
-    leading = re.split(r"\bto\b|\binto\b", s, maxsplit=1)[0].strip()
+    leading = re.split(r"\bto\b|\binto\b|\bpara\b", s, maxsplit=1)[0].strip()
     if leading and leading != s:
         leading_kind = _match(leading)
         if leading_kind is not None:
