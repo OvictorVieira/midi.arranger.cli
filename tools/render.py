@@ -840,9 +840,14 @@ def _stamp_edit_tracks(
         suggested_plugin = suggested.get("plugin") if suggested else None
         suggested_preset = suggested.get("preset") if suggested else None
         suggested_verified = bool(suggested.get("verified", False)) if suggested else False
+        # `edit.tool`, quando declarado, ja determinou qual receita de
+        # tecnica foi de fato aplicada na track (ex.: keyswitch especifico
+        # do MODO BASS gravado nas notas) — o carimbo precisa refletir isso
+        # como `plugin`, nao so como sugestao, senao a track carrega dado
+        # estrutural amarrado a uma ferramenta que o carimbo nao menciona.
         stamp = _format_stamp(
             role=edit.profile,
-            plugin=None,
+            plugin=edit.tool,
             preset=None,
             verified=False,
             techniques=techniques,

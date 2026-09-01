@@ -156,6 +156,37 @@ def test_generated_element_track_carries_both_name_and_stamp(tmp_path):
     assert "verified=true" in stamp
 
 
+def test_edit_track_stamp_reflects_tool_as_plugin(tmp_path):
+    """Achado do Codex na PR: `edit.tool` determinava a receita de tecnica
+    de fato aplicada (ex.: keyswitch do MODO BASS gravado nas notas), mas o
+    carimbo continuava com `plugin=None` — a track carregava dado
+    estrutural amarrado a uma ferramenta que o carimbo nao mencionava."""
+    src = _build_source(tmp_path)
+    plan = _base_plan(src)
+    plan.edits = [PlanEdit(
+        track="Bass", profile="bass", intensity=0.5, tool="MODO Bass",
+    )]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com fingers", researched_at="2026-08-24",
+            sources=["https://example.test/bass"], confidence="high",
+            techniques=[
+                StyleTechnique(name="bass.attack_style", style="dedo"),
+            ],
+            parameters={},
+        ),
+    }
+    _attach_authorized_brief(plan, tmp_path)
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    texts = _iter_text_meta(out, "Bass")
+    assert len(texts) == 1
+    stamp = texts[0]
+    assert "plugin=MODO Bass" in stamp
+    assert "verified=false" in stamp
+
+
 def test_edit_track_stamp_includes_applied_techniques(tmp_path):
     src = _build_source(tmp_path)
     plan = _base_plan(src)
