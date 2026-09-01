@@ -539,7 +539,7 @@ def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_p
     with pytest.raises(RenderError, match="not available"):
         _canonical_style_technique(index, "keys", "bass.ghost_notes")
 
-    tracks, warnings, applied = _apply_style_techniques_to_tracks(
+    tracks, warnings, applied, applied_names = _apply_style_techniques_to_tracks(
         [],
         plan=plan,
         family=None,
@@ -548,7 +548,7 @@ def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_p
         midi_type=1,
         index=index,
     )
-    assert (tracks, warnings, applied) == ([], [], False)
+    assert (tracks, warnings, applied, applied_names) == ([], [], False, ())
 
 
 def test_render_wraps_style_technique_engine_errors(tmp_path, monkeypatch):
@@ -2116,3 +2116,83 @@ def test_edit_tool_modo_bass_palm_mute_reports_generic_fallback(tmp_path):
     report = render(plan, out)
 
     assert any("W_NO_TOOL_RECIPE" in warning for warning in report.warnings)
+
+
+def _stamp_text(path: Path, track_name_value: str) -> str:
+    mid = mido.MidiFile(str(path))
+    for tr in mid.tracks:
+        names = [m.name for m in tr if m.is_meta and m.type == "track_name"]
+        if track_name_value not in names:
+            continue
+        for msg in tr:
+            if msg.is_meta and msg.type == "text":
+                return msg.text
+    raise AssertionError(f"no stamp found on track {track_name_value!r}")
+
+
+def test_edit_technique_with_density_zero_skips_recipe_and_warning(tmp_path):
+    """AGENTS.md: density=0.0 desliga a tecnica — nao deve nem resolver
+    receita nem emitir `W_NO_TOOL_RECIPE` para algo que nao vai fazer nada."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com palm mute desligado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.palm_mute", density=0.0, rationale="mute desligado",
+            )],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out)
+
+    assert not any("W_NO_TOOL_RECIPE" in warning for warning in report.warnings), (
+        "density=0.0 e 'desligado', nao 'sem receita' — nao deve avisar nada"
+    )
+
+
+def test_edit_technique_with_density_zero_omitted_from_stamp(tmp_path):
+    """A tecnica desligada por density=0.0 nao pode aparecer em
+    `techniques=[...]` no carimbo — a track nao recebeu nada dela de fato."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com dois techniques, um desligado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[
+                StyleTechnique(
+                    name="bass.attack_style", density=1.0,
+                    rationale="fingers", style="dedo",
+                ),
+                StyleTechnique(
+                    name="bass.palm_mute", density=0.0, rationale="mute desligado",
+                ),
+            ],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    stamp = _stamp_text(out, "Bass")
+    assert "bass.attack_style" in stamp
+    assert "bass.palm_mute" not in stamp
