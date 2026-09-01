@@ -1551,6 +1551,33 @@ def test_validate_rejects_empty_track_name():
     assert exc.value.path == "edits[0].track"
 
 
+def test_validate_rejects_blank_edit_tool():
+    plan = _valid_plan()
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="   ")]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "edits[0].tool"
+
+
+def test_validate_rejects_edit_tool_that_normalizes_to_nothing():
+    """Achado do Codex: 'tool' so com separador/pontuacao normaliza para
+    string vazia em `render._normalize_tool_name`, virando `None` e caindo
+    no fallback `generic` silencioso — exatamente o no-op que `edit.tool`
+    foi criado para evitar. Precisa ser rejeitado antes do render, nao
+    convertido em silencio."""
+    plan = _valid_plan()
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="!!!")]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "edits[0].tool"
+
+
+def test_validate_accepts_valid_edit_tool():
+    plan = _valid_plan()
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass")]
+    validate(plan)  # nao levanta
+
+
 def test_validate_rejects_duplicate_edit_for_same_track():
     plan = _valid_plan()
     plan.edits = [

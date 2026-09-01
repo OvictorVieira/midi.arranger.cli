@@ -213,7 +213,12 @@ class PlanEdit:
       de exibicao, este muda qual receita a tecnica le (ex.: sem declarar
       `tool="modo_bass"`, `bass.attack_style` nao acha `keyswitch_dedo` na
       receita `generic` e vira no-op — a track nunca ganha o keyswitch que
-      diz ao MODO BASS pra tocar com dedo).
+      diz ao MODO BASS pra tocar com dedo). Quando declarado, `validate()`
+      exige string nao vazia apos strip com pelo menos um caractere
+      alfanumerico — valor so com separador/pontuacao (ex.: `"!!!"`)
+      normalizaria para vazio em `_normalize_tool_name` e cairia em
+      `generic` em silencio, recriando o mesmo no-op que este campo existe
+      para evitar.
     """
     track: str
     profile: str
@@ -1071,6 +1076,15 @@ def validate(
             _validate_suggested_instrument(
                 ed.suggested_instrument, ed.profile, f"{base}.suggested_instrument",
             )
+        if ed.tool is not None:
+            _require_nonblank_str(ed.tool, f"{base}.tool")
+            if not any(ch.isalnum() for ch in ed.tool):
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    f"must contain at least one alphanumeric character, "
+                    f"got {ed.tool!r} (normalizes to no tool, which would "
+                    "silently fall back to the generic recipe)",
+                )
 
     # AVISO: todos os 5 eixos sobem simultaneamente entre secoes consecutivas.
     for i in range(len(plan.sections) - 1):
