@@ -39,11 +39,14 @@ CANONICAL_KINDS = (
 #
 # - CANONICAL: o proprio nome da secao ou tradução/sinonimo direto e
 #   inequivoco dela ('verse'/'verso'/'estrofe', 'chorus'/'refrão'/'refrain',
-#   'bridge'/'ponte', 'breakdown'/'quebra', compostos documentados como
-#   'pre-chorus'/'pre-drop'). Sempre vence quando presente no rotulo, mesmo
-#   se um modificador de outra familia tambem casar ali (achado do Codex na
-#   PR: 'CHORUS DROP' precisa continuar 'chorus', nao virar 'breakdown' so
-#   porque 'drop' tambem esta na string).
+#   'bridge'/'ponte', 'breakdown'/'quebra', 'outro'/'ending'/'final'/'coda'/
+#   'tag', compostos documentados como 'pre-chorus'/'pre-drop'). Sempre
+#   vence quando presente no rotulo, mesmo se um modificador de outra
+#   familia tambem casar ali (achados do Codex na PR: 'CHORUS DROP' precisa
+#   continuar 'chorus', nao virar 'breakdown' so porque 'drop' tambem esta
+#   na string; 'CODA SOLO'/'TAG HOLD'/'ENDING BUILD' precisam continuar
+#   'outro', nao virar 'bridge'/'interlude'/'pre' so porque o modificador de
+#   outra familia veio depois).
 # - MODIFIER: cue de producao secundario que descreve o PAPEL do trecho, nao
 #   o nome dele, e so decide o kind quando nenhum canonical casou em lugar
 #   nenhum do rotulo:
@@ -64,7 +67,6 @@ CANONICAL_KINDS = (
 #   - 'chorus': 'hook'/'gancho' (parte mais cantavel) e o cue mais comum de
 #     producao para o refrao, mesmo quando qualificado por instrumento ou
 #     voz ('VOCAL HOOK').
-#   - 'outro': 'coda' e 'tag' sao sinonimos de encerramento.
 #
 # Os padroes ancorados em `\bpalavra\b` (sem `^`) casam a palavra inteira em
 # qualquer posicao do rotulo — inclusive apos um qualificador ('GUITAR SOLO',
@@ -79,7 +81,7 @@ _CANONICAL_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("chorus",    (r"chorus", r"refr[aã]o", r"refrain")),
     ("verse",     (r"verse", r"verso", r"estrofe")),
     ("intro",     (r"intro", r"introdu[cç][aã]o")),
-    ("outro",     (r"outro",)),
+    ("outro",     (r"outro", r"\bending\b", r"\bfinal\b", r"\bcoda\b", r"\btag\b")),
 )
 
 _MODIFIER_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -90,7 +92,7 @@ _MODIFIER_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("chorus",    (r"\bhook\b", r"\bgancho\b")),
     ("verse",     ()),
     ("intro",     ()),
-    ("outro",     (r"ending", r"final", r"\bcoda\b", r"\btag\b")),
+    ("outro",     ()),
 )
 
 
