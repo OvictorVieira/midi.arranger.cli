@@ -119,6 +119,13 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   aplicadas e, quando declarada, `suggested_plugin`/`suggested_preset`/`suggested_verified`. O
   formato é `midi-arranger v1|chave=valor|...`, ASCII puro, com `|` proibido nos valores. Track de
   origem não declarada em `plan.edits` NÃO recebe carimbo — sai byte-idêntica.
+- `instrument.preset`/`suggested_instrument.preset` nunca é nome de preset inventado, mesmo marcado
+  `verified: false` — mesma regra que já rejeitou `_identity_apply` e a atribuição falsa a
+  `cmuse.org`: chute marcado como chute continua sendo chute apresentado como fato. `presets.scan`
+  (`tools/presets.py`, só roda em sessão local com acesso ao filesystem do usuário) varre em disco os
+  presets reais dos plugins com scanner suportado; preset achado lá é o único que pode virar nome
+  exato com `verified: true`. Sem preset real, a sugestão cai para a categoria do instrumento (ex.:
+  "Synth Piano — escolha o preset na sua biblioteca"), nunca um nome plausível inventado.
 - NUNCA acrescentar exclusão a `tests/test_palette_integration.py::test_all_target_roles_are_covered`
   para o teste passar. A única exclusão permitida é `choir` (compartilha gerador com strings). Role
   que não gera de verdade sai de `_ROLE_RENDERERS`, não vira exceção do teste.

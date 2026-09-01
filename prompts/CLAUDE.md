@@ -109,6 +109,7 @@ Tools disponiveis:
   a decisao musical e sua.
 - `plan.validate`: use sempre antes de `render`. Nao pule validacao para economizar iteracao.
 - `plugins.scan`: use antes de sugerir plugin ou preset. Nao use para justificar decisao musical.
+- `presets.scan`: use JUNTO com `plugins.scan` antes de sugerir preset. Preset achado no disco e o unico que pode virar nome exato (`verified: true`); sem preset real, sugira so a categoria do instrumento, nunca um nome inventado.
 - `render`: use depois de plano valido para gerar o MIDI e obter o relatorio dos validadores. Nao
   use se o `output_path` apontar para o MIDI de origem.
 - `techniques.describe`: use antes de escrever a receita de execucao de uma tecnica no plano. Nao

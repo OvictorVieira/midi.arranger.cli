@@ -69,7 +69,7 @@ def _sha256(path: str) -> str:
 
 # --- descricoes -----------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["render", "validate", "plugins.scan"])
+@pytest.mark.parametrize("name", ["render", "validate", "plugins.scan", "presets.scan"])
 def test_render_family_has_prompt_description(name: str):
     tool = get(name)
     assert tool is not None
@@ -281,3 +281,37 @@ def test_plugins_scan_no_args_is_valid():
     assert env["ok"] is True
     assert env["data"]["from_cache"] is False
     assert isinstance(env["data"]["plugins"], list)
+
+
+# --- presets.scan ----------------------------------------------------------
+
+def test_presets_scan_no_args_is_valid():
+    env = call("presets.scan", {})
+    assert env["ok"] is True
+    assert isinstance(env["data"]["presets"], list)
+    assert "Nexus" in env["data"]["supported_plugins"]
+
+
+def test_presets_scan_finds_real_files_on_disk_as_verified(tmp_path: Path):
+    omni = tmp_path / "omnisphere"
+    (omni / "Pads").mkdir(parents=True)
+    (omni / "Pads" / "Desert Wind.prt_a").write_text("binary", encoding="utf-8")
+    serum = tmp_path / "serum"
+    serum.mkdir()
+
+    env = call("presets.scan", {
+        "omnisphere": str(omni), "serum": str(serum),
+    })
+    assert env["ok"] is True
+    presets_by_name = {p["name"]: p for p in env["data"]["presets"]}
+    assert presets_by_name["Desert Wind"]["plugin"] == "Omnisphere"
+    assert presets_by_name["Desert Wind"]["verified"] is True
+
+
+def test_presets_scan_missing_dirs_return_no_presets_without_error(tmp_path: Path):
+    env = call("presets.scan", {
+        "omnisphere": str(tmp_path / "ghost"),
+        "kontakt": str(tmp_path / "ghost2"),
+    })
+    assert env["ok"] is True
+    assert env["data"]["presets"] == []

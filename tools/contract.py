@@ -25,6 +25,7 @@ import pretty_midi
 from . import analyze as analyze_mod
 from . import plan as plan_mod
 from . import plugins as plugins_mod
+from . import presets as presets_mod
 from . import render as render_mod
 from . import sections as sections_mod
 from . import techniques as techniques_mod
@@ -1886,6 +1887,112 @@ PLUGINS_SCAN_TOOL = Tool(
 )
 
 
+# --- presets.scan -----------------------------------------------------------
+
+PRESETS_SCAN_DESCRIPTION = (
+    "Inventaria os presets/patches instalados na maquina para os plugins com "
+    "scanner suportado (Omnisphere, Alchemy, ES2, Sampler e Retro Synth do "
+    "Logic, Kontakt, Serum, Vital, Addictive Drums 2). Use JUNTO com "
+    "`plugins.scan` antes de sugerir plugin/preset: preset achado no disco "
+    "sai com verified=true e e o UNICO tipo de sugestao que pode ir para "
+    "`instrument.preset` como nome exato. Ausencia de preset real para o "
+    "plugin desejado NUNCA autoriza inventar um nome plausivel — sugira so a "
+    "categoria do instrumento (ex.: \"Synth Piano — escolha o preset na sua "
+    "biblioteca\") com verified=false. `Nexus` sempre aparece em "
+    "`supported_plugins` sem nenhum preset: a base binaria fechada do plugin "
+    "nao pode ser escaneada, entao qualquer sugestao para ele e sempre "
+    "generica. Plugin fora de `supported_plugins` tambem so aceita sugestao "
+    "generica. Nao modifica o sistema; nao acessa rede; so roda em sessao "
+    "local com acesso ao disco do usuario."
+)
+
+
+def _presets_scan_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _root(key: str) -> Path | None:
+        value = payload.get(key)
+        return Path(value).expanduser() if value else None
+
+    addictive_input = payload.get("addictive")
+    addictive = (
+        tuple(Path(p).expanduser() for p in addictive_input)
+        if addictive_input
+        else None
+    )
+
+    roots = presets_mod.PresetRoots(
+        omnisphere=_root("omnisphere"),
+        logic=_root("logic"),
+        kontakt=_root("kontakt"),
+        serum=_root("serum"),
+        vital=_root("vital"),
+        addictive=addictive,
+    )
+    grouped = presets_mod.scan_all(roots)
+
+    data = {
+        "supported_plugins": list(grouped.keys()),
+        "presets": [
+            {
+                "name": p.name,
+                "plugin": p.plugin,
+                "format": p.format,
+                "path": p.path,
+                "verified": p.verified,
+            }
+            for plugin_presets in grouped.values()
+            for p in plugin_presets
+        ],
+    }
+    return data, []
+
+
+PRESETS_SCAN_TOOL = Tool(
+    name="presets.scan",
+    description=PRESETS_SCAN_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "omnisphere": {"type": ["string", "null"]},
+            "logic": {"type": ["string", "null"]},
+            "kontakt": {"type": ["string", "null"]},
+            "serum": {"type": ["string", "null"]},
+            "vital": {"type": ["string", "null"]},
+            "addictive": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+        },
+        "required": [],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "supported_plugins": {"type": "array", "items": {"type": "string"}},
+            "presets": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "plugin": {"type": "string"},
+                        "format": {"type": "string"},
+                        "path": {"type": ["string", "null"]},
+                        "verified": {"type": "boolean"},
+                    },
+                    "required": ["name", "plugin", "format", "path", "verified"],
+                },
+            },
+        },
+        "required": ["supported_plugins", "presets"],
+    },
+    func=_presets_scan_impl,
+)
+
+
 # --- techniques.list / techniques.describe -------------------------------
 
 TECHNIQUES_LIST_DESCRIPTION = (
@@ -2162,7 +2269,7 @@ def bootstrap() -> None:
     from .registry import get as _get
     for tool in (
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
-        RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL,
+        RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL, PRESETS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
         BRIEF_VALIDATE_TOOL,
     ):
