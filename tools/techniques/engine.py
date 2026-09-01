@@ -2597,32 +2597,21 @@ def _apply_bass_palm_mute(
 
     from ._param_range import load_range_resolver
 
+    # Tecnica DESLIGADA (density ausente ou <= 0) e no-op antes de consultar
+    # os ranges do manual.
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
     technique, _range = load_range_resolver(context)
 
-    # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
-    # uma quantidade continua aplicada por cima do estilo ativo... NAO
-    # EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario
-    # atribuiu, ou a tecnica nao sai." A receita `modo_bass` carrega
-    # `cc: null` de proposito.
-    #
-    # Sem esta guarda, pedir `tool=modo_bass` sem declarar o CC caia no
-    # comportamento generic (so encurta duracao e ajusta velocity) SEM
-    # avisar — o usuario acharia que ganhou o palm mute continuo do plugin
-    # e recebeu outra coisa. FALHA ALTA em vez de fallback silencioso.
-    #
-    # A emissao real da curva de CC continua fora do escopo desta correcao:
-    # o manual pede "desenhe uma curva", nao um valor unico, e a FORMA dessa
-    # curva nao tem fonte — inventa-la aqui repetiria o erro que motivou a
-    # issue #53. Rastreado separadamente.
-    if context.tool == "modo_bass" and context.recipe.get("cc") is None:
-        cc_param = context.parameters.get("cc")
-        if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
-            raise ValueError(
-                f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
-                "de style.bass.parameters.cc (0-127) declarado no plano — o "
-                "MODO BASS nao tem CC de fabrica para palm mute"
-            )
-
+    # MODO BASS nao oferece CC de mute de fabrica nem documenta uma curva.
+    # Por isso o manual nao anuncia uma receita `modo_bass`: a resolucao
+    # central cai no aplicador generico e devolve W_NO_TOOL_RECIPE, em vez de
+    # aceitar um CC que este aplicador nao teria como emitir corretamente.
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
     velocity_hi = max(velocity_lo, int(velocity_range[1]))
@@ -2630,13 +2619,6 @@ def _apply_bass_palm_mute(
     gate_range = _range("gate_pct") or (25.0, 50.0)
     gate_lo = max(1.0, float(gate_range[0]))
     gate_hi = max(gate_lo, float(gate_range[1]))
-
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
-        return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
 
     if mid.ticks_per_beat <= 0:
         return mid
@@ -2744,6 +2726,12 @@ def _apply_bass_attack_style(
         estrutural via `_keyswitch_pitches_from_recipe`.
       - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
         dedup do dispatch descarta a duplicata.
+      - `density` explicita <= 0 DESLIGA a tecnica inteira (achado do Codex
+        na PR #93): sem essa checagem, `tool="modo_bass"` inseria o
+        keyswitch mesmo com `density=0.0` declarado no plano, porque nada
+        aqui olhava `density`. Ausencia de `density` continua aplicando
+        normalmente quando `style` esta declarado — comportamento anterior
+        preservado, so o "0.0 explicito" ganhou sentido de desligar.
     """
 
     import mido as _mido
@@ -2755,6 +2743,14 @@ def _apply_bass_attack_style(
     from ._track_rebuild import (
         sort_and_flush as _sort_and_flush,
     )
+
+    density_raw = context.parameters.get("density")
+    if (
+        isinstance(density_raw, (int, float))
+        and not isinstance(density_raw, bool)
+        and density_raw <= 0.0
+    ):
+        return mid
 
     technique, _range = load_range_resolver(context)
     recipe = context.recipe

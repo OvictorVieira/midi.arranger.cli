@@ -54,6 +54,208 @@ def test_normalize_kind_other_families():
     assert sections.normalize_kind("OUTRO") == "outro"
 
 
+def test_normalize_kind_build_and_hold_conventions():
+    # 'build'/'build-up' e 'hold' sao cues de producao comuns (nao
+    # especificos de uma musica) — build tem a mesma funcao formal de um
+    # pre-chorus (tensao crescente); hold e pausa/fermata, mapeada como
+    # interlude (transicao/textura, nao conteudo principal).
+    assert sections.normalize_kind("BUILD") == "pre"
+    assert sections.normalize_kind("Build-Up") == "pre"
+    assert sections.normalize_kind("build up") == "pre"
+    assert sections.normalize_kind("HOLD") == "interlude"
+    assert sections.normalize_kind("Hold") == "interlude"
+
+
+def test_normalize_kind_wider_production_cue_vocabulary():
+    # Vocabulario adicional de cue comum (EN/PT), mesma funcao formal dos
+    # oito kinds canonicos — nenhum e especifico de uma musica.
+    assert sections.normalize_kind("Riser") == "pre"
+    assert sections.normalize_kind("Pre-Drop") == "pre"
+    assert sections.normalize_kind("predrop") == "pre"
+    assert sections.normalize_kind("Transition") == "interlude"
+    assert sections.normalize_kind("Transição") == "interlude"
+    assert sections.normalize_kind("Turnaround") == "interlude"
+    assert sections.normalize_kind("Vamp") == "interlude"
+    assert sections.normalize_kind("Quebra") == "breakdown"
+    assert sections.normalize_kind("Drop") == "breakdown"
+    assert sections.normalize_kind("Solo") == "bridge"
+    assert sections.normalize_kind("Hook") == "chorus"
+    assert sections.normalize_kind("Gancho") == "chorus"
+    assert sections.normalize_kind("Refrain") == "chorus"
+    assert sections.normalize_kind("Estrofe") == "verse"
+    assert sections.normalize_kind("Introdução") == "intro"
+    assert sections.normalize_kind("Coda") == "outro"
+    assert sections.normalize_kind("Tag") == "outro"
+
+
+def test_normalize_kind_numbered_variants_of_new_cue_vocabulary():
+    # Achado do Codex na PR: os padroes ancorados em string inteira
+    # ("^hook$") nao reconheciam variante numerada/com letra, ao contrario
+    # do resto do arquivo ("CHORUS 2" ja casava com "chorus" por substring).
+    assert sections.normalize_kind("HOOK 1") == "chorus"
+    assert sections.normalize_kind("GANCHO A") == "chorus"
+    assert sections.normalize_kind("SOLO 2") == "bridge"
+    assert sections.normalize_kind("CODA FINAL") == "outro"
+    assert sections.normalize_kind("TAG 1") == "outro"
+    assert sections.normalize_kind("BUILD 1") == "pre"
+    assert sections.normalize_kind("HOLD 2") == "interlude"
+    assert sections.normalize_kind("PRE-DROP 2") == "pre"
+    # Palavra composta que so acidentalmente comeca com o mesmo prefixo nao
+    # deve casar — a fronteira de palavra (\b) protege isso.
+    assert sections.normalize_kind("Hooked") is None
+
+
+def test_normalize_kind_explicit_section_beats_coexisting_modifier():
+    # Achados do Codex na PR: quando um marcador combina o nome explicito da
+    # secao com um cue de producao secundario de OUTRA familia, o explicito
+    # tem que vencer — a ordem de primeiro-match da tupla nao pode deixar o
+    # modificador generico sobrepor o nome literal da secao.
+    assert sections.normalize_kind("CHORUS DROP") == "chorus"
+    assert sections.normalize_kind("INTRO RISER") == "intro"
+    assert sections.normalize_kind("BRIDGE VAMP") == "bridge"
+
+
+def test_normalize_kind_cue_alias_accepts_qualifier_prefix():
+    # Achado do Codex na PR: "^solo$"/"^hook$"/"^gancho$" (virados "\bsolo\b"
+    # etc.) precisam casar em qualquer posicao do rotulo, nao so no inicio —
+    # marcador comum qualifica o cue por instrumento/voz.
+    assert sections.normalize_kind("GUITAR SOLO") == "bridge"
+    assert sections.normalize_kind("VOCAL HOOK") == "chorus"
+
+
+def test_normalize_kind_new_modifiers_do_not_match_as_substring():
+    # Achado do Codex na PR: "vamp" e "drop" sem fronteira de palavra casavam
+    # como substring de qualquer palavra ("Revamped" contem "vamp", "Backdrop"
+    # contem "drop"), classificando errado rotulo sem nenhuma intencao de cue.
+    # "Revamped Chorus" ja e protegido pela precedencia canonical (chorus
+    # explicito vence antes do modificador ser sequer checado); "Backdrop"
+    # nao tem canonical nenhum, entao so a fronteira de palavra em "drop"
+    # evita o falso positivo.
+    assert sections.normalize_kind("Revamped Chorus") == "chorus"
+    assert sections.normalize_kind("Backdrop") is None
+    assert sections.normalize_kind("REVAMP") is None
+    assert sections.normalize_kind("BACKDROP") is None
+    assert sections.normalize_kind("DROPOUT") is None
+    # Sufixo numerado continua casando normalmente.
+    assert sections.normalize_kind("DROP 1") == "breakdown"
+    assert sections.normalize_kind("VAMP 2") == "interlude"
+
+
+def test_normalize_kind_treats_underscore_as_cue_separator():
+    # Achado do Codex na PR: "_" e caractere de palavra pra "\b" (diferente
+    # de espaco/hifen), entao marcador de DAW com underscore como separador
+    # ("GUITAR_SOLO", "VOCAL_HOOK", "DROP_1") nao tinha fronteira nenhuma
+    # antes do cue e caia em None -> "verse" no skeleton.
+    assert sections.normalize_kind("GUITAR_SOLO") == "bridge"
+    assert sections.normalize_kind("VOCAL_HOOK") == "chorus"
+    assert sections.normalize_kind("DROP_1") == "breakdown"
+    assert sections.normalize_kind("PRE_CHORUS") == "pre"
+    assert sections.normalize_kind("PRE_DROP") == "pre"
+    assert sections.normalize_kind("BUILD_UP") == "pre"
+
+
+def test_normalize_kind_leading_cue_beats_named_destination():
+    # Achado do Codex na PR: rotulo qualificado por destino ('BUILD TO
+    # CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE') descreve o trecho
+    # ATUAL (o cue a esquerda), nao o destino nomeado depois de 'to'/'into'
+    # — a precedencia canonical nao pode deixar o nome do destino vencer.
+    assert sections.normalize_kind("BUILD TO CHORUS") == "pre"
+    assert sections.normalize_kind("TRANSITION TO VERSE") == "interlude"
+    assert sections.normalize_kind("RISER INTO CHORUS") == "pre"
+    assert sections.normalize_kind("BUILD_TO_CHORUS") == "pre"
+    # Sem 'to'/'into', a precedencia canonical normal continua valendo.
+    assert sections.normalize_kind("CHORUS DROP") == "chorus"
+
+
+def test_normalize_kind_leading_cue_beats_named_destination_in_portuguese():
+    # Achado do Codex na PR: marcador bilingue com destino em portugues
+    # ('BUILD PARA O REFRAO', 'TRANSICAO PARA VERSO') nao truncava porque
+    # so 'to'/'into' eram reconhecidos como marcador de destino.
+    assert sections.normalize_kind("BUILD PARA O REFRAO") == "pre"
+    assert sections.normalize_kind("TRANSICAO PARA VERSO") == "interlude"
+
+
+def test_normalize_kind_leading_cue_beats_named_source_section():
+    # Achado do Codex na PR: rotulo que nomeia ORIGEM e DESTINO
+    # ('TRANSITION FROM VERSE TO CHORUS') classificava pelo nome da secao
+    # de origem ('verse'), porque o fragmento a esquerda do destino
+    # ('TRANSITION FROM VERSE') ainda continha 'VERSE', canonico, e vencia
+    # 'transition' por precedencia canonical-primeiro. A clausula de
+    # origem ('FROM X'/'DO X' em portugues) tem que ser descartada antes.
+    assert sections.normalize_kind("TRANSITION FROM VERSE TO CHORUS") == "interlude"
+    assert sections.normalize_kind("BUILD FROM VERSE TO CHORUS") == "pre"
+    assert sections.normalize_kind("TRANSICAO DO VERSO PARA O REFRAO") == "interlude"
+
+
+def test_normalize_kind_preserves_finale_as_outro():
+    # Achado do Codex na PR: '\bfinal\b' nao casa 'Finale' (o 'e' final
+    # quebra a fronteira de palavra), regressao do fix anterior que
+    # ancorou 'final' — antes (substring sem fronteira) 'Finale' casava.
+    assert sections.normalize_kind("Finale") == "outro"
+    assert sections.normalize_kind("FINALE") == "outro"
+    assert sections.normalize_kind("Final") == "outro"
+
+
+def test_normalize_kind_recognizes_contracted_portuguese_destination():
+    # Achado do Codex na PR: 'pro'/'pra' sao contracao coloquial comum de
+    # 'para o'/'para a' e nao eram reconhecidos como marcador de destino,
+    # so 'para' era.
+    assert sections.normalize_kind("BUILD PRO REFRAO") == "pre"
+    assert sections.normalize_kind("TRANSICAO PRA VERSO") == "interlude"
+
+
+def test_normalize_kind_strips_all_portuguese_source_contractions():
+    # Achado do Codex na PR: a clausula de origem em portugues tem mais
+    # formas gramaticais que 'do' ('da', 'das', 'dos', 'de') dependendo do
+    # genero/numero da secao de origem — todas precisam ser descartadas
+    # antes de classificar, senao o nome da secao de origem vence.
+    assert sections.normalize_kind("TRANSICAO DA ESTROFE PARA O REFRAO") == "interlude"
+    assert sections.normalize_kind("TRANSICAO DOS VERSOS PARA O REFRAO") == "interlude"
+    assert sections.normalize_kind("TRANSICAO DE VERSO PARA REFRAO") == "interlude"
+
+
+def test_normalize_kind_recognizes_accented_pre_spelling():
+    # Achado do Codex na PR: a grafia acentuada 'PRE'/'PRE-DROP' nao casava
+    # com nenhum padrao de 'pre' (que so tinha 'e' sem acento), entao
+    # 'PRE-DROP' caia no modificador 'drop' (breakdown) em vez de 'pre'.
+    assert sections.normalize_kind("PRÉ-DROP") == "pre"
+    assert sections.normalize_kind("PRÉ DROP") == "pre"
+    assert sections.normalize_kind("PRÉ") == "pre"
+
+
+def test_normalize_kind_falls_back_to_full_label_when_leading_cue_unknown():
+    # Achado do Codex na PR: truncar sempre em 'to'/'into' descartava o
+    # UNICO nome de secao do rotulo quando o cue a esquerda nao era
+    # vocabulario conhecido ('fade'/'count in'/'swell' nao classificam
+    # sozinhos) — 'FADE TO OUTRO' virava None em vez de 'outro'. So usa o
+    # fragmento truncado quando ELE MESMO classifica; senao cai pro rotulo
+    # inteiro.
+    assert sections.normalize_kind("FADE TO OUTRO") == "outro"
+    assert sections.normalize_kind("COUNT IN TO INTRO") == "intro"
+    assert sections.normalize_kind("SWELL INTO CHORUS") == "chorus"
+    # Precedencia do cue a esquerda continua intacta quando ele classifica.
+    assert sections.normalize_kind("BUILD TO CHORUS") == "pre"
+
+
+def test_normalize_kind_outro_synonym_beats_coexisting_modifier():
+    # Achado do Codex na PR: 'ending'/'final'/'coda'/'tag' sao sinonimo
+    # direto de 'outro' (documentado no comentario do modulo), mas estavam
+    # classificados como MODIFIER — deixava um modificador de outra familia
+    # vencer quando coexistia no mesmo rotulo ('CODA SOLO' virava 'bridge',
+    # 'TAG HOLD' virava 'interlude', 'ENDING BUILD' virava 'pre'). Movidos
+    # pra CANONICAL, mesma regra de precedencia de 'CHORUS DROP'.
+    assert sections.normalize_kind("CODA SOLO") == "outro"
+    assert sections.normalize_kind("TAG HOLD") == "outro"
+    assert sections.normalize_kind("ENDING BUILD") == "outro"
+
+
+def test_normalize_kind_pre_drop_beats_breakdown_drop():
+    # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
+    # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
+    assert sections.normalize_kind("PRE-DROP") == "pre"
+    assert sections.normalize_kind("pre drop") == "pre"
+
+
 def test_normalize_kind_unknown_returns_none():
     assert sections.normalize_kind("mystery") is None
     assert sections.normalize_kind("") is None

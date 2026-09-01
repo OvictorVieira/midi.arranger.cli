@@ -25,7 +25,7 @@ from tools.plan import (
     validate,
 )
 from tools.render import render
-from tools.techniques.engine import apply_technique
+from tools.techniques.engine import apply_technique, apply_technique_with_warnings
 
 
 def _bass_track(events) -> mido.MidiFile:
@@ -84,27 +84,37 @@ def test_hammer_pull_continua_idempotente_apos_reconhecer_ligado_natural():
     assert snapshot(once) == snapshot(twice)
 
 
-def test_palm_mute_falha_alto_em_modo_bass_sem_cc_declarado():
-    """Achado 4: MODO BASS nao tem CC de fabrica para palm mute. Pedir
-    tool='modo_bass' sem declarar `parameters.cc` caia no comportamento
-    generic em silencio — o usuario acharia que ganhou o mute continuo do
-    plugin e recebeu outra coisa.
-    """
+def test_palm_mute_modo_bass_usa_fallback_generico_com_warning():
+    """Nunca promete a curva CC que o MODO BASS nao documenta."""
     events = [(0, 480, 40, 100)]
-    with pytest.raises(ValueError, match="cc"):
-        apply_technique(
-            "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-            parameters={"density": 1.0},
-        )
-
-
-def test_palm_mute_aceita_modo_bass_com_cc_declarado():
-    events = [(0, 480, 40, 100)]
-    out = apply_technique(
+    applied = apply_technique_with_warnings(
         "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-        parameters={"density": 1.0, "cc": 11},
+        parameters={"density": 1.0},
     )
-    assert out is not None
+    assert applied.result is not None
+    assert [warning["code"] for warning in applied.warnings] == [
+        "W_NO_TOOL_RECIPE",
+    ]
+    assert not any(
+        msg.type == "control_change"
+        for track in applied.result.tracks for msg in track
+    )
+
+
+def test_palm_mute_density_zero_e_noop_com_fallback_modo_bass():
+    """Tecnica desligada nao altera a linha, mesmo em fallback de tool."""
+    events = [(0, 480, 40, 100)]
+    source = _bass_track(events)
+    out = apply_technique(
+        "bass.palm_mute", source, seed=1, tool="modo_bass",
+        parameters={"density": 0.0},
+    )
+    out_notes = [
+        (msg.note, msg.velocity)
+        for track in out.tracks for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert out_notes == [(40, 100)]
 
 
 def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():
@@ -156,6 +166,25 @@ def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():
     out_path = tmp / "out.mid"
     render(reloaded, out_path)  # nao levanta
     assert out_path.exists()
+
+
+def test_attack_style_density_zero_e_noop():
+    """Achado do Codex na PR: `bass.attack_style` nao olhava `density` em
+    lugar nenhum, entao `density=0.0` (que deveria desligar a tecnica,
+    mesma convencao de `bass.palm_mute`/`bass.ghost_notes`) nao impedia o
+    keyswitch de ser inserido quando `tool='modo_bass'` resolvia a receita
+    especifica."""
+    events = [(0, 480, 40, 100)]
+    out = apply_technique(
+        "bass.attack_style", _bass_track(events), seed=1, tool="modo_bass",
+        parameters={"style": "dedo", "density": 0.0},
+    )
+    out_notes = [
+        (msg.note, msg.velocity)
+        for track in out.tracks for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert out_notes == [(40, 100)]
 
 
 def test_attack_style_recusa_string_fora_do_vocabulario_fechado():

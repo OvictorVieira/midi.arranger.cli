@@ -288,16 +288,15 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
 {
   "name": "palm_mute",
   "family": "bass",
-  "summary": "Abafamento continuo por CC no MODO BASS, nao articulacao discreta.",
+  "summary": "Fallback generico de abafamento; MODO BASS exige uma curva CC que ainda nao esta documentada.",
   "verified": false,
-  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario atribuiu, ou a tecnica nao sai. Desenhe uma curva, nao um valor unico; articulacao por CC e gated por valor e sem o retorno a zero o mute fica preso.",
+  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plugin precisa de um CC atribuido pelo usuario e de uma curva com retorno a zero, mas o manual nao documenta valores ou forma de curva que o motor possa emitir sem inventar. Por isso esta tecnica so oferece a receita generic de gate/velocity e avisa W_NO_TOOL_RECIPE quando o alvo for MODO BASS.",
   "parameters": [
     {"name": "velocity", "range": [60, 100], "source": "CONVENCAO — mute abafa timbre, nao reduz forca de ataque a niveis de ghost note; faixa media escolhida para o motor, sem medicao publicada"},
     {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"}
   ],
   "tools": {
-    "generic": {"note": "gate curto e velocity media; sem CC dedicado"},
-    "modo_bass": {"cc": null, "note": "SEM CC de fabrica (pagina CONTROL, v1.5.2). O plano declara o CC atribuido pelo usuario. Curva desenhada; retorno a 0 obrigatorio"}
+    "generic": {"note": "gate curto e velocity media; sem CC dedicado"}
   }
 }
 ```
