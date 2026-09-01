@@ -9,10 +9,10 @@ import pytest
 
 from tools.techniques.engine import (
     SUPPORTED_TECHNIQUES,
-    TechniqueRecipeError,
     _apply_bass_string_selection,
     apply_technique,
 )
+from tools.techniques.errors import TechniqueRecipeError
 
 # Afinacao padrao de 4 cordas (E-A-D-G), grave para agudo — mesma usada por
 # `tools.techniques.physical._BASS_DEFAULT_TUNING`.
@@ -203,6 +203,36 @@ def test_falls_back_to_physical_default_tuning_when_undeclared():
         parameters={},
     )
     assert _KS_E in _note_on_pitches(result)
+
+
+def test_string_selection_density_zero_is_a_noop_even_called_directly():
+    # Achado do Codex na PR #94: `_run_style_pipeline` ja pula o despacho
+    # inteiro quando `density<=0.0` (fix da PR #93), mas quem chama
+    # `apply_technique` diretamente (sem passar pelo render()) precisa da
+    # MESMA garantia dentro do proprio aplicador — mesmo padrao ja usado em
+    # `bass.attack_style`. Sem o gate, `density=0.0` ainda inseria o
+    # keyswitch normalmente.
+    source = _make_bass_line([(0, 480, 30)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4, "density": 0.0},
+    )
+    assert _note_on_pitches(result) == [30]
+
+
+def test_string_selection_rejects_single_unmappable_note_instead_of_skipping_track():
+    # Achado do Codex na PR #94: uma UNICA nota fora do alcance de todas as
+    # cordas (dentro de max_fret) descartava as atribuicoes ja calculadas
+    # pras OUTRAS notas da mesma track e aplicava NADA na track inteira, em
+    # silencio. Pitch 90 esta muito acima do alcance de qualquer corda
+    # E-A-D-G com max_fret=24 (top = 43+24=67); pitch 30 sozinho seria
+    # perfeitamente alcancavel pela corda E.
+    source = _make_bass_line([(0, 480, 30), (960, 480, 90)])
+    with pytest.raises(TechniqueRecipeError, match="90"):
+        apply_technique(
+            "bass.string_selection", source, seed=1, tool="modo_bass",
+            parameters={"tuning": _STANDARD_4},
+        )
 
 
 def test_unmappable_string_count_is_a_noop():

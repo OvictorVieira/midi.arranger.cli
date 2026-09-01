@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import mido
 
+from . import errors as _errors
 from .index import Technique, TechniqueIndex, build_index
 from .notes import _collect_notes
 from .physical import TechniquePhysicalError, validate_physical_plausibility
@@ -52,8 +53,14 @@ class TechniqueContractError(ValueError):
     """Violacao do contrato runtime de uma tecnica aplicavel."""
 
 
-class TechniqueRecipeError(ValueError):
-    """Falha ao resolver receita MIDI documentada para uma tecnica."""
+# `TechniqueRecipeError` mora em `tools/techniques/errors.py`, nao aqui, e
+# `engine.py` NUNCA importa o nome solto (nem re-exporta) — ver o docstring
+# daquele modulo para o motivo: qualquer aplicador registrado neste modulo
+# que precise da excecao so fica de fato autocontido se "TechniqueRecipeError"
+# nunca virar uma global do proprio `engine.py`. Codigo deste modulo que
+# precisar dela usa `_errors.TechniqueRecipeError` (qualificado); quem
+# importa a excecao de fora usa `tools.techniques.errors` ou
+# `tools.techniques` (re-exportada la, nao aqui).
 
 
 @dataclass(frozen=True)
@@ -312,7 +319,7 @@ def _resolve_recipe(
     idx = index if index is not None else build_index()
     technique = idx.get(canonical)
     if technique is None:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {canonical!r} nao existe no indice dos manuais"
         )
     return _recipe_for_tool(technique, tool_target)
@@ -350,12 +357,12 @@ def _recipe_for_tool(
         )
 
     if tool_target:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {technique.canonical!r} nao tem receita para "
             f"tool={tool_target!r} nem fallback generic; disponiveis: "
             f"{sorted(technique.tools.keys())!r}"
         )
-    raise TechniqueRecipeError(
+    raise _errors.TechniqueRecipeError(
         f"tecnica {technique.canonical!r} nao tem receita generic; declare "
         f"uma ferramenta-alvo com receita disponivel: {sorted(technique.tools.keys())!r}"
     )
@@ -3319,6 +3326,13 @@ def _apply_bass_string_selection(
         descartar a repeticao — nao pula a track inteira so por ja ter
         ALGUM keyswitch (isso deixaria de forcar corda no resto da track se
         so um trecho tivesse keyswitch previo).
+      - `density` explicita <= 0 DESLIGA a tecnica inteira, mesmo padrao de
+        `bass.attack_style` (achado do Codex na PR #94): `_run_style_pipeline`
+        ja pula o despacho nesse caso quando a chamada vem do render, mas
+        quem chama `apply_technique`/`apply_technique_with_warnings`
+        diretamente (testes, uso futuro fora do pipeline) precisa da mesma
+        garantia aqui dentro — density=0.0 nunca pode inserir keyswitch.
+        Ausencia de `density` continua aplicando normalmente.
     """
 
     import mido as _mido
@@ -3331,6 +3345,14 @@ def _apply_bass_string_selection(
     )
     from .physical import _BASS_DEFAULT_TUNING
 
+    density_raw = context.parameters.get("density")
+    if (
+        isinstance(density_raw, (int, float))
+        and not isinstance(density_raw, bool)
+        and density_raw <= 0.0
+    ):
+        return mid
+
     # Ao contrario de `bass.attack_style`, os seis `keyswitch_corda_*` vivem
     # no bloco `parameters` GERAL do manual (numero e o mesmo pitch fisico
     # de teclado do plugin, nao varia por ferramenta) — `tools.modo_bass`
@@ -3342,13 +3364,14 @@ def _apply_bass_string_selection(
 
     from ._helpers import iter_note_dicts, manual_value, technique_from_manual
 
-    # `TechniqueRecipeError` e definida NESTE MESMO modulo — um import
-    # relativo comum (`from .engine import TechniqueRecipeError`) ainda
-    # deixa o nome "TechniqueRecipeError" em `co_names`, que
-    # `inspect.getclosurevars` casa contra `__globals__` do proprio modulo
-    # e reporta como captura global mesmo assim. `globals()[...]` busca
-    # pela STRING (em `co_consts`, nao `co_names`), entao nao aparece.
-    _TechniqueRecipeError = globals()["TechniqueRecipeError"]
+    # `TechniqueRecipeError` mora em `tools/techniques/errors.py`, um modulo
+    # DIFERENTE de `engine.py` (onde este aplicador esta definido) — e
+    # `engine.py` nunca importa o nome solto no proprio escopo de modulo
+    # (ver comentario acima de `TechniqueContractError`). Por isso este
+    # import local e uma dependencia de verdade num modulo externo, mesmo
+    # padrao ja usado para `iter_note_dicts` acima, em vez de uma captura
+    # disfarcada do global do proprio modulo.
+    from .errors import TechniqueRecipeError
 
     technique = technique_from_manual(context)
     tuning_raw = context.parameters.get("tuning")
@@ -3398,7 +3421,7 @@ def _apply_bass_string_selection(
             # invalido): rejeita explicitamente em vez de cair no default
             # 24 em silencio — um limite fisico declarado errado nao pode
             # virar "nao declarado" (achado do Codex na PR).
-            raise _TechniqueRecipeError(
+            raise TechniqueRecipeError(
                 f"tecnica {context.canonical!r}: style.bass.parameters."
                 f"max_fret declarado invalido (precisa ser numero positivo "
                 f"ou par [min, max] positivo), got {max_fret_raw!r}"
@@ -3419,7 +3442,6 @@ def _apply_bass_string_selection(
             continue
 
         assignments: list[tuple[int, int, int, int]] = []
-        assignable = True
         for start, end, channel, pitch in structural:
             string_index = None
             for idx, open_pitch in enumerate(tuning):
@@ -3427,11 +3449,19 @@ def _apply_bass_string_selection(
                     string_index = idx
                     break
             if string_index is None:
-                assignable = False
-                break
+                # Nota estrutural fora do alcance de TODAS as cordas da
+                # afinacao declarada dentro de `max_fret`: falha explicita
+                # em vez de descartar em silencio as atribuicoes ja
+                # calculadas pras OUTRAS notas da track (achado do Codex na
+                # PR #94) — antes disso, uma unica nota impossivel de tocar
+                # apagava a tecnica da track inteira sem aviso nenhum.
+                raise TechniqueRecipeError(
+                    f"tecnica {context.canonical!r}: nota estrutural pitch "
+                    f"{pitch} (canal {channel}, tick {start}) esta fora do "
+                    f"alcance de qualquer corda da afinacao {tuning!r} "
+                    f"dentro de max_fret={max_fret}"
+                )
             assignments.append((start, end, channel, string_index))
-        if not assignable:
-            continue
 
         # Agrupa por canal ANTES de formar run — runs sao independentes por
         # canal (o keyswitch e por canal). Formar run numa lista global
@@ -3458,7 +3488,7 @@ def _apply_bass_string_selection(
                     # mesmo tempo — soltar uma delas cedo corromperia a nota
                     # estrutural que ainda esta soando. Falha explicita em
                     # vez de emitir keyswitch conflitante em silencio.
-                    raise _TechniqueRecipeError(
+                    raise TechniqueRecipeError(
                         f"tecnica {context.canonical!r}: notas sobrepostas no "
                         f"canal {channel} pedem cordas diferentes (corda "
                         f"{run_string} ate tick {run_end}, corda {string_index} "
@@ -4100,7 +4130,6 @@ __all__ = [
     "TechniqueContext",
     "TechniqueLevel",
     "TechniquePhysicalError",
-    "TechniqueRecipeError",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
     "UnknownTechniqueError",
