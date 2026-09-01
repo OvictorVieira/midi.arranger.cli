@@ -3344,13 +3344,7 @@ def _apply_bass_string_selection(
     if context.tool != "modo_bass":
         return mid
 
-    from ._helpers import manual_value, technique_from_manual
-
-    def _iter_structural_pairs(track):
-        # Nested pra manter o aplicador autocontido: uma referencia direta a
-        # `_iter_note_pairs` no corpo da funcao externa apareceria em
-        # `inspect.getclosurevars` como estado global capturado.
-        return list(_iter_note_pairs(track))
+    from ._helpers import iter_note_dicts, manual_value, technique_from_manual
 
     technique = technique_from_manual(context)
     tuning_raw = context.parameters.get("tuning")
@@ -3375,8 +3369,8 @@ def _apply_bass_string_selection(
 
     max_fret_raw = context.parameters.get("max_fret")
     max_fret = (
-        max_fret_raw
-        if isinstance(max_fret_raw, int)
+        int(max_fret_raw)
+        if isinstance(max_fret_raw, (int, float))
         and not isinstance(max_fret_raw, bool)
         and max_fret_raw > 0
         else 24
@@ -3386,10 +3380,9 @@ def _apply_bass_string_selection(
     for track in mid.tracks:
         structural = sorted(
             (
-                (start, end, channel, pitch)
-                for channel, pitch, start, end, _velocity, _on, _off
-                in _iter_structural_pairs(track)
-                if pitch >= floor and pitch not in keyswitch_pitches
+                (note["start"], note["end"], note["channel"], note["pitch"])
+                for note in iter_note_dicts(track)
+                if note["pitch"] >= floor and note["pitch"] not in keyswitch_pitches
             ),
             key=lambda item: item[0],
         )
@@ -3429,8 +3422,17 @@ def _apply_bass_string_selection(
         for i, (r_start, r_end, r_channel, string_index) in enumerate(runs):
             ks_pitch = keyswitch_by_string[string_index]
             on_tick = max(0, r_start - 1)
-            if i + 1 < len(runs):
-                off_tick = max(on_tick + 1, runs[i + 1][0] - 1)
+            # O keyswitch so pode ser liberado quando o PROPRIO canal troca
+            # de corda — usar o proximo run na ordem global (que pode ser de
+            # OUTRO canal, ja que `runs` e ordenado por inicio entre todos
+            # os canais) soltava o keyswitch cedo demais quando runs de
+            # canais diferentes se intercalam no tempo.
+            next_same_channel = next(
+                (later for later in runs[i + 1:] if later[2] == r_channel),
+                None,
+            )
+            if next_same_channel is not None:
+                off_tick = max(on_tick + 1, next_same_channel[0] - 1)
             else:
                 off_tick = max(on_tick + 1, r_end)
             absolute.append((

@@ -191,6 +191,64 @@ def test_unmappable_string_count_is_a_noop():
     assert _note_on_pitches(result) == [30]
 
 
+def _ticks_for_channel_pitch(mid: mido.MidiFile, *, channel: int, pitch: int) -> tuple[int, int]:
+    """(on_tick, off_tick) do primeiro par note_on/off daquele canal/pitch."""
+    tick = 0
+    on_tick = None
+    for track in mid.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta or msg.channel != channel or msg.note != pitch:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                if on_tick is None:
+                    on_tick = tick
+            elif on_tick is not None:
+                return on_tick, tick
+    raise AssertionError(f"no note found for channel={channel} pitch={pitch}")
+
+
+def test_string_selection_holds_keyswitch_per_channel_when_channels_interleave():
+    # Achado do Codex: o off_tick usava o inicio do PROXIMO run na ordem
+    # GLOBAL (que pode ser de outro canal), soltando o keyswitch de um
+    # canal cedo demais quando runs de canais diferentes se intercalam no
+    # tempo. Canal 1: nota longa (corda E) tick 0-1000. Canal 2: nota
+    # (corda D) comecando tick 480, ANTES do fim da nota do canal 1.
+    source = _make_multi_channel_bass_line([
+        (0, 1000, 30, 1),   # corda E, canal 1, tick 0-1000
+        (480, 480, 60, 2),  # corda D, canal 2, tick 480-960
+    ])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    ks_e_on, ks_e_off = _ticks_for_channel_pitch(result, channel=1, pitch=_KS_E)
+    # O keyswitch de E (canal 1) tem que ficar segurado ate pelo menos o
+    # fim da nota estrutural dele (tick 1000) — nao pode ser cortado pelo
+    # inicio da nota do canal 2 (tick 480).
+    assert ks_e_off >= 1000, (
+        f"keyswitch E do canal 1 foi solto no tick {ks_e_off}, antes do fim "
+        "da propria nota estrutural (1000) — cortado pelo run de outro canal"
+    )
+
+
+def test_string_selection_honors_numeric_max_fret():
+    # Achado do Codex: max_fret so aceitava int; um float integral valido
+    # (12.0, formato JSON comum para numero escalar de style.parameters)
+    # caia no default 24 em silencio. Com max_fret=12 e afinacao padrao
+    # E-A-D-G, pitch 45 nao alcanca mais a corda E (28+12=40 < 45) e tem
+    # que forcar a corda A (33+12=45).
+    source = _make_bass_line([(0, 480, 45)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4, "max_fret": 12.0},
+    )
+    pitches = _note_on_pitches(result)
+    assert _KS_A in pitches
+    assert _KS_E not in pitches
+
+
 def test_string_selection_emits_keyswitch_on_each_notes_own_channel():
     # Achado do Codex: track fisica com notas em mais de um canal usava o
     # canal da PRIMEIRA nota estrutural pra todo keyswitch, inclusive runs
