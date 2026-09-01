@@ -87,4 +87,10 @@ IA, abaixo é máquina testável.
 
 ## Estado do projeto
 
-Em construção. Veja as issues e `docs/arquitetura.md`.
+Em construção.
+
+- [Roadmap completo](docs/roadmap.md)
+- [Arquitetura](docs/arquitetura.md)
+- [Objetivo e critérios de aceite](docs/objetivo.md)
+- [M6 — MVP orientado por influências](https://github.com/OvictorVieira/midi.arranger.cli/issues/80)
+- [M7 — plataforma comercial MCP](https://github.com/OvictorVieira/midi.arranger.cli/issues/81)
