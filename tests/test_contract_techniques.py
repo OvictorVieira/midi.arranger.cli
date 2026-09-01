@@ -56,6 +56,133 @@ def test_list_unknown_field_returns_error():
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
 
 
+# --- catalogo de capacidades (issue #74) ----------------------------------
+
+def test_list_entries_carry_implemented_and_level():
+    """Toda entrada declara `implemented` (bool) e `level`.
+
+    O nivel e `humanize` ou `technique` quando implementada, e `null` quando
+    a tecnica so existe no manual. Sem esses campos o consumidor (skill,
+    harness, futuro MCP) nao consegue distinguir capacidade real de
+    capacidade futura, e o brief acaba autorizando tecnica sem aplicador.
+    """
+    env = call("techniques.list", {})
+    assert env["ok"] is True
+    for t in env["data"]["techniques"]:
+        assert isinstance(t["implemented"], bool), t
+        if t["implemented"]:
+            assert t["level"] in {"humanize", "technique"}, t
+        else:
+            assert t["level"] is None, t
+
+
+def test_list_marks_bass_slide_as_not_implemented():
+    """`bass.slide` esta documentado no manual mas fora do motor.
+
+    A issue #74 exige que apareca no catalogo como capacidade futura
+    (`implemented=False`), nunca como algo aplicavel agora — o vicio
+    aceitar-e-ignorar ja foi rejeitado nesta base.
+    """
+    env = call("techniques.list", {"family": "bass"})
+    assert env["ok"] is True
+    entries = {t["canonical"]: t for t in env["data"]["techniques"]}
+    assert "bass.slide" in entries
+    assert entries["bass.slide"]["implemented"] is False
+    assert entries["bass.slide"]["level"] is None
+
+
+def test_list_marks_keys_melody_lead_as_not_implemented():
+    """`keys.melody_lead` e uma das dez tecnicas de teclas documentadas mas
+    fora do motor (ver `AGENTS.md` e o inventario da issue #14)."""
+    env = call("techniques.list", {"family": "keys"})
+    entries = {t["canonical"]: t for t in env["data"]["techniques"]}
+    assert "keys.melody_lead" in entries
+    assert entries["keys.melody_lead"]["implemented"] is False
+    assert entries["keys.melody_lead"]["level"] is None
+
+
+def test_list_marks_guitar_palm_mute_as_not_implemented():
+    """Guitarra hoje nao tem tecnica implementada; o catalogo deixa isso
+    explicito em vez de deixar o brief autorizar algo que o motor nao
+    executa."""
+    env = call("techniques.list", {"family": "guitar"})
+    entries = {t["canonical"]: t for t in env["data"]["techniques"]}
+    assert "guitar.palm_mute" in entries
+    assert entries["guitar.palm_mute"]["implemented"] is False
+    assert entries["guitar.palm_mute"]["level"] is None
+
+
+def test_list_marks_drums_ghost_notes_as_implemented_technique_level():
+    env = call("techniques.list", {"family": "drums"})
+    entries = {t["canonical"]: t for t in env["data"]["techniques"]}
+    assert entries["drums.ghost_notes"]["implemented"] is True
+    assert entries["drums.ghost_notes"]["level"] == "technique"
+    assert entries["drums.microtiming"]["implemented"] is True
+    assert entries["drums.microtiming"]["level"] == "humanize"
+
+
+def test_list_implemented_only_filters_documented_capacities():
+    """`implemented_only=True` esconde tecnica documentada sem aplicador.
+
+    O catalogo e derivado do indice dos manuais e do registro real do motor,
+    nunca uma lista paralela: o total sob esse filtro tem que bater com
+    `SUPPORTED_TECHNIQUES`, e nao pode haver `implemented=False` na saida.
+    """
+    from tools.techniques import SUPPORTED_TECHNIQUES
+
+    env = call("techniques.list", {"implemented_only": True})
+    assert env["ok"] is True
+    canonicals = [t["canonical"] for t in env["data"]["techniques"]]
+    assert set(canonicals) == set(SUPPORTED_TECHNIQUES)
+    for t in env["data"]["techniques"]:
+        assert t["implemented"] is True
+        assert t["level"] in {"humanize", "technique"}
+
+
+def test_list_default_still_returns_documented_but_unimplemented():
+    """Sem `implemented_only`, o catalogo continua enumerando capacidade
+    futura — bass.slide, guitar.palm_mute, keys.melody_lead precisam
+    aparecer para o consumidor saber que existem como pesquisa, mesmo que
+    nao possam ser autorizadas."""
+    env = call("techniques.list", {})
+    canonicals = {t["canonical"] for t in env["data"]["techniques"]}
+    assert {"bass.slide", "guitar.palm_mute", "keys.melody_lead"} <= canonicals
+
+
+def test_list_all_18_implemented_techniques_appear_as_implemented():
+    """As 18 tecnicas atualmente executaveis (drums 8, bass 6, keys 4)
+    precisam aparecer marcadas como implementadas. Regressao aqui denuncia
+    ou um aplicador registrado sem manual ou o catalogo caido fora de
+    sincronia com `SUPPORTED_TECHNIQUES`."""
+    from tools.techniques import SUPPORTED_TECHNIQUES
+
+    assert len(SUPPORTED_TECHNIQUES) == 18
+    env = call("techniques.list", {})
+    entries = {t["canonical"]: t for t in env["data"]["techniques"]}
+    for canonical in SUPPORTED_TECHNIQUES:
+        assert canonical in entries, (
+            f"{canonical} registrada no motor mas ausente do catalogo"
+        )
+        assert entries[canonical]["implemented"] is True
+        assert entries[canonical]["level"] in {"humanize", "technique"}
+
+
+def test_list_catalog_is_derived_from_index_and_registry_not_hardcoded():
+    """AGENTS.md manda derivar o catalogo do indice + registro real, nunca
+    de lista paralela. O total sem filtro tem que bater com o indice inteiro
+    dos manuais, e as tecnicas implementadas com o registro."""
+    from tools.techniques import SUPPORTED_TECHNIQUES, build_index
+
+    idx = build_index()
+    env = call("techniques.list", {})
+    catalog = env["data"]["techniques"]
+    assert len(catalog) == len(idx.techniques)
+    implemented_in_catalog = {
+        t["canonical"] for t in catalog if t["implemented"]
+    }
+    assert implemented_in_catalog == set(SUPPORTED_TECHNIQUES)
+
+
 # --- techniques.describe --------------------------------------------------
 
 def test_describe_ghost_notes_with_superior_drummer_returns_notes_velocity():

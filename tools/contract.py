@@ -1890,12 +1890,22 @@ PLUGINS_SCAN_TOOL = Tool(
 
 TECHNIQUES_LIST_DESCRIPTION = (
     "Lista as tecnicas catalogadas no indice (derivado dos manuais em "
-    "knowledge/tecnicas). Use antes de sugerir tecnica no plano — ESTE E O "
-    "VOCABULARIO FECHADO, o que impede o modelo de inventar tecnica que "
-    "ninguem sabe executar. Filtros: `family` (drums, bass, keys, guitar) e "
-    "`tool` (superior_drummer, addictive_drums, logic_sampler, ...) — quando "
-    "`tool` esta presente, a saida inclui a receita para essa ferramenta e "
-    "esconde tecnicas que nao tem receita ali. Sem filtro, devolve tudo."
+    "knowledge/tecnicas) E indica o que o motor consegue executar hoje. Use "
+    "antes de sugerir tecnica no plano ou de perguntar ao usuario o que "
+    "autorizar — ESTE E O VOCABULARIO FECHADO. Cada entrada carrega: "
+    "`canonical`, `family`, `summary` musical seguro, `implemented` (True "
+    "quando ha aplicador real registrado em tools/techniques/engine.py, "
+    "False para tecnica apenas documentada como capacidade futura), `level` "
+    "(`humanize` ou `technique`; null quando nao implementada), "
+    "`tools_available` (ferramentas com receita no manual) e a lista de "
+    "`parameters` semanticos aceitos. Filtros: `family` (drums, bass, keys, "
+    "guitar), `tool` (superior_drummer, addictive_drums, logic_sampler, ...) "
+    "— quando `tool` esta presente, a saida inclui a `recipe` para essa "
+    "ferramenta e esconde tecnicas que nao tem receita ali — e "
+    "`implemented_only` (default False): quando True, esconde tecnicas "
+    "documentadas mas sem aplicador. A skill de brief usa "
+    "`implemented_only=True` porque so pode oferecer ao usuario o que o "
+    "motor consegue aplicar."
 )
 
 TECHNIQUES_DESCRIBE_DESCRIPTION = (
@@ -1909,13 +1919,34 @@ TECHNIQUES_DESCRIBE_DESCRIPTION = (
 )
 
 
-def _technique_summary_dict(t: techniques_mod.Technique) -> dict[str, Any]:
+def _engine_level_index() -> dict[str, str]:
+    """Mapa canonical -> nivel do motor, derivado do registro real.
+
+    Nunca lista paralela hardcoded. `registered_techniques()` e a UNICA fonte
+    de verdade do que o motor executa; qualquer tecnica ausente aqui e
+    documentada-mas-nao-implementada por definicao (`implemented=False`,
+    `level=None`).
+    """
+
+    return {
+        technique.canonical: technique.level
+        for technique in techniques_mod.registered_techniques()
+    }
+
+
+def _technique_summary_dict(
+    t: techniques_mod.Technique,
+    engine_levels: dict[str, str],
+) -> dict[str, Any]:
+    level = engine_levels.get(t.canonical)
     return {
         "canonical": t.canonical,
         "name": t.name,
         "family": t.family,
         "summary": t.summary,
         "verified": t.verified,
+        "implemented": t.canonical in engine_levels,
+        "level": level,
         "parameters": [p.to_dict() for p in t.parameters],
         "tools_available": sorted(t.tools.keys()),
     }
@@ -1934,6 +1965,8 @@ def _techniques_list_impl(
 
     family = payload.get("family")
     tool_target = payload.get("tool")
+    implemented_only = bool(payload.get("implemented_only", False))
+    engine_levels = _engine_level_index()
 
     techniques = idx.by_family(family)
     if tool_target:
@@ -1941,10 +1974,14 @@ def _techniques_list_impl(
             t for t in techniques
             if tool_target in t.tools or "generic" in t.tools
         )
+    if implemented_only:
+        techniques = tuple(
+            t for t in techniques if t.canonical in engine_levels
+        )
 
     out = []
     for t in techniques:
-        entry = _technique_summary_dict(t)
+        entry = _technique_summary_dict(t, engine_levels)
         if tool_target:
             entry["recipe"] = t.tools.get(tool_target) or t.tools.get("generic", {})
         out.append(entry)
@@ -1954,7 +1991,8 @@ def _techniques_list_impl(
         warnings.append({
             "code": "W_TECHNIQUES_EMPTY",
             "message": (
-                f"nenhuma tecnica retornada para family={family!r} tool={tool_target!r}. "
+                f"nenhuma tecnica retornada para family={family!r} "
+                f"tool={tool_target!r} implemented_only={implemented_only!r}. "
                 f"Familias disponiveis: {sorted({t.family for t in idx.techniques})!r}"
             ),
             "path": "",
@@ -2086,12 +2124,15 @@ _TECHNIQUE_SUMMARY_SCHEMA = {
         "family": {"type": "string"},
         "summary": {"type": "string"},
         "verified": {"type": "boolean"},
+        "implemented": {"type": "boolean"},
+        "level": {"type": ["string", "null"]},
         "parameters": {"type": "array", "items": _TECHNIQUE_PARAMETER_SCHEMA},
         "tools_available": {"type": "array", "items": {"type": "string"}},
         "recipe": {"type": "object", "additionalProperties": True},
     },
     "required": [
         "canonical", "name", "family", "summary", "verified",
+        "implemented", "level",
         "parameters", "tools_available",
     ],
 }
@@ -2104,6 +2145,7 @@ TECHNIQUES_LIST_TOOL = Tool(
         "properties": {
             "family": {"type": ["string", "null"]},
             "tool": {"type": ["string", "null"]},
+            "implemented_only": {"type": "boolean"},
         },
         "required": [],
     },
