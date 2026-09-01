@@ -26,7 +26,6 @@ from tools.plan import (
 )
 from tools.render import render
 from tools.techniques.engine import apply_technique
-from tools.techniques.errors import TechniqueRecipeError
 
 
 def _bass_track(events) -> mido.MidiFile:
