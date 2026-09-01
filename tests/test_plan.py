@@ -1578,6 +1578,26 @@ def test_validate_accepts_valid_edit_tool():
     validate(plan)  # nao levanta
 
 
+def test_validate_rejects_edit_tool_with_pipe():
+    """Achado do Codex: 'edit.tool' vira 'plugin' no carimbo
+    (`_stamp_edit_tracks`), que reserva '|' como separador de campo —
+    sem checar aqui, o erro so aparecia tarde, dentro de `_format_stamp`
+    no render, em vez de na validacao do plano."""
+    plan = _valid_plan()
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO|Bass")]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "edits[0].tool"
+
+
+def test_validate_rejects_non_ascii_edit_tool():
+    plan = _valid_plan()
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MÖDO Bass")]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "edits[0].tool"
+
+
 def test_validate_rejects_duplicate_edit_for_same_track():
     plan = _valid_plan()
     plan.edits = [

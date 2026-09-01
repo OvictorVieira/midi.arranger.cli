@@ -1085,6 +1085,23 @@ def validate(
                     f"got {ed.tool!r} (normalizes to no tool, which would "
                     "silently fall back to the generic recipe)",
                 )
+            # `edit.tool` vira `plugin` no carimbo (`_stamp_edit_tracks`,
+            # tools/render.py) igual a `suggested_instrument.plugin` — mesma
+            # checagem ASCII/sem '|' daquele campo, senao o erro so aparece
+            # tarde no render (`_format_stamp`) em vez de aqui, na validacao.
+            from .tracks import is_ascii_safe
+
+            if not is_ascii_safe(ed.tool):
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    f"must be ASCII (meta-evento SMF nao carrega encoding), "
+                    f"got {ed.tool!r}",
+                )
+            if "|" in ed.tool:
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    "must not contain '|' — separador reservado do carimbo",
+                )
 
     # AVISO: todos os 5 eixos sobem simultaneamente entre secoes consecutivas.
     for i in range(len(plan.sections) - 1):
