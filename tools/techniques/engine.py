@@ -3346,6 +3346,14 @@ def _apply_bass_string_selection(
 
     from ._helpers import iter_note_dicts, manual_value, technique_from_manual
 
+    # `TechniqueRecipeError` e definida NESTE MESMO modulo — um import
+    # relativo comum (`from .engine import TechniqueRecipeError`) ainda
+    # deixa o nome "TechniqueRecipeError" em `co_names`, que
+    # `inspect.getclosurevars` casa contra `__globals__` do proprio modulo
+    # e reporta como captura global mesmo assim. `globals()[...]` busca
+    # pela STRING (em `co_consts`, nao `co_names`), entao nao aparece.
+    _TechniqueRecipeError = globals()["TechniqueRecipeError"]
+
     technique = technique_from_manual(context)
     tuning_raw = context.parameters.get("tuning")
     tuning = tuple(tuning_raw) if tuning_raw else _BASS_DEFAULT_TUNING
@@ -3394,7 +3402,7 @@ def _apply_bass_string_selection(
             # invalido): rejeita explicitamente em vez de cair no default
             # 24 em silencio — um limite fisico declarado errado nao pode
             # virar "nao declarado" (achado do Codex na PR).
-            raise TechniqueRecipeError(
+            raise _TechniqueRecipeError(
                 f"tecnica {context.canonical!r}: style.bass.parameters."
                 f"max_fret declarado invalido (precisa ser numero positivo "
                 f"ou par [min, max] positivo), got {max_fret_raw!r}"
@@ -3454,7 +3462,7 @@ def _apply_bass_string_selection(
                     # mesmo tempo — soltar uma delas cedo corromperia a nota
                     # estrutural que ainda esta soando. Falha explicita em
                     # vez de emitir keyswitch conflitante em silencio.
-                    raise TechniqueRecipeError(
+                    raise _TechniqueRecipeError(
                         f"tecnica {context.canonical!r}: notas sobrepostas no "
                         f"canal {channel} pedem cordas diferentes (corda "
                         f"{run_string} ate tick {run_end}, corda {string_index} "

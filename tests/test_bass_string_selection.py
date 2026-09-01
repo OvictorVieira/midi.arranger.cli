@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
+
 import mido
 import pytest
 
 from tools.techniques.engine import (
     SUPPORTED_TECHNIQUES,
     TechniqueRecipeError,
+    _apply_bass_string_selection,
     apply_technique,
 )
 
@@ -106,6 +109,23 @@ def _make_multi_channel_bass_line(
 
 def test_string_selection_is_supported():
     assert "bass.string_selection" in SUPPORTED_TECHNIQUES
+
+
+def test_string_selection_applicator_does_not_capture_global_state():
+    # Achado do revisor humano na PR: _apply_bass_string_selection
+    # referenciava TechniqueRecipeError (definida no proprio modulo
+    # engine.py) diretamente, o que test_registered_techniques_do_not_
+    # capture_global_or_nonlocal_state (tests/test_techniques_engine.py)
+    # detecta via inspect.getclosurevars — mas aquele teste falha rapido
+    # na primeira tecnica com captura, que hoje e outra (mido, pre-
+    # existente, fora do escopo desta PR), entao nunca chegava a checar
+    # bass.string_selection especificamente. Teste dedicado, direto na
+    # funcao, pra nao depender da ordem de iteracao do registro global.
+    closure = inspect.getclosurevars(_apply_bass_string_selection)
+    unexpected = set(closure.globals) - {"mido"}
+    assert not unexpected, (
+        f"bass.string_selection captura estado global inesperado: {unexpected}"
+    )
 
 
 def test_generic_tool_is_a_noop():
