@@ -123,6 +123,21 @@ def test_normalize_kind_cue_alias_accepts_qualifier_prefix():
     assert sections.normalize_kind("VOCAL HOOK") == "chorus"
 
 
+def test_normalize_kind_new_modifiers_do_not_match_as_substring():
+    # Achado do Codex na PR: "vamp" e "drop" sem fronteira de palavra casavam
+    # como substring de qualquer palavra ("Revamped" contem "vamp", "Backdrop"
+    # contem "drop"), classificando errado rotulo sem nenhuma intencao de cue.
+    # "Revamped Chorus" ja e protegido pela precedencia canonical (chorus
+    # explicito vence antes do modificador ser sequer checado); "Backdrop"
+    # nao tem canonical nenhum, entao so a fronteira de palavra em "drop"
+    # evita o falso positivo.
+    assert sections.normalize_kind("Revamped Chorus") == "chorus"
+    assert sections.normalize_kind("Backdrop") is None
+    # Sufixo numerado continua casando normalmente.
+    assert sections.normalize_kind("DROP 1") == "breakdown"
+    assert sections.normalize_kind("VAMP 2") == "interlude"
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
