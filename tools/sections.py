@@ -118,7 +118,12 @@ def normalize_kind(label: str) -> str | None:
     """
     if not label:
         return None
-    s = label.strip().lower()
+    # `_` e caractere de palavra pra `\b` (ao contrario de espaco/hifen), entao
+    # "GUITAR_SOLO"/"DROP_1" nao teriam fronteira nenhuma antes de "solo"/
+    # "drop" — normaliza pra espaco ANTES do match. Os padroes que ja aceitam
+    # `_` como separador explicito (`pre[-\s_]?chorus` etc.) continuam
+    # casando, porque o `\s` deles cobre o espaco resultante.
+    s = re.sub(r"_+", " ", label.strip().lower())
     return _search_kind_patterns(s, _CANONICAL_KIND_PATTERNS) or _search_kind_patterns(
         s, _MODIFIER_KIND_PATTERNS
     )
