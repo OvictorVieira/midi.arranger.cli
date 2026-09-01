@@ -253,7 +253,7 @@ Estado atual do motor:
 | Família | Executadas pelo motor | Documentadas, ainda sem aplicador |
 |---|---|---|
 | `drums` | `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes`, `drums.microtiming` | — |
-| `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.string_selection`, `bass.harmonic` |
+| `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.string_selection`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.harmonic` |
 | `keys` | `keys.damper_pedal`, `keys.expression`, `keys.modulation`, `keys.pitch_bend` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`, `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`, `keys.human_articulation` |
 | `guitar` | — | tudo documentado |
 

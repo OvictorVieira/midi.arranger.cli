@@ -390,6 +390,13 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "tools": {
     "generic": {"note": "sem controle de corda: o timbre sai do que o instrumento decidir. Declare no plano que a intencao de corda nao pode ser honrada nesta ferramenta"},
     "modo_bass": {
+      "keyswitch_corda_C": 0,
+      "keyswitch_corda_A": 9,
+      "keyswitch_corda_B": 11,
+      "keyswitch_corda_D": 14,
+      "keyswitch_corda_E": 16,
+      "keyswitch_corda_G": 19,
+      "cc_posicao_mao": 4,
       "note": "LATCH vem DESLIGADO de fabrica: o keyswitch e momentaneo e vale enquanto segurado. Ligue LATCH na pagina CONTROL se quiser que a corda persista. CC 4 controla a posicao da mao de forma continua"
     }
   }

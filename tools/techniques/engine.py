@@ -3266,6 +3266,192 @@ def _apply_bass_let_ring(
     return mid
 
 
+# Mapeamento posicao->keyswitch para as configuracoes de baixo realistas
+# (4/5/6 cordas). O manual (secao 5.9, `bass.string_selection`) declara os
+# seis keyswitches nomeados por CORDA (C/A/B/D/E/G), mas nao diz
+# explicitamente em que ordem eles correspondem a um baixo de N cordas —
+# isso e derivado aqui da convencao real de afinacao de baixo (4 cordas:
+# E-A-D-G; 5 cordas: B-E-A-D-G; 6 cordas: B-E-A-D-G-C, grave para agudo),
+# NAO da pitch real da afinacao declarada (que pode estar em drop): o
+# keyswitch endereca a CORDA FISICA do instrumento modelado pelo plugin,
+# nao o nome da nota que ela soa quando destafinada. Documentado aqui como
+# inferencia explicita porque o manual (`verified: false` neste bloco) nao
+# confirma isso por medicao — se a numeracao de corda do MODO BASS do
+# usuario divergir dessa convencao padrao, o resultado sai errado e precisa
+# de correcao manual.
+_BASS_STRING_KEYSWITCH_ORDER_BY_COUNT: dict[int, tuple[str, ...]] = {
+    4: ("keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
+    5: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
+    6: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G", "keyswitch_corda_C"),
+}
+
+
+@register_technique("bass.string_selection", "technique")
+def _apply_bass_string_selection(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Forca a corda em que cada nota estrutural do baixo soa, via keyswitch.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le os seis `keyswitch_corda_*` do bloco `parameters` geral do manual
+        (nao variam por ferramenta — `tools.modo_bass` so tem nota
+        qualitativa sobre LATCH). Gate por `context.tool == "modo_bass"`:
+        qualquer outra ferramenta (`generic` incluido) e NO-OP, documentado
+        no proprio manual ("declare que a intencao de corda nao pode ser
+        honrada nesta ferramenta").
+      - Afinacao vem de `context.parameters["tuning"]` (mesmo canal que
+        `tools/techniques/physical.py` ja le); sem declaracao, cai no
+        default fisico de 4 cordas (`_BASS_DEFAULT_TUNING`), mesma
+        convencao que o resto do motor usa.
+      - Corda de cada nota estrutural: a MAIS GRAVE que alcanca aquele pitch
+        dentro de `max_fret` (default 24) — regra do manual: "em drop
+        tuning o riff mora na corda mais grave", escolha por TIMBRE, nunca
+        por economia de mao.
+      - Notas estruturais consecutivas na MESMA corda viram um run so; o
+        keyswitch e emitido UMA VEZ por run e mantido pressionado (par
+        note_on/note_off) ate o inicio do proximo run — o manual documenta
+        que o LATCH do MODO BASS vem DESLIGADO de fabrica (keyswitch
+        momentaneo, vale so enquanto segurado), entao segurar a nota e
+        obrigatorio, nao um evento pontual.
+      - Keyswitch nao colide com nota musical: os seis pitches (0-19) ficam
+        muito abaixo do piso de qualquer afinacao real de baixo e saem do
+        contrato estrutural via `_keyswitch_pitches_from_recipe`
+        (tools/techniques/physical.py), o mesmo mecanismo generico que ja
+        protege `bass.attack_style`.
+      - Idempotente: mesma seed produz os mesmos runs; track que ja tem
+        algum dos seis keyswitches e pulada inteira (mesmo padrao de
+        `bass.attack_style`).
+    """
+
+    import mido as _mido
+
+    from ._track_rebuild import (
+        collect_absolute as _collect_absolute,
+    )
+    from ._track_rebuild import (
+        sort_and_flush as _sort_and_flush,
+    )
+    from .physical import _BASS_DEFAULT_TUNING
+
+    # Ao contrario de `bass.attack_style`, os seis `keyswitch_corda_*` vivem
+    # no bloco `parameters` GERAL do manual (numero e o mesmo pitch fisico
+    # de teclado do plugin, nao varia por ferramenta) — `tools.modo_bass`
+    # so carrega uma nota qualitativa sobre LATCH. `tools.generic` e quem
+    # diz que a intencao de corda nao pode ser honrada nessa ferramenta;
+    # por isso o gate certo e `context.tool`, nao `context.recipe`.
+    if context.tool != "modo_bass":
+        return mid
+
+    from ._helpers import manual_value, technique_from_manual
+
+    technique = technique_from_manual(context)
+    tuning_raw = context.parameters.get("tuning")
+    tuning = tuple(tuning_raw) if tuning_raw else _BASS_DEFAULT_TUNING
+
+    string_order = _BASS_STRING_KEYSWITCH_ORDER_BY_COUNT.get(len(tuning))
+    if string_order is None:
+        return mid
+
+    keyswitch_by_string: list[int] = []
+    for key in string_order:
+        # precedencia parameters (plano) > manual — nunca hardcode aqui.
+        override = context.parameters.get(key)
+        if isinstance(override, int) and not isinstance(override, bool):
+            keyswitch_by_string.append(override)
+            continue
+        value = manual_value(context, technique, key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return mid
+        keyswitch_by_string.append(value)
+    keyswitch_pitches = set(keyswitch_by_string)
+
+    max_fret_raw = context.parameters.get("max_fret")
+    max_fret = (
+        max_fret_raw
+        if isinstance(max_fret_raw, int)
+        and not isinstance(max_fret_raw, bool)
+        and max_fret_raw > 0
+        else 24
+    )
+    floor = min(tuning)
+
+    for track in mid.tracks:
+        structural = sorted(
+            (
+                (start, end, channel, pitch)
+                for channel, pitch, start, end, _velocity, _on, _off
+                in _iter_note_pairs(track)
+                if pitch >= floor and pitch not in keyswitch_pitches
+            ),
+            key=lambda item: item[0],
+        )
+        if not structural:
+            continue
+
+        channel = structural[0][2]
+
+        already_applied = any(
+            not msg.is_meta
+            and msg.type == "note_on"
+            and msg.velocity > 0
+            and msg.note in keyswitch_pitches
+            for msg in track
+        )
+        if already_applied:
+            continue
+
+        assignments: list[tuple[int, int, int]] = []
+        assignable = True
+        for start, end, _channel, pitch in structural:
+            string_index = None
+            for idx, open_pitch in enumerate(tuning):
+                if open_pitch <= pitch <= open_pitch + max_fret:
+                    string_index = idx
+                    break
+            if string_index is None:
+                assignable = False
+                break
+            assignments.append((start, end, string_index))
+        if not assignable:
+            continue
+
+        runs: list[tuple[int, int, int]] = []
+        run_start, run_end, run_string = assignments[0]
+        for start, end, string_index in assignments[1:]:
+            if string_index == run_string:
+                run_end = max(run_end, end)
+            else:
+                runs.append((run_start, run_end, run_string))
+                run_start, run_end, run_string = start, end, string_index
+        runs.append((run_start, run_end, run_string))
+
+        absolute = _collect_absolute(track)
+        order = len(absolute)
+        for i, (r_start, r_end, string_index) in enumerate(runs):
+            ks_pitch = keyswitch_by_string[string_index]
+            on_tick = max(0, r_start - 1)
+            if i + 1 < len(runs):
+                off_tick = max(on_tick + 1, runs[i + 1][0] - 1)
+            else:
+                off_tick = max(on_tick + 1, r_end)
+            absolute.append((
+                on_tick, -2, order,
+                _mido.Message("note_on", channel=channel, note=ks_pitch, velocity=127),
+            ))
+            order += 1
+            absolute.append((
+                off_tick, -1, order,
+                _mido.Message("note_off", channel=channel, note=ks_pitch, velocity=0),
+            ))
+            order += 1
+
+        _sort_and_flush(absolute, track)
+
+    return mid
+
+
 @register_technique("keys.pitch_bend", "technique")
 def _apply_keys_pitch_bend(
     mid: mido.MidiFile,

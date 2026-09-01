@@ -1,0 +1,151 @@
+"""Testes de `bass.string_selection` — forca a corda por keyswitch do MODO BASS."""
+
+from __future__ import annotations
+
+import mido
+
+from tools.techniques.engine import SUPPORTED_TECHNIQUES, apply_technique
+
+# Afinacao padrao de 4 cordas (E-A-D-G), grave para agudo — mesma usada por
+# `tools.techniques.physical._BASS_DEFAULT_TUNING`.
+_STANDARD_4 = (28, 33, 38, 43)
+
+# Keyswitches reais do manual (tecnicas_baixo_midi.md, secao 5.9), so as
+# quatro relevantes para um baixo de 4 cordas na convencao E-A-D-G.
+_KS_E = 16
+_KS_A = 9
+_KS_D = 14
+_KS_G = 19
+
+
+def _make_bass_line(
+    events: list[tuple[int, int, int]],
+    *,
+    ticks_per_beat: int = 480,
+    channel: int = 1,
+) -> mido.MidiFile:
+    """events: list of (start_tick_absolute, duration_ticks, pitch)."""
+
+    mid = mido.MidiFile(ticks_per_beat=ticks_per_beat)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    absolute: list[tuple[int, int, mido.Message]] = []
+    order = 0
+    for start, duration, pitch in events:
+        absolute.append((
+            start, order,
+            mido.Message("note_on", channel=channel, note=pitch, velocity=100, time=0),
+        ))
+        order += 1
+        absolute.append((
+            start + duration, order,
+            mido.Message("note_off", channel=channel, note=pitch, velocity=0, time=0),
+        ))
+        order += 1
+    prev = 0
+    for tick, _order, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+        track.append(msg.copy(time=tick - prev))
+        prev = tick
+    mid.tracks.append(track)
+    return mid
+
+
+def _note_on_pitches(mid: mido.MidiFile) -> list[int]:
+    return [
+        msg.note
+        for track in mid.tracks
+        for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+
+
+def test_string_selection_is_supported():
+    assert "bass.string_selection" in SUPPORTED_TECHNIQUES
+
+
+def test_generic_tool_is_a_noop():
+    # Sem tool (receita generic): a propria manual diz "declare que a
+    # intencao de corda nao pode ser honrada nesta ferramenta" — sem
+    # keyswitch nenhum, nunca reescreve a linha.
+    source = _make_bass_line([(0, 480, 30), (960, 480, 60)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1,
+        parameters={"tuning": _STANDARD_4},
+    )
+    assert _note_on_pitches(result) == [30, 60]
+
+
+def test_forces_lowest_reachable_string_and_groups_runs():
+    # 30 e alcancavel na corda E (28..52) — a MAIS GRAVE das duas que
+    # alcancam (E e A) — deve ficar na E. 60 so e alcancavel na D (38..62,
+    # pois E vai so ate 52 e A ate 57) — troca de corda real.
+    source = _make_bass_line([
+        (0, 480, 30), (480, 480, 32), (960, 480, 60),
+    ])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    pitches = _note_on_pitches(result)
+    # Um keyswitch de E antes das duas primeiras notas (mesmo run), um de D
+    # antes da terceira (novo run) — nunca um keyswitch por nota.
+    assert pitches == [_KS_E, 30, 32, _KS_D, 60]
+
+
+def test_string_selection_keyswitches_are_held_not_pulsed():
+    source = _make_bass_line([(0, 480, 30), (960, 480, 60)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    track = result.tracks[0]
+    tick = 0
+    ks_on_tick = ks_off_tick = None
+    for msg in track:
+        tick += msg.time
+        if msg.is_meta or getattr(msg, "note", None) != _KS_E:
+            continue
+        if msg.type == "note_on" and msg.velocity > 0:
+            ks_on_tick = tick
+        elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+            ks_off_tick = tick
+    assert ks_on_tick is not None and ks_off_tick is not None
+    # LATCH vem desligado de fabrica no MODO BASS (manual, 5.9): o
+    # keyswitch precisa ficar PRESSIONADO (nota longa), nao ser um blip —
+    # aqui ele deve cobrir ate a proxima troca de corda (tick 960 da nota D).
+    assert ks_off_tick > ks_on_tick + 1
+
+
+def test_string_selection_is_idempotent():
+    source = _make_bass_line([(0, 480, 30), (960, 480, 60)])
+    once = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    twice = apply_technique(
+        "bass.string_selection", once, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    assert _note_on_pitches(twice) == _note_on_pitches(once)
+
+
+def test_falls_back_to_physical_default_tuning_when_undeclared():
+    # Sem `tuning` em parameters: cai no default fisico de 4 cordas
+    # (mesma convencao do resto do motor) em vez de recusar.
+    source = _make_bass_line([(0, 480, 30)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={},
+    )
+    assert _KS_E in _note_on_pitches(result)
+
+
+def test_unmappable_string_count_is_a_noop():
+    # 7 cordas nao tem convencao documentada (so 4/5/6) — no-op explicito
+    # em vez de adivinhar uma ordem.
+    source = _make_bass_line([(0, 480, 30)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": (20, 25, 30, 35, 40, 45, 50)},
+    )
+    assert _note_on_pitches(result) == [30]
