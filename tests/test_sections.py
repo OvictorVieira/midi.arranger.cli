@@ -105,6 +105,24 @@ def test_normalize_kind_numbered_variants_of_new_cue_vocabulary():
     assert sections.normalize_kind("Hooked") is None
 
 
+def test_normalize_kind_explicit_section_beats_coexisting_modifier():
+    # Achados do Codex na PR: quando um marcador combina o nome explicito da
+    # secao com um cue de producao secundario de OUTRA familia, o explicito
+    # tem que vencer — a ordem de primeiro-match da tupla nao pode deixar o
+    # modificador generico sobrepor o nome literal da secao.
+    assert sections.normalize_kind("CHORUS DROP") == "chorus"
+    assert sections.normalize_kind("INTRO RISER") == "intro"
+    assert sections.normalize_kind("BRIDGE VAMP") == "bridge"
+
+
+def test_normalize_kind_cue_alias_accepts_qualifier_prefix():
+    # Achado do Codex na PR: "^solo$"/"^hook$"/"^gancho$" (virados "\bsolo\b"
+    # etc.) precisam casar em qualquer posicao do rotulo, nao so no inicio —
+    # marcador comum qualifica o cue por instrumento/voz.
+    assert sections.normalize_kind("GUITAR SOLO") == "bridge"
+    assert sections.normalize_kind("VOCAL HOOK") == "chorus"
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
