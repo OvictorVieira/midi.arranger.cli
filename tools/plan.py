@@ -204,11 +204,22 @@ class PlanEdit:
       metadado puro (nao altera nota nenhuma). Chaves aceitas:
       `plugin` (str nao vazio), `preset` (str nao vazio), `verified` (bool,
       default False). Passa pelas mesmas regras de `tools/tracks.py`.
+    - `tool`: ferramenta-alvo desta track para resolucao de receita de
+      `style.<familia>.techniques[]` (ex.: "MODO Bass", "Superior Drummer").
+      Normalizada igual a `instrument.plugin` de elemento gerado (ver
+      `tools.render._normalize_tool_name`) — resolve a receita especifica do
+      manual quando existir; ausencia cai em `generic` sem fallback
+      artificial. SEPARADO de `suggested_instrument`: aquele e so metadado
+      de exibicao, este muda qual receita a tecnica le (ex.: sem declarar
+      `tool="modo_bass"`, `bass.attack_style` nao acha `keyswitch_dedo` na
+      receita `generic` e vira no-op — a track nunca ganha o keyswitch que
+      diz ao MODO BASS pra tocar com dedo).
     """
     track: str
     profile: str
     intensity: float
     suggested_instrument: dict[str, Any] | None = None
+    tool: str | None = None
 
 
 @dataclass
@@ -1135,6 +1146,8 @@ def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
     }
     if e.suggested_instrument is not None:
         data["suggested_instrument"] = dict(e.suggested_instrument)
+    if e.tool is not None:
+        data["tool"] = e.tool
     return data
 
 
@@ -1251,6 +1264,7 @@ def _edit_from_dict(data: dict[str, Any]) -> PlanEdit:
         profile=data["profile"],
         intensity=float(data["intensity"]),
         suggested_instrument=dict(suggested) if suggested is not None else None,
+        tool=data.get("tool"),
     )
 
 

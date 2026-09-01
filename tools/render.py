@@ -80,6 +80,7 @@ from .plan import (
     ArrangementPlan,
     Element,
     FamilyStyle,
+    PlanEdit,
     PlanSection,
     PlanValidationError,
     _canonicalize_authorized_name,
@@ -415,14 +416,13 @@ def _style_family_for_edit(profile: str) -> str | None:
     return _EDIT_PROFILE_STYLE_FAMILIES.get(profile)
 
 
-def _tool_target_for_element(element: Element) -> str | None:
-    """Converte `instrument.plugin` em chave de receita do manual.
+def _normalize_tool_name(plugin: str | None) -> str | None:
+    """Converte nome de plugin em chave de receita do manual.
 
-    Ex.: "Superior Drummer" -> "superior_drummer". Ausencia de plugin deixa
-    o motor usar `generic` sem emitir fallback artificial.
+    Ex.: "MODO Bass" -> "modo_bass", "Superior Drummer" -> "superior_drummer".
+    Ausencia/vazio devolve `None`, deixando o motor usar `generic` sem
+    emitir fallback artificial.
     """
-
-    plugin = (element.instrument or {}).get("plugin")
     if not isinstance(plugin, str) or not plugin.strip():
         return None
     chars: list[str] = []
@@ -436,6 +436,20 @@ def _tool_target_for_element(element: Element) -> str | None:
             previous_sep = True
     normalized = "".join(chars).strip("_")
     return normalized or None
+
+
+def _tool_target_for_element(element: Element) -> str | None:
+    """Converte `instrument.plugin` em chave de receita do manual."""
+    return _normalize_tool_name((element.instrument or {}).get("plugin"))
+
+
+def _tool_target_for_edit(edit: PlanEdit) -> str | None:
+    """Converte `edit.tool` (ferramenta-alvo declarada para a track editada)
+    em chave de receita do manual — mesma normalizacao de
+    `_tool_target_for_element`, para que uma track humanizada de
+    `plan.edits` tambem possa pedir a receita especifica (ex. `modo_bass`)
+    em vez de cair sempre no fallback `generic`."""
+    return _normalize_tool_name(edit.tool)
 
 
 def _canonical_style_technique(
@@ -675,7 +689,7 @@ def _apply_style_techniques_to_edit_tracks(
             plan=plan,
             family=family,
             style=style,
-            tool_target=None,
+            tool_target=_tool_target_for_edit(edit),
             index=index,
             edit_track=edit.track,
             tuning=(tuning_by_family or {}).get(family),

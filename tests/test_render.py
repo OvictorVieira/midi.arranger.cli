@@ -2016,3 +2016,75 @@ def test_render_uses_declared_instrument_tuning_for_physical_plausibility(
         "com a afinacao declarada o motor tem que acrescentar ornamento — "
         "sem isso o outro lado do teste nao prova nada"
     )
+
+
+# --- edit.tool resolve receita especifica de tecnica (achado real) ---------
+#
+# Sem `edit.tool`, `_apply_style_techniques_to_edit_tracks` passava
+# `tool_target=None` incondicionalmente — a track de `plan.edits` NUNCA
+# conseguia pedir a receita `modo_bass`, so a `generic`. Para
+# `bass.attack_style`, a receita `generic` nao tem `keyswitch_dedo`
+# nenhum: a funcao le `recipe.get(style_key)`, acha `None` e devolve o
+# MIDI sem tocar em nada — o keyswitch que diz ao MODO BASS pra tocar
+# com dedo nunca era inserido, apesar da tecnica estar "aplicada" sem
+# erro nenhum. Achado real, numa musica de verdade, com brief pedindo
+# "fingers" explicitamente.
+
+def _bass_attack_style_plan(source: Path, *, tool: str | None) -> ArrangementPlan:
+    plan = _build_plan(source)
+    plan.elements = []  # so testamos o caminho de edits aqui
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool=tool),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com fingers",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.attack_style", density=1.0,
+                rationale="fingers", style="dedo",
+            )],
+            parameters={},
+        ),
+    }
+    return plan
+
+
+def _has_note_on(path: Path, pitch: int) -> bool:
+    m = mido.MidiFile(str(path))
+    return any(
+        msg.type == "note_on" and msg.velocity > 0 and msg.note == pitch
+        for tr in m.tracks for msg in tr
+    )
+
+
+def test_edit_tool_resolves_modo_bass_recipe_and_inserts_keyswitch(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _bass_attack_style_plan(src, tool="MODO Bass")
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    # keyswitch_dedo = 13 no manual (tecnicas_baixo_midi.md, bass.attack_style,
+    # tools.modo_bass) — so aparece quando a receita `modo_bass` foi resolvida.
+    assert _has_note_on(out, 13), (
+        "com edit.tool='MODO Bass', bass.attack_style tem que inserir o "
+        "keyswitch_dedo (13) que diz ao plugin para tocar com dedo"
+    )
+
+
+def test_edit_without_tool_falls_back_to_generic_without_keyswitch(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _bass_attack_style_plan(src, tool=None)
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    # Documenta o comportamento correto do fallback: sem `tool` declarado,
+    # a receita e `generic` (sem keyswitch) por design — nao e erro, so
+    # nao ha ferramenta especifica pedida. Continua sem keyswitch 13.
+    assert not _has_note_on(out, 13)
