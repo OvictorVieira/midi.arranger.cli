@@ -127,6 +127,12 @@ def normalize_kind(label: str) -> str | None:
     conhecido), cai de volta pro rotulo inteiro, senao o unico nome de
     secao presente (o destino) seria descartado a toa.
 
+    O fragmento a esquerda tambem e truncado em 'from'/'do' (clausula de
+    ORIGEM, 'TRANSITION FROM VERSE TO CHORUS', 'TRANSICAO DO VERSO PARA O
+    REFRAO') antes de classificar — senao o nome da secao de ORIGEM
+    (canonico, ex. 'verse') venceria o cue real do trecho atual pela
+    mesma precedencia canonical-primeiro que protege 'CHORUS DROP'.
+
     Retorna None quando o rotulo nao casa com nenhuma familia conhecida —
     quem chama decide se levanta erro ou trata como generico.
     """
@@ -145,6 +151,12 @@ def normalize_kind(label: str) -> str | None:
         ) or _search_kind_patterns(text, _MODIFIER_KIND_PATTERNS)
 
     leading = re.split(r"\bto\b|\binto\b|\bpara\b", s, maxsplit=1)[0].strip()
+    # Descarta a clausula de origem ('FROM X'/'DO X') do fragmento a
+    # esquerda ANTES de classificar — mantem o fragmento original se a
+    # remocao esvaziar tudo (nada a ganhar em cair pra string vazia).
+    leading_without_source = re.split(r"\bfrom\b|\bdo\b", leading, maxsplit=1)[0].strip()
+    if leading_without_source:
+        leading = leading_without_source
     if leading and leading != s:
         leading_kind = _match(leading)
         if leading_kind is not None:
