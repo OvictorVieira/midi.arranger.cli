@@ -2615,10 +2615,21 @@ def _apply_bass_palm_mute(
 
     technique, _range = load_range_resolver(context)
 
-    # MODO BASS nao oferece CC de mute de fabrica nem documenta uma curva.
-    # Por isso o manual nao anuncia uma receita `modo_bass`: a resolucao
-    # central cai no aplicador generico e devolve W_NO_TOOL_RECIPE, em vez de
-    # aceitar um CC que este aplicador nao teria como emitir corretamente.
+    if context.tool == "modo_bass":
+        # Import local de um modulo DIFERENTE do proprio (`tools/techniques/
+        # errors.py`, nao `engine.py`) — `engine.py` nunca importa o nome
+        # solto no seu proprio escopo (ver comentario acima de
+        # `TechniqueContractError`), entao isto e uma dependencia de verdade
+        # noutro modulo, nao uma evasao de `inspect.getclosurevars`.
+        from .errors import TechniqueRecipeError
+
+        raise TechniqueRecipeError(
+            f"tecnica {context.canonical!r}: MODO BASS esta com MUTING Off "
+            "e nao declara CC/keyswitch de fabrica. Configure o mapeamento "
+            "no plugin e documente a curva antes de autorizar esta tecnica; "
+            "o motor nao usa fallback generico para alvo MODO Bass"
+        )
+
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
     velocity_hi = max(velocity_lo, int(velocity_range[1]))
