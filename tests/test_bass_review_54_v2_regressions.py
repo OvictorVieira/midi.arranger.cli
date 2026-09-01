@@ -25,10 +25,8 @@ from tools.plan import (
     validate,
 )
 from tools.render import render
-from tools.techniques.engine import (
-    TechniqueRecipeError,
-    apply_technique,
-)
+from tools.techniques.engine import apply_technique
+from tools.techniques.errors import TechniqueRecipeError
 
 
 def _bass_track(events) -> mido.MidiFile:
@@ -111,6 +109,24 @@ def test_palm_mute_density_zero_e_noop_antes_da_guarda_modo_bass():
         if msg.type == "note_on" and msg.velocity > 0
     ]
     assert out_notes == [(40, 100)]
+
+
+def test_palm_mute_applicator_does_not_capture_global_state():
+    """`_apply_bass_palm_mute` levanta `TechniqueRecipeError` pro caminho
+    MODO Bass sem CC — a excecao mora em `tools/techniques/errors.py`, um
+    modulo DIFERENTE de `engine.py` (onde o aplicador esta definido), pra
+    que o import local dentro da funcao seja uma dependencia de verdade,
+    nao uma referencia disfarcada ao global do proprio modulo (mesmo
+    padrao/achado de `bass.string_selection` na PR #94)."""
+    import inspect
+
+    from tools.techniques.engine import _apply_bass_palm_mute
+
+    closure = inspect.getclosurevars(_apply_bass_palm_mute)
+    unexpected = set(closure.globals) - {"mido"}
+    assert not unexpected, (
+        f"bass.palm_mute captura estado global inesperado: {unexpected}"
+    )
 
 
 def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():

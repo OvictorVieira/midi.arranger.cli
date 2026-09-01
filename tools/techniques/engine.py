@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import mido
 
+from . import errors as _errors
 from .index import Technique, TechniqueIndex, build_index
 from .notes import _collect_notes
 from .physical import TechniquePhysicalError, validate_physical_plausibility
@@ -52,8 +53,14 @@ class TechniqueContractError(ValueError):
     """Violacao do contrato runtime de uma tecnica aplicavel."""
 
 
-class TechniqueRecipeError(ValueError):
-    """Falha ao resolver receita MIDI documentada para uma tecnica."""
+# `TechniqueRecipeError` mora em `tools/techniques/errors.py`, nao aqui, e
+# `engine.py` NUNCA importa o nome solto (nem re-exporta) — ver o docstring
+# daquele modulo para o motivo: qualquer aplicador registrado neste modulo
+# que precise da excecao so fica de fato autocontido se "TechniqueRecipeError"
+# nunca virar uma global do proprio `engine.py`. Codigo deste modulo que
+# precisar dela usa `_errors.TechniqueRecipeError` (qualificado); quem
+# importa a excecao de fora usa `tools.techniques.errors` ou
+# `tools.techniques` (re-exportada la, nao aqui).
 
 
 @dataclass(frozen=True)
@@ -312,7 +319,7 @@ def _resolve_recipe(
     idx = index if index is not None else build_index()
     technique = idx.get(canonical)
     if technique is None:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {canonical!r} nao existe no indice dos manuais"
         )
     return _recipe_for_tool(technique, tool_target)
@@ -350,12 +357,12 @@ def _recipe_for_tool(
         )
 
     if tool_target:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {technique.canonical!r} nao tem receita para "
             f"tool={tool_target!r} nem fallback generic; disponiveis: "
             f"{sorted(technique.tools.keys())!r}"
         )
-    raise TechniqueRecipeError(
+    raise _errors.TechniqueRecipeError(
         f"tecnica {technique.canonical!r} nao tem receita generic; declare "
         f"uma ferramenta-alvo com receita disponivel: {sorted(technique.tools.keys())!r}"
     )
@@ -2609,10 +2616,14 @@ def _apply_bass_palm_mute(
     technique, _range = load_range_resolver(context)
 
     if context.tool == "modo_bass":
-        # Import local: aplicadores registrados nao podem capturar globals.
-        from .engine import TechniqueRecipeError as _TechniqueRecipeError
+        # Import local de um modulo DIFERENTE do proprio (`tools/techniques/
+        # errors.py`, nao `engine.py`) — `engine.py` nunca importa o nome
+        # solto no seu proprio escopo (ver comentario acima de
+        # `TechniqueContractError`), entao isto e uma dependencia de verdade
+        # noutro modulo, nao uma evasao de `inspect.getclosurevars`.
+        from .errors import TechniqueRecipeError
 
-        raise _TechniqueRecipeError(
+        raise TechniqueRecipeError(
             f"tecnica {context.canonical!r}: MODO BASS esta com MUTING Off "
             "e nao declara CC/keyswitch de fabrica. Configure o mapeamento "
             "no plugin e documente a curva antes de autorizar esta tecnica; "
@@ -3871,7 +3882,6 @@ __all__ = [
     "TechniqueContext",
     "TechniqueLevel",
     "TechniquePhysicalError",
-    "TechniqueRecipeError",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
     "UnknownTechniqueError",
