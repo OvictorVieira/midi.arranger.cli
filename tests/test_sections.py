@@ -187,6 +187,33 @@ def test_normalize_kind_leading_cue_beats_named_source_section():
     assert sections.normalize_kind("TRANSICAO DO VERSO PARA O REFRAO") == "interlude"
 
 
+def test_normalize_kind_preserves_finale_as_outro():
+    # Achado do Codex na PR: '\bfinal\b' nao casa 'Finale' (o 'e' final
+    # quebra a fronteira de palavra), regressao do fix anterior que
+    # ancorou 'final' — antes (substring sem fronteira) 'Finale' casava.
+    assert sections.normalize_kind("Finale") == "outro"
+    assert sections.normalize_kind("FINALE") == "outro"
+    assert sections.normalize_kind("Final") == "outro"
+
+
+def test_normalize_kind_recognizes_contracted_portuguese_destination():
+    # Achado do Codex na PR: 'pro'/'pra' sao contracao coloquial comum de
+    # 'para o'/'para a' e nao eram reconhecidos como marcador de destino,
+    # so 'para' era.
+    assert sections.normalize_kind("BUILD PRO REFRAO") == "pre"
+    assert sections.normalize_kind("TRANSICAO PRA VERSO") == "interlude"
+
+
+def test_normalize_kind_strips_all_portuguese_source_contractions():
+    # Achado do Codex na PR: a clausula de origem em portugues tem mais
+    # formas gramaticais que 'do' ('da', 'das', 'dos', 'de') dependendo do
+    # genero/numero da secao de origem — todas precisam ser descartadas
+    # antes de classificar, senao o nome da secao de origem vence.
+    assert sections.normalize_kind("TRANSICAO DA ESTROFE PARA O REFRAO") == "interlude"
+    assert sections.normalize_kind("TRANSICAO DOS VERSOS PARA O REFRAO") == "interlude"
+    assert sections.normalize_kind("TRANSICAO DE VERSO PARA REFRAO") == "interlude"
+
+
 def test_normalize_kind_recognizes_accented_pre_spelling():
     # Achado do Codex na PR: a grafia acentuada 'PRE'/'PRE-DROP' nao casava
     # com nenhum padrao de 'pre' (que so tinha 'e' sem acento), entao
