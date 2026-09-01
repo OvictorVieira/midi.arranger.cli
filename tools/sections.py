@@ -29,23 +29,43 @@ CANONICAL_KINDS = (
 )
 
 
-# Ordem importa: 'pre-chorus' precisa casar antes de 'chorus'.
+# Ordem importa: grupos mais especificos (ex. 'pre-chorus', 'pre-drop')
+# precisam casar antes dos grupos genericos que sua substring tocaria
+# ('chorus', 'breakdown') — por isso 'pre' vem primeiro na tupla.
 #
-# 'build'/'build-up' e 'hold' sao convencoes de cue comuns em producao (nao
-# especificas de uma musica): BUILD e a secao de tensao crescente antes do
-# proximo trecho (mesma funcao formal de um pre-chorus/pre-drop) — mapeada
-# para 'pre'. HOLD e uma pausa/fermata suspensa antes de retomar — mapeada
-# para 'interlude' (trecho de transicao/textura, nao conteudo principal).
+# Vocabulario de cue de producao, em ingles e portugues — nao especifico de
+# uma musica, mesma convencao usada em DAW/tab/sessao de estudio comum:
+#
+# - 'pre': tensao crescente antes do proximo trecho — pre-chorus/pre-drop,
+#   'build'/'build-up' (subida de energia) e 'riser' (efeito de subida
+#   tipico de producao eletronica/hibrida) tem a mesma funcao formal.
+# - 'interlude': trecho de transicao ou textura suspensa, nao conteudo
+#   principal — 'hold' (pausa/fermata), 'transicao'/'transition',
+#   'turnaround' e 'vamp' (groove repetido segurando o lugar) encaixam aqui.
+# - 'breakdown': trecho pesado, geralmente riff grave com palm mute —
+#   'quebra' (PT) e sinonimo direto; 'drop' aqui segue o sentido de metal/
+#   metalcore (breakdown pesado), nao o sentido de EDM/pop (que seria mais
+#   proximo de 'chorus') — a persona default deste projeto e produtor de
+#   metal moderno, entao esse e o sentido mais provavel quando o genero nao
+#   for informado de outra forma.
+# - 'chorus': 'hook'/'gancho' (parte mais cantavel) e 'refrain' (sinonimo
+#   em ingles) sao a mesma coisa formalmente.
+# - 'verse': 'estrofe' e sinonimo em portugues.
+# - 'bridge': 'solo' (desvio instrumental) cumpre a mesma funcao formal de
+#   contraste dentro da musica.
+# - 'outro': 'coda' e 'tag' sao sinonimos de encerramento.
 _KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre$", r"^prechorus$",
-                    r"build[-\s_]?up", r"^build$")),
-    ("interlude", (r"interlude", r"interl[uú]dio", r"^hold$")),
-    ("breakdown", (r"breakdown", r"break")),
-    ("bridge",    (r"bridge", r"ponte")),
-    ("chorus",    (r"chorus", r"refr[aã]o")),
-    ("verse",     (r"verse", r"verso")),
-    ("intro",     (r"intro",)),
-    ("outro",     (r"outro", r"ending", r"final")),
+                    r"build[-\s_]?up", r"^build$", r"riser",
+                    r"pre[-\s_]?drop", r"^predrop$")),
+    ("interlude", (r"interlude", r"interl[uú]dio", r"^hold$",
+                    r"transi[cç][aã]o", r"transition", r"turnaround", r"vamp")),
+    ("breakdown", (r"breakdown", r"break", r"quebra", r"drop")),
+    ("bridge",    (r"bridge", r"ponte", r"^solo$")),
+    ("chorus",    (r"chorus", r"refr[aã]o", r"^hook$", r"^gancho$", r"refrain")),
+    ("verse",     (r"verse", r"verso", r"estrofe")),
+    ("intro",     (r"intro", r"introdu[cç][aã]o")),
+    ("outro",     (r"outro", r"ending", r"final", r"^coda$", r"^tag$")),
 )
 
 

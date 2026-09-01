@@ -66,6 +66,35 @@ def test_normalize_kind_build_and_hold_conventions():
     assert sections.normalize_kind("Hold") == "interlude"
 
 
+def test_normalize_kind_wider_production_cue_vocabulary():
+    # Vocabulario adicional de cue comum (EN/PT), mesma funcao formal dos
+    # oito kinds canonicos — nenhum e especifico de uma musica.
+    assert sections.normalize_kind("Riser") == "pre"
+    assert sections.normalize_kind("Pre-Drop") == "pre"
+    assert sections.normalize_kind("predrop") == "pre"
+    assert sections.normalize_kind("Transition") == "interlude"
+    assert sections.normalize_kind("Transição") == "interlude"
+    assert sections.normalize_kind("Turnaround") == "interlude"
+    assert sections.normalize_kind("Vamp") == "interlude"
+    assert sections.normalize_kind("Quebra") == "breakdown"
+    assert sections.normalize_kind("Drop") == "breakdown"
+    assert sections.normalize_kind("Solo") == "bridge"
+    assert sections.normalize_kind("Hook") == "chorus"
+    assert sections.normalize_kind("Gancho") == "chorus"
+    assert sections.normalize_kind("Refrain") == "chorus"
+    assert sections.normalize_kind("Estrofe") == "verse"
+    assert sections.normalize_kind("Introdução") == "intro"
+    assert sections.normalize_kind("Coda") == "outro"
+    assert sections.normalize_kind("Tag") == "outro"
+
+
+def test_normalize_kind_pre_drop_beats_breakdown_drop():
+    # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
+    # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
+    assert sections.normalize_kind("PRE-DROP") == "pre"
+    assert sections.normalize_kind("pre drop") == "pre"
+
+
 def test_normalize_kind_unknown_returns_none():
     assert sections.normalize_kind("mystery") is None
     assert sections.normalize_kind("") is None
