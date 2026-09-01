@@ -30,9 +30,16 @@ CANONICAL_KINDS = (
 
 
 # Ordem importa: 'pre-chorus' precisa casar antes de 'chorus'.
+#
+# 'build'/'build-up' e 'hold' sao convencoes de cue comuns em producao (nao
+# especificas de uma musica): BUILD e a secao de tensao crescente antes do
+# proximo trecho (mesma funcao formal de um pre-chorus/pre-drop) — mapeada
+# para 'pre'. HOLD e uma pausa/fermata suspensa antes de retomar — mapeada
+# para 'interlude' (trecho de transicao/textura, nao conteudo principal).
 _KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre$", r"^prechorus$")),
-    ("interlude", (r"interlude", r"interl[uú]dio")),
+    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre$", r"^prechorus$",
+                    r"build[-\s_]?up", r"^build$")),
+    ("interlude", (r"interlude", r"interl[uú]dio", r"^hold$")),
     ("breakdown", (r"breakdown", r"break")),
     ("bridge",    (r"bridge", r"ponte")),
     ("chorus",    (r"chorus", r"refr[aã]o")),

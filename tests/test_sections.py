@@ -54,6 +54,18 @@ def test_normalize_kind_other_families():
     assert sections.normalize_kind("OUTRO") == "outro"
 
 
+def test_normalize_kind_build_and_hold_conventions():
+    # 'build'/'build-up' e 'hold' sao cues de producao comuns (nao
+    # especificos de uma musica) — build tem a mesma funcao formal de um
+    # pre-chorus (tensao crescente); hold e pausa/fermata, mapeada como
+    # interlude (transicao/textura, nao conteudo principal).
+    assert sections.normalize_kind("BUILD") == "pre"
+    assert sections.normalize_kind("Build-Up") == "pre"
+    assert sections.normalize_kind("build up") == "pre"
+    assert sections.normalize_kind("HOLD") == "interlude"
+    assert sections.normalize_kind("Hold") == "interlude"
+
+
 def test_normalize_kind_unknown_returns_none():
     assert sections.normalize_kind("mystery") is None
     assert sections.normalize_kind("") is None
