@@ -2090,8 +2090,8 @@ def test_edit_without_tool_falls_back_to_generic_without_keyswitch(tmp_path):
     assert not _has_note_on(out, 13)
 
 
-def test_edit_tool_modo_bass_palm_mute_reports_generic_fallback(tmp_path):
-    """Render nao promete a curva CC que o MODO BASS nao documenta."""
+def test_edit_tool_modo_bass_palm_mute_fails_without_mapping(tmp_path):
+    """Render nao usa fallback para um alvo MODO sem evento de mute."""
     src = _build_synthetic_source(tmp_path)
     plan = _build_plan(src)
     plan.elements = []
@@ -2113,9 +2113,8 @@ def test_edit_tool_modo_bass_palm_mute_reports_generic_fallback(tmp_path):
     _attach_brief_authorizing_techniques(plan, tmp_path)
     out = tmp_path / "out.mid"
 
-    report = render(plan, out)
-
-    assert any("W_NO_TOOL_RECIPE" in warning for warning in report.warnings)
+    with pytest.raises(RenderError, match="MUTING Off"):
+        render(plan, out)
 
 
 def _stamp_text(path: Path, track_name_value: str) -> str:

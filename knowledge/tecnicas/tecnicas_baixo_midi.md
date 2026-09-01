@@ -288,15 +288,16 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
 {
   "name": "palm_mute",
   "family": "bass",
-  "summary": "Fallback generico de abafamento; MODO BASS exige uma curva CC que ainda nao esta documentada.",
+  "summary": "Abafamento generico; MODO BASS so pode aplicar depois que MUTING for mapeado no plugin.",
   "verified": false,
-  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plugin precisa de um CC atribuido pelo usuario e de uma curva com retorno a zero, mas o manual nao documenta valores ou forma de curva que o motor possa emitir sem inventar. Por isso esta tecnica so oferece a receita generic de gate/velocity e avisa W_NO_TOOL_RECIPE quando o alvo for MODO BASS.",
+  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plugin precisa de um CC ou keyswitch mapeado pelo usuario e de uma curva com retorno a zero. Enquanto esse mapeamento e a curva nao forem declarados e implementados, pedir esta tecnica para MODO BASS falha explicitamente: nunca cai no fallback generico e nunca inventa evento MIDI.",
   "parameters": [
     {"name": "velocity", "range": [60, 100], "source": "CONVENCAO — mute abafa timbre, nao reduz forca de ataque a niveis de ghost note; faixa media escolhida para o motor, sem medicao publicada"},
     {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"}
   ],
   "tools": {
-    "generic": {"note": "gate curto e velocity media; sem CC dedicado"}
+    "generic": {"note": "gate curto e velocity media; sem CC dedicado"},
+    "modo_bass": {"unsupported": true, "note": "MUTING vem Off na pagina CONTROL v1.5.2. Mapeie um CC ou keyswitch no plugin e documente a curva antes de autorizar a tecnica"}
   }
 }
 ```

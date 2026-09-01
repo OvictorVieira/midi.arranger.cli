@@ -150,6 +150,7 @@ def test_describe_ambiguous_name_is_resolved_by_target_tool():
     ("name", "tool", "canonical"),
     [
         ("palm_mute", "shreddage3", "guitar.palm_mute"),
+        ("palm_mute", "modo_bass", "bass.palm_mute"),
         ("vibrato", "ample", "guitar.vibrato"),
         ("vibrato", "modo_bass", "bass.vibrato"),
         ("slide", "musiclab_reallpc", "guitar.slide"),
@@ -173,20 +174,6 @@ def test_guitar_manual_collides_with_bass_and_the_tool_still_resolves(
     assert env["ok"] is True
     assert env["data"]["canonical"] == canonical
     assert env["data"]["tool"] == tool
-
-
-def test_modo_bass_palm_mute_requires_canonical_name_and_warns_fallback():
-    """Sem curva CC documentada, MODO BASS usa so a receita generica."""
-    env = call("techniques.describe", {
-        "name": "bass.palm_mute", "tool": "modo_bass",
-    })
-
-    assert env["ok"] is True
-    assert env["data"]["canonical"] == "bass.palm_mute"
-    assert env["data"]["tool"] == "generic"
-    assert [warning["code"] for warning in env["warnings"]] == [
-        "W_NO_TOOL_RECIPE",
-    ]
 
 
 @pytest.mark.parametrize(

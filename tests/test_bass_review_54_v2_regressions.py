@@ -25,7 +25,10 @@ from tools.plan import (
     validate,
 )
 from tools.render import render
-from tools.techniques.engine import apply_technique, apply_technique_with_warnings
+from tools.techniques.engine import (
+    TechniqueRecipeError,
+    apply_technique,
+)
 
 
 def _bass_track(events) -> mido.MidiFile:
@@ -84,25 +87,18 @@ def test_hammer_pull_continua_idempotente_apos_reconhecer_ligado_natural():
     assert snapshot(once) == snapshot(twice)
 
 
-def test_palm_mute_modo_bass_usa_fallback_generico_com_warning():
-    """Nunca promete a curva CC que o MODO BASS nao documenta."""
+def test_palm_mute_modo_bass_falha_sem_fallback_generico():
+    """MODO nao pode receber gate/velocity como se fosse o CC de mute."""
     events = [(0, 480, 40, 100)]
-    applied = apply_technique_with_warnings(
-        "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-        parameters={"density": 1.0},
-    )
-    assert applied.result is not None
-    assert [warning["code"] for warning in applied.warnings] == [
-        "W_NO_TOOL_RECIPE",
-    ]
-    assert not any(
-        msg.type == "control_change"
-        for track in applied.result.tracks for msg in track
-    )
+    with pytest.raises(TechniqueRecipeError, match="MUTING Off"):
+        apply_technique(
+            "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
+            parameters={"density": 1.0},
+        )
 
 
-def test_palm_mute_density_zero_e_noop_com_fallback_modo_bass():
-    """Tecnica desligada nao altera a linha, mesmo em fallback de tool."""
+def test_palm_mute_density_zero_e_noop_antes_da_guarda_modo_bass():
+    """Tecnica desligada nao altera a linha nem exige mapeamento MODO."""
     events = [(0, 480, 40, 100)]
     source = _bass_track(events)
     out = apply_technique(
