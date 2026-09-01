@@ -542,19 +542,28 @@ def _run_style_pipeline(
     index: TechniqueIndex,
     edit_track: str | None = None,
     tuning: tuple[int, ...] | None = None,
-) -> tuple[mido.MidiFile, list[str]]:
+) -> tuple[mido.MidiFile, list[str], tuple[str, ...]]:
     """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
 
     Comum aos dois caminhos que aplicam estilo: tracks recem-renderizadas por
     elemento e tracks do MIDI de origem nomeadas em `plan.edits`. Warnings
     ganham prefixo com o nome da track quando o alvo e uma edit, para o
     relatorio identificar de qual track de origem partiu o aviso.
+
+    `density` explicitamente <= 0.0 significa tecnica desligada (AGENTS.md):
+    nem resolve receita nem dispara `W_NO_TOOL_RECIPE` para uma tecnica que
+    nao vai fazer nada. O terceiro item do retorno lista, em ordem, apenas as
+    tecnicas que de fato foram despachadas — usado para o carimbo nao citar
+    tecnica desligada como se tivesse sido aplicada.
     """
 
     warnings: list[str] = []
+    applied_names: list[str] = []
     warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
     for technique in style.techniques:
         canonical = _canonical_style_technique(index, family, technique.name)
+        if technique.density is not None and technique.density <= 0.0:
+            continue
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
@@ -587,7 +596,8 @@ def _run_style_pipeline(
             f"{warning_prefix}{_format_engine_warning(w)}"
             for w in applied.warnings
         )
-    return current, warnings
+        applied_names.append(canonical)
+    return current, warnings, tuple(applied_names)
 
 
 def _apply_style_techniques_to_tracks(
@@ -600,19 +610,22 @@ def _apply_style_techniques_to_tracks(
     midi_type: int,
     index: TechniqueIndex | None,
     tuning_by_family: dict[str, tuple[int, ...]] | None = None,
-) -> tuple[list[mido.MidiTrack], list[str], bool]:
+) -> tuple[list[mido.MidiTrack], list[str], bool, tuple[str, ...]]:
     """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
 
     As tracks do MIDI de origem nao entram aqui — quando uma edit aponta para
     uma track existente, o caminho e `_apply_style_techniques_to_edit_tracks`,
     que roda depois de `apply_edits` e antes do render por elemento.
+
+    O quarto item do retorno lista as tecnicas de fato despachadas (nunca as
+    que `density<=0.0` desligou) — ver `_run_style_pipeline`.
     """
 
     if family is None or not tracks or not plan.style:
-        return tracks, [], False
+        return tracks, [], False, ()
     style = plan.style.get(family)
     if style is None or not style.techniques:
-        return tracks, [], False
+        return tracks, [], False, ()
     if index is None:
         raise RenderError("internal error: missing techniques index for style render")
 
@@ -621,7 +634,7 @@ def _apply_style_techniques_to_tracks(
         ticks_per_beat=ticks_per_beat,
         midi_type=midi_type,
     )
-    current, warnings = _run_style_pipeline(
+    current, warnings, applied_names = _run_style_pipeline(
         current,
         plan=plan,
         family=family,
@@ -630,7 +643,7 @@ def _apply_style_techniques_to_tracks(
         index=index,
         tuning=(tuning_by_family or {}).get(family),
     )
-    return list(current.tracks), warnings, True
+    return list(current.tracks), warnings, True, applied_names
 
 
 def _apply_style_techniques_to_edit_tracks(
@@ -639,7 +652,7 @@ def _apply_style_techniques_to_edit_tracks(
     plan: ArrangementPlan,
     index: TechniqueIndex | None,
     tuning_by_family: dict[str, tuple[int, ...]] | None = None,
-) -> list[str]:
+) -> tuple[list[str], dict[str, tuple[str, ...]]]:
     """Aplica `style.<family>` sobre as tracks da origem nomeadas em `plan.edits`.
 
     Ordem inviolavel: `apply_edits` (humanizacao por profile) ja rodou; agora
@@ -652,10 +665,14 @@ def _apply_style_techniques_to_edit_tracks(
     Profile `generic` nao tem familia e nao recebe tecnica; isso e por design,
     nao erro. Familia sem `style` declarado (nem defaults) ou sem `techniques`
     tambem sai sem tocar na track.
+
+    O segundo item do retorno mapeia `edit.track` -> tecnicas de fato
+    despachadas (nunca as que `density<=0.0` desligou), para o carimbo em
+    `_stamp_edit_tracks` refletir so o que realmente aconteceu na track.
     """
 
     if not plan.edits or not plan.style:
-        return []
+        return [], {}
 
     name_to_indices: dict[str, list[int]] = {}
     for idx, tr in enumerate(out_mid.tracks):
@@ -664,6 +681,7 @@ def _apply_style_techniques_to_edit_tracks(
             name_to_indices.setdefault(name, []).append(idx)
 
     warnings: list[str] = []
+    applied_by_track: dict[str, tuple[str, ...]] = {}
     for edit in plan.edits:
         family = _style_family_for_edit(edit.profile)
         if family is None:
@@ -684,7 +702,7 @@ def _apply_style_techniques_to_edit_tracks(
             ticks_per_beat=out_mid.ticks_per_beat,
             midi_type=out_mid.type,
         )
-        working, edit_warnings = _run_style_pipeline(
+        working, edit_warnings, applied_names = _run_style_pipeline(
             working,
             plan=plan,
             family=family,
@@ -695,11 +713,12 @@ def _apply_style_techniques_to_edit_tracks(
             tuning=(tuning_by_family or {}).get(family),
         )
         warnings.extend(edit_warnings)
+        applied_by_track[edit.track] = applied_names
         for slot, new_track in zip(
             target_indices, working.tracks, strict=True,
         ):
             out_mid.tracks[slot] = new_track
-    return warnings
+    return warnings, applied_by_track
 
 
 # --- carimbo de plugin/preset em meta text ---------------------------------
@@ -804,12 +823,19 @@ def _stamp_edit_tracks(
     *,
     plan: ArrangementPlan,
     index: TechniqueIndex | None,
+    applied_techniques: dict[str, tuple[str, ...]] | None = None,
 ) -> None:
     """Carimba plugin/preset/role/verified/techniques em cada track de `plan.edits`.
 
     Faz o mapa `edit.track` -> tracks do MIDI final apenas para as tracks
     nomeadas em `plan.edits` — tracks nao declaradas ficam byte-identicas ao
     source por definicao (ver AGENTS.md), e nao recebem carimbo.
+
+    `applied_techniques`, quando passado (o mapa devolvido por
+    `_apply_style_techniques_to_edit_tracks`), e a fonte da verdade das
+    tecnicas de fato aplicadas — nunca lista tecnica que `density<=0.0`
+    desligou. Omitido (chamada isolada, fora do pipeline de `render()`), cai
+    no fallback antigo de listar todas as tecnicas DECLARADAS da familia.
     """
     if not plan.edits:
         return
@@ -825,7 +851,9 @@ def _stamp_edit_tracks(
             continue
         family = _style_family_for_edit(edit.profile)
         techniques: tuple[str, ...] = ()
-        if family is not None and plan.style is not None:
+        if applied_techniques is not None:
+            techniques = applied_techniques.get(edit.track, ())
+        elif family is not None and plan.style is not None:
             style = plan.style.get(family)
             if style is not None and style.techniques:
                 if index is None:
@@ -1734,12 +1762,13 @@ def render(
     # de tecnicas nas mesmas tracks da origem. Assim as tecnicas de estilo
     # alcancam a bateria real do usuario — sem esse passo, `style.<familia>`
     # so afeta elemento gerado, e o produto nao entrega o que promete.
-    warnings.extend(
+    edit_technique_warnings, edit_applied_techniques = (
         _apply_style_techniques_to_edit_tracks(
             out_mid, plan=plan, index=style_index,
             tuning_by_family=tuning_by_family,
         )
     )
+    warnings.extend(edit_technique_warnings)
     for e in plan.elements:
         warnings.extend(_unsupported_pattern_warnings(e))
         layer_warning = _strings_tutti_layer_warning(e)
@@ -1766,6 +1795,7 @@ def render(
                 midi_tracks,
                 technique_warnings,
                 technique_applied,
+                element_techniques,
             ) = _apply_style_techniques_to_tracks(
                 midi_tracks,
                 plan=plan,
@@ -1777,22 +1807,6 @@ def render(
                 tuning_by_family=tuning_by_family,
             )
             warnings.extend(technique_warnings)
-            element_family = _style_family_for_role(e.role)
-            element_techniques: tuple[str, ...] = ()
-            if (
-                technique_applied
-                and element_family is not None
-                and plan.style is not None
-                and style_index is not None
-            ):
-                family_style = plan.style.get(element_family)
-                if family_style is not None:
-                    element_techniques = tuple(
-                        _canonical_style_technique(
-                            style_index, element_family, tech.name,
-                        )
-                        for tech in family_style.techniques
-                    )
             _stamp_element_tracks(midi_tracks, e, techniques=element_techniques)
             out_mid.tracks.extend(midi_tracks)
             rendered_tracks.extend(
@@ -1820,7 +1834,10 @@ def render(
     # (quando declarada) sugestao de plugin/preset. Depois de `apply_edits` e
     # do motor de tecnicas — assim o carimbo reflete o que o arranjador de
     # fato fez naquela track.
-    _stamp_edit_tracks(out_mid, plan=plan, index=style_index)
+    _stamp_edit_tracks(
+        out_mid, plan=plan, index=style_index,
+        applied_techniques=edit_applied_techniques,
+    )
 
     warnings.extend(check_tutti_uniqueness(plan))
 
