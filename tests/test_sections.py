@@ -133,6 +133,9 @@ def test_normalize_kind_new_modifiers_do_not_match_as_substring():
     # evita o falso positivo.
     assert sections.normalize_kind("Revamped Chorus") == "chorus"
     assert sections.normalize_kind("Backdrop") is None
+    assert sections.normalize_kind("REVAMP") is None
+    assert sections.normalize_kind("BACKDROP") is None
+    assert sections.normalize_kind("DROPOUT") is None
     # Sufixo numerado continua casando normalmente.
     assert sections.normalize_kind("DROP 1") == "breakdown"
     assert sections.normalize_kind("VAMP 2") == "interlude"
