@@ -27,7 +27,7 @@ Determinismo:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -106,6 +106,13 @@ from .techniques import (
     build_index as build_techniques_index,
 )
 from .tracks import is_ascii_safe, name_for_element
+from .validators.anticopy import (
+    AntiCopyIssue,
+    ReferenceSequence,
+    load_reference_sequences,
+    validate_anticopy,
+)
+from .validators.anticopy import format_issues as format_anticopy_issues
 from .validators.artifice import ArtificeIssue, validate_artifice
 from .validators.artifice import format_issues as format_artifice_issues
 from .validators.collision import CollisionReport, validate_collisions
@@ -257,6 +264,7 @@ class RenderReport:
     placement_issues: list[PlacementIssue] = field(default_factory=list)
     artifice_issues: list[ArtificeIssue] = field(default_factory=list)
     persona_issues: list[PersonaIssue] = field(default_factory=list)
+    anticopy_issues: list[AntiCopyIssue] = field(default_factory=list)
     edits: list[EditReport] = field(default_factory=list)
 
 
@@ -1616,6 +1624,7 @@ def render(
     source_path: str | Path | None = None,
     strict_persona: bool = False,
     plan_dir: str | Path | None = None,
+    reference_corpus: Iterable[str | Path] | Iterable[ReferenceSequence] | None = None,
 ) -> RenderReport:
     """Renderiza `plan` sobre o MIDI de origem em um arquivo novo.
 
@@ -1811,6 +1820,20 @@ def render(
     persona_issues = validate_persona(
         plan, rendered_tracks, analysis, strict=strict_persona,
     )
+    # Anticopia (AC-16): so roda quando ha corpus. AC-15 (structural — sem
+    # sequencia de nota em `style`) ja foi barrado por `plan.validate` acima.
+    # Aceita paths (str/Path) OU `ReferenceSequence` ja extraidas — para
+    # testes determinsticos sem tocar filesystem.
+    corpus_sequences: list[ReferenceSequence] = []
+    if reference_corpus is not None:
+        materialized = list(reference_corpus)
+        if all(isinstance(item, ReferenceSequence) for item in materialized):
+            corpus_sequences = list(materialized)   # type: ignore[arg-type]
+        else:
+            corpus_sequences = load_reference_sequences(materialized)   # type: ignore[arg-type]
+    anticopy_issues = validate_anticopy(
+        rendered_tracks, plan, analysis, corpus=corpus_sequences or None,
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_mid.save(str(out_path))
@@ -1826,6 +1849,7 @@ def render(
         placement_issues=placement_issues,
         artifice_issues=artifice_issues,
         persona_issues=persona_issues,
+        anticopy_issues=anticopy_issues,
         edits=edit_reports,
     )
 
@@ -1896,6 +1920,8 @@ def format_render_report(report: RenderReport) -> str:
     lines.append(format_artifice_issues(report.artifice_issues))
     lines.append("")
     lines.append(format_persona_issues(report.persona_issues))
+    lines.append("")
+    lines.append(format_anticopy_issues(report.anticopy_issues))
     return "\n".join(lines)
 
 
