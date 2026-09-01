@@ -81,7 +81,7 @@ _CANONICAL_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("chorus",    (r"chorus", r"refr[aã]o", r"refrain")),
     ("verse",     (r"verse", r"verso", r"estrofe")),
     ("intro",     (r"intro", r"introdu[cç][aã]o")),
-    ("outro",     (r"outro", r"\bending\b", r"\bfinal\b", r"\bcoda\b", r"\btag\b")),
+    ("outro",     (r"outro", r"\bending\b", r"\bfinale?\b", r"\bcoda\b", r"\btag\b")),
 )
 
 _MODIFIER_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -117,21 +117,24 @@ def normalize_kind(label: str) -> str | None:
 
     Excecao a essa precedencia: rotulo qualificado por DESTINO ('BUILD TO
     CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE', 'BUILD PARA O
-    REFRAO' em portugues) descreve o trecho ATUAL (o cue a esquerda de
-    'to'/'into'/'para'), nao o destino nomeado depois — 'BUILD TO CHORUS'
-    e o build-up que antecede o refrao, nao o refrao em si. Por isso o
-    rotulo e testado primeiro truncado nesses marcadores de destino. Mas
-    so USA esse resultado quando o fragmento a esquerda classifica sozinho
-    ('BUILD' classifica); se nao classificar ('FADE TO OUTRO', 'COUNT IN TO
-    INTRO', 'SWELL INTO CHORUS' — 'fade'/'count in'/'swell' nao sao cue
-    conhecido), cai de volta pro rotulo inteiro, senao o unico nome de
-    secao presente (o destino) seria descartado a toa.
+    REFRAO'/'BUILD PRO REFRAO' em portugues, 'pro'/'pra' sao contracao
+    coloquial de 'para o'/'para a') descreve o trecho ATUAL (o cue a
+    esquerda de 'to'/'into'/'para'/'pro'/'pra'), nao o destino nomeado
+    depois — 'BUILD TO CHORUS' e o build-up que antecede o refrao, nao o
+    refrao em si. Por isso o rotulo e testado primeiro truncado nesses
+    marcadores de destino. Mas so USA esse resultado quando o fragmento a
+    esquerda classifica sozinho ('BUILD' classifica); se nao classificar
+    ('FADE TO OUTRO', 'COUNT IN TO INTRO', 'SWELL INTO CHORUS' —
+    'fade'/'count in'/'swell' nao sao cue conhecido), cai de volta pro
+    rotulo inteiro, senao o unico nome de secao presente (o destino)
+    seria descartado a toa.
 
-    O fragmento a esquerda tambem e truncado em 'from'/'do' (clausula de
-    ORIGEM, 'TRANSITION FROM VERSE TO CHORUS', 'TRANSICAO DO VERSO PARA O
-    REFRAO') antes de classificar — senao o nome da secao de ORIGEM
-    (canonico, ex. 'verse') venceria o cue real do trecho atual pela
-    mesma precedencia canonical-primeiro que protege 'CHORUS DROP'.
+    O fragmento a esquerda tambem e truncado em 'from'/'do'/'da'/'de'/
+    'dos'/'das' (clausula de ORIGEM, 'TRANSITION FROM VERSE TO CHORUS',
+    'TRANSICAO DA ESTROFE PARA O REFRAO') antes de classificar — senao o
+    nome da secao de ORIGEM (canonico, ex. 'verse'/'estrofe') venceria o
+    cue real do trecho atual pela mesma precedencia canonical-primeiro
+    que protege 'CHORUS DROP'.
 
     Retorna None quando o rotulo nao casa com nenhuma familia conhecida —
     quem chama decide se levanta erro ou trata como generico.
@@ -150,11 +153,16 @@ def normalize_kind(label: str) -> str | None:
             text, _CANONICAL_KIND_PATTERNS
         ) or _search_kind_patterns(text, _MODIFIER_KIND_PATTERNS)
 
-    leading = re.split(r"\bto\b|\binto\b|\bpara\b", s, maxsplit=1)[0].strip()
-    # Descarta a clausula de origem ('FROM X'/'DO X') do fragmento a
-    # esquerda ANTES de classificar — mantem o fragmento original se a
-    # remocao esvaziar tudo (nada a ganhar em cair pra string vazia).
-    leading_without_source = re.split(r"\bfrom\b|\bdo\b", leading, maxsplit=1)[0].strip()
+    leading = re.split(
+        r"\bto\b|\binto\b|\bpara\b|\bpro\b|\bpra\b", s, maxsplit=1,
+    )[0].strip()
+    # Descarta a clausula de origem ('FROM X'/'DO X'/'DA X'/'DE X') do
+    # fragmento a esquerda ANTES de classificar — mantem o fragmento
+    # original se a remocao esvaziar tudo (nada a ganhar em cair pra
+    # string vazia).
+    leading_without_source = re.split(
+        r"\bfrom\b|\bdo\b|\bda\b|\bdos\b|\bdas\b|\bde\b", leading, maxsplit=1,
+    )[0].strip()
     if leading_without_source:
         leading = leading_without_source
     if leading and leading != s:
