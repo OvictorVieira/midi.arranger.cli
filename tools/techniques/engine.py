@@ -2597,11 +2597,8 @@ def _apply_bass_palm_mute(
 
     from ._param_range import load_range_resolver
 
-    # Tecnica DESLIGADA (density ausente ou <= 0) e no-op antes de qualquer
-    # outra checagem — inclusive antes de exigir `cc` pro MODO BASS logo
-    # abaixo. Ordem importa: checar o requisito de tool-especifico antes do
-    # gate de density faria uma tecnica desligada recusar o plano por falta
-    # de um parametro que ela nem ia usar (achado do Codex na PR #93).
+    # Tecnica DESLIGADA (density ausente ou <= 0) e no-op antes de consultar
+    # os ranges do manual.
     density_raw = context.parameters.get("density")
     if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
         return mid
@@ -2611,35 +2608,10 @@ def _apply_bass_palm_mute(
 
     technique, _range = load_range_resolver(context)
 
-    # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
-    # uma quantidade continua aplicada por cima do estilo ativo... NAO
-    # EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario
-    # atribuiu, ou a tecnica nao sai." A receita `modo_bass` carrega
-    # `cc: null` de proposito.
-    #
-    # Sem esta guarda, pedir `tool=modo_bass` sem declarar o CC caia no
-    # comportamento generic (so encurta duracao e ajusta velocity) SEM
-    # avisar — o usuario acharia que ganhou o palm mute continuo do plugin
-    # e recebeu outra coisa. FALHA ALTA em vez de fallback silencioso.
-    #
-    # A emissao real da curva de CC continua fora do escopo desta correcao:
-    # o manual pede "desenhe uma curva", nao um valor unico, e a FORMA dessa
-    # curva nao tem fonte — inventa-la aqui repetiria o erro que motivou a
-    # issue #53. Rastreado separadamente.
-    if context.tool == "modo_bass" and context.recipe.get("cc") is None:
-        cc_param = context.parameters.get("cc")
-        if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
-            # `TechniqueRecipeError` (nao `ValueError` puro) porque essa e a
-            # excecao que `_run_style_pipeline` (tools/render.py) ja traduz
-            # para `RenderError` -> `E_RENDER`; um `ValueError` cru escapava
-            # ate o facade da CLI sem tradutor e virava `E_INTERNAL` (achado
-            # do Codex na PR #93, exposto pelo novo caminho de `edit.tool`).
-            raise TechniqueRecipeError(
-                f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
-                "de style.bass.parameters.cc (0-127) declarado no plano — o "
-                "MODO BASS nao tem CC de fabrica para palm mute"
-            )
-
+    # MODO BASS nao oferece CC de mute de fabrica nem documenta uma curva.
+    # Por isso o manual nao anuncia uma receita `modo_bass`: a resolucao
+    # central cai no aplicador generico e devolve W_NO_TOOL_RECIPE, em vez de
+    # aceitar um CC que este aplicador nao teria como emitir corretamente.
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
     velocity_hi = max(velocity_lo, int(velocity_range[1]))

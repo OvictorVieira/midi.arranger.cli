@@ -25,7 +25,7 @@ from tools.plan import (
     validate,
 )
 from tools.render import render
-from tools.techniques.engine import apply_technique
+from tools.techniques.engine import apply_technique, apply_technique_with_warnings
 
 
 def _bass_track(events) -> mido.MidiFile:
@@ -84,34 +84,25 @@ def test_hammer_pull_continua_idempotente_apos_reconhecer_ligado_natural():
     assert snapshot(once) == snapshot(twice)
 
 
-def test_palm_mute_falha_alto_em_modo_bass_sem_cc_declarado():
-    """Achado 4: MODO BASS nao tem CC de fabrica para palm mute. Pedir
-    tool='modo_bass' sem declarar `parameters.cc` caia no comportamento
-    generic em silencio — o usuario acharia que ganhou o mute continuo do
-    plugin e recebeu outra coisa.
-    """
+def test_palm_mute_modo_bass_usa_fallback_generico_com_warning():
+    """Nunca promete a curva CC que o MODO BASS nao documenta."""
     events = [(0, 480, 40, 100)]
-    with pytest.raises(ValueError, match="cc"):
-        apply_technique(
-            "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-            parameters={"density": 1.0},
-        )
-
-
-def test_palm_mute_aceita_modo_bass_com_cc_declarado():
-    events = [(0, 480, 40, 100)]
-    out = apply_technique(
+    applied = apply_technique_with_warnings(
         "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-        parameters={"density": 1.0, "cc": 11},
+        parameters={"density": 1.0},
     )
-    assert out is not None
+    assert applied.result is not None
+    assert [warning["code"] for warning in applied.warnings] == [
+        "W_NO_TOOL_RECIPE",
+    ]
+    assert not any(
+        msg.type == "control_change"
+        for track in applied.result.tracks for msg in track
+    )
 
 
-def test_palm_mute_density_zero_e_noop_mesmo_sem_cc_declarado():
-    """Achado do Codex na PR: o guard de `cc` obrigatorio pro MODO BASS
-    rodava ANTES do gate de `density <= 0`, entao uma tecnica desligada
-    (density=0.0) recusava o plano por falta de um parametro que ela nem
-    ia usar. O gate de density agora vem primeiro."""
+def test_palm_mute_density_zero_e_noop_com_fallback_modo_bass():
+    """Tecnica desligada nao altera a linha, mesmo em fallback de tool."""
     events = [(0, 480, 40, 100)]
     source = _bass_track(events)
     out = apply_technique(
