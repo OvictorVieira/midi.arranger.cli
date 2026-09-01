@@ -34,43 +34,84 @@ CANONICAL_KINDS = (
 # ('chorus', 'breakdown') — por isso 'pre' vem primeiro na tupla.
 #
 # Vocabulario de cue de producao, em ingles e portugues — nao especifico de
-# uma musica, mesma convencao usada em DAW/tab/sessao de estudio comum:
+# uma musica, mesma convencao usada em DAW/tab/sessao de estudio comum. Duas
+# camadas, checadas em passadas separadas (ver `normalize_kind`):
 #
-# - 'pre': tensao crescente antes do proximo trecho — pre-chorus/pre-drop,
-#   'build'/'build-up' (subida de energia) e 'riser' (efeito de subida
-#   tipico de producao eletronica/hibrida) tem a mesma funcao formal.
-# - 'interlude': trecho de transicao ou textura suspensa, nao conteudo
-#   principal — 'hold' (pausa/fermata), 'transicao'/'transition',
-#   'turnaround' e 'vamp' (groove repetido segurando o lugar) encaixam aqui.
-# - 'breakdown': trecho pesado, geralmente riff grave com palm mute —
-#   'quebra' (PT) e sinonimo direto; 'drop' aqui segue o sentido de metal/
-#   metalcore (breakdown pesado), nao o sentido de EDM/pop (que seria mais
-#   proximo de 'chorus') — a persona default deste projeto e produtor de
-#   metal moderno, entao esse e o sentido mais provavel quando o genero nao
-#   for informado de outra forma.
-# - 'chorus': 'hook'/'gancho' (parte mais cantavel) e 'refrain' (sinonimo
-#   em ingles) sao a mesma coisa formalmente.
-# - 'verse': 'estrofe' e sinonimo em portugues.
-# - 'bridge': 'solo' (desvio instrumental) cumpre a mesma funcao formal de
-#   contraste dentro da musica.
-# - 'outro': 'coda' e 'tag' sao sinonimos de encerramento.
-_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre\b", r"^prechorus\b",
-                    r"build[-\s_]?up", r"^build\b", r"riser",
-                    r"pre[-\s_]?drop", r"^predrop\b")),
-    ("interlude", (r"interlude", r"interl[uú]dio", r"^hold\b",
-                    r"transi[cç][aã]o", r"transition", r"turnaround", r"vamp")),
-    ("breakdown", (r"breakdown", r"break", r"quebra", r"drop")),
-    ("bridge",    (r"bridge", r"ponte", r"^solo\b")),
-    ("chorus",    (r"chorus", r"refr[aã]o", r"^hook\b", r"^gancho\b", r"refrain")),
+# - CANONICAL: o proprio nome da secao ou tradução/sinonimo direto e
+#   inequivoco dela ('verse'/'verso'/'estrofe', 'chorus'/'refrão'/'refrain',
+#   'bridge'/'ponte', 'breakdown'/'quebra', compostos documentados como
+#   'pre-chorus'/'pre-drop'). Sempre vence quando presente no rotulo, mesmo
+#   se um modificador de outra familia tambem casar ali (achado do Codex na
+#   PR: 'CHORUS DROP' precisa continuar 'chorus', nao virar 'breakdown' so
+#   porque 'drop' tambem esta na string).
+# - MODIFIER: cue de producao secundario que descreve o PAPEL do trecho, nao
+#   o nome dele, e so decide o kind quando nenhum canonical casou em lugar
+#   nenhum do rotulo:
+#   - 'pre': 'build'/'build-up' (subida de energia) e 'riser' (efeito de
+#     subida tipico de producao eletronica/hibrida) tem a mesma funcao
+#     formal de tensao crescente antes do proximo trecho.
+#   - 'interlude': 'hold' (pausa/fermata), 'transicao'/'transition',
+#     'turnaround' e 'vamp' (groove repetido segurando o lugar) sao
+#     transicao/textura suspensa, nao conteudo principal.
+#   - 'breakdown': 'drop' aqui segue o sentido de metal/metalcore
+#     (breakdown pesado), nao o sentido de EDM/pop (que seria mais proximo
+#     de 'chorus') — a persona default deste projeto e produtor de metal
+#     moderno, entao esse e o sentido mais provavel quando o genero nao for
+#     informado de outra forma.
+#   - 'bridge': 'solo' (desvio instrumental) cumpre a mesma funcao formal
+#     de contraste dentro da musica, mesmo quando qualificado por
+#     instrumento ('GUITAR SOLO').
+#   - 'chorus': 'hook'/'gancho' (parte mais cantavel) e o cue mais comum de
+#     producao para o refrao, mesmo quando qualificado por instrumento ou
+#     voz ('VOCAL HOOK').
+#   - 'outro': 'coda' e 'tag' sao sinonimos de encerramento.
+#
+# Os padroes ancorados em `\bpalavra\b` (sem `^`) casam a palavra inteira em
+# qualquer posicao do rotulo — inclusive apos um qualificador ('GUITAR SOLO',
+# 'VOCAL HOOK') — sem casar prefixo de palavra composta ('Hooked' continua
+# fora, porque 'hook' + 'ed' nao tem fronteira de palavra entre 'k' e 'e').
+_CANONICAL_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"\bpre\b", r"\bprechorus\b",
+                    r"pre[-\s_]?drop", r"\bpredrop\b")),
+    ("interlude", (r"interlude", r"interl[uú]dio")),
+    ("breakdown", (r"breakdown", r"quebra")),
+    ("bridge",    (r"bridge", r"ponte")),
+    ("chorus",    (r"chorus", r"refr[aã]o", r"refrain")),
     ("verse",     (r"verse", r"verso", r"estrofe")),
     ("intro",     (r"intro", r"introdu[cç][aã]o")),
-    ("outro",     (r"outro", r"ending", r"final", r"^coda\b", r"^tag\b")),
+    ("outro",     (r"outro",)),
 )
+
+_MODIFIER_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pre",       (r"build[-\s_]?up", r"\bbuild\b", r"riser")),
+    ("interlude", (r"\bhold\b", r"transi[cç][aã]o", r"transition", r"turnaround", r"\bvamp\b")),
+    ("breakdown", (r"break", r"\bdrop\b")),
+    ("bridge",    (r"\bsolo\b",)),
+    ("chorus",    (r"\bhook\b", r"\bgancho\b")),
+    ("verse",     ()),
+    ("intro",     ()),
+    ("outro",     (r"ending", r"final", r"\bcoda\b", r"\btag\b")),
+)
+
+
+def _search_kind_patterns(
+    s: str, kind_patterns: tuple[tuple[str, tuple[str, ...]], ...]
+) -> str | None:
+    for kind, patterns in kind_patterns:
+        for p in patterns:
+            if re.search(p, s):
+                return kind
+    return None
 
 
 def normalize_kind(label: str) -> str | None:
     """Mapeia rotulo livre para o vocabulario canonico do spec.
+
+    Duas passadas: nome/sinonimo direto da secao (`_CANONICAL_KIND_PATTERNS`)
+    sempre vence quando presente; so cai para cue de producao secundario
+    (`_MODIFIER_KIND_PATTERNS`) quando nenhum canonical casou em lugar
+    nenhum do rotulo — assim um rotulo como 'CHORUS DROP' fica 'chorus', nao
+    'breakdown', mesmo com o modificador de outra familia tambem presente.
 
     Retorna None quando o rotulo nao casa com nenhuma familia conhecida —
     quem chama decide se levanta erro ou trata como generico.
@@ -78,11 +119,9 @@ def normalize_kind(label: str) -> str | None:
     if not label:
         return None
     s = label.strip().lower()
-    for kind, patterns in _KIND_PATTERNS:
-        for p in patterns:
-            if re.search(p, s):
-                return kind
-    return None
+    return _search_kind_patterns(s, _CANONICAL_KIND_PATTERNS) or _search_kind_patterns(
+        s, _MODIFIER_KIND_PATTERNS
+    )
 
 
 @dataclass

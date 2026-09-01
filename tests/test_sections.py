@@ -105,6 +105,39 @@ def test_normalize_kind_numbered_variants_of_new_cue_vocabulary():
     assert sections.normalize_kind("Hooked") is None
 
 
+def test_normalize_kind_explicit_section_beats_coexisting_modifier():
+    # Achados do Codex na PR: quando um marcador combina o nome explicito da
+    # secao com um cue de producao secundario de OUTRA familia, o explicito
+    # tem que vencer — a ordem de primeiro-match da tupla nao pode deixar o
+    # modificador generico sobrepor o nome literal da secao.
+    assert sections.normalize_kind("CHORUS DROP") == "chorus"
+    assert sections.normalize_kind("INTRO RISER") == "intro"
+    assert sections.normalize_kind("BRIDGE VAMP") == "bridge"
+
+
+def test_normalize_kind_cue_alias_accepts_qualifier_prefix():
+    # Achado do Codex na PR: "^solo$"/"^hook$"/"^gancho$" (virados "\bsolo\b"
+    # etc.) precisam casar em qualquer posicao do rotulo, nao so no inicio —
+    # marcador comum qualifica o cue por instrumento/voz.
+    assert sections.normalize_kind("GUITAR SOLO") == "bridge"
+    assert sections.normalize_kind("VOCAL HOOK") == "chorus"
+
+
+def test_normalize_kind_new_modifiers_do_not_match_as_substring():
+    # Achado do Codex na PR: "vamp" e "drop" sem fronteira de palavra casavam
+    # como substring de qualquer palavra ("Revamped" contem "vamp", "Backdrop"
+    # contem "drop"), classificando errado rotulo sem nenhuma intencao de cue.
+    # "Revamped Chorus" ja e protegido pela precedencia canonical (chorus
+    # explicito vence antes do modificador ser sequer checado); "Backdrop"
+    # nao tem canonical nenhum, entao so a fronteira de palavra em "drop"
+    # evita o falso positivo.
+    assert sections.normalize_kind("Revamped Chorus") == "chorus"
+    assert sections.normalize_kind("Backdrop") is None
+    # Sufixo numerado continua casando normalmente.
+    assert sections.normalize_kind("DROP 1") == "breakdown"
+    assert sections.normalize_kind("VAMP 2") == "interlude"
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
