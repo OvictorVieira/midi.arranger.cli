@@ -167,6 +167,23 @@ def test_normalize_kind_leading_cue_beats_named_destination():
     assert sections.normalize_kind("CHORUS DROP") == "chorus"
 
 
+def test_normalize_kind_leading_cue_beats_named_destination_in_portuguese():
+    # Achado do Codex na PR: marcador bilingue com destino em portugues
+    # ('BUILD PARA O REFRAO', 'TRANSICAO PARA VERSO') nao truncava porque
+    # so 'to'/'into' eram reconhecidos como marcador de destino.
+    assert sections.normalize_kind("BUILD PARA O REFRAO") == "pre"
+    assert sections.normalize_kind("TRANSICAO PARA VERSO") == "interlude"
+
+
+def test_normalize_kind_recognizes_accented_pre_spelling():
+    # Achado do Codex na PR: a grafia acentuada 'PRE'/'PRE-DROP' nao casava
+    # com nenhum padrao de 'pre' (que so tinha 'e' sem acento), entao
+    # 'PRE-DROP' caia no modificador 'drop' (breakdown) em vez de 'pre'.
+    assert sections.normalize_kind("PRÉ-DROP") == "pre"
+    assert sections.normalize_kind("PRÉ DROP") == "pre"
+    assert sections.normalize_kind("PRÉ") == "pre"
+
+
 def test_normalize_kind_falls_back_to_full_label_when_leading_cue_unknown():
     # Achado do Codex na PR: truncar sempre em 'to'/'into' descartava o
     # UNICO nome de secao do rotulo quando o cue a esquerda nao era
