@@ -1890,20 +1890,34 @@ PLUGINS_SCAN_TOOL = Tool(
 # --- presets.scan -----------------------------------------------------------
 
 PRESETS_SCAN_DESCRIPTION = (
-    "Inventaria os presets/patches instalados na maquina para os plugins com "
-    "scanner suportado (Omnisphere, Alchemy, ES2, Sampler e Retro Synth do "
-    "Logic, Kontakt, Serum, Vital, Addictive Drums 2). Use JUNTO com "
-    "`plugins.scan` antes de sugerir plugin/preset: preset achado no disco "
-    "sai com verified=true e e o UNICO tipo de sugestao que pode ir para "
-    "`instrument.preset` como nome exato. Ausencia de preset real para o "
-    "plugin desejado NUNCA autoriza inventar um nome plausivel — sugira so a "
-    "categoria do instrumento (ex.: \"Synth Piano — escolha o preset na sua "
-    "biblioteca\") com verified=false. `Nexus` sempre aparece em "
-    "`supported_plugins` sem nenhum preset: a base binaria fechada do plugin "
-    "nao pode ser escaneada, entao qualquer sugestao para ele e sempre "
-    "generica. Plugin fora de `supported_plugins` tambem so aceita sugestao "
-    "generica. Nao modifica o sistema; nao acessa rede; so roda em sessao "
-    "local com acesso ao disco do usuario."
+    "Inventaria os presets/patches instalados no computador do usuario via "
+    "DESCOBERTA AUTOMATICA + sweep generico. Primeiro resolve ponteiros locais "
+    "de libraries (ex.: symlink `Spectrasonics/STEAM` para volume externo); "
+    "depois varre locais canonicos (macOS): `~/Library/Audio/Presets`, "
+    "`/Library/Audio/Presets`, `~/Music/Audio Music Apps/Plug-In Settings`, "
+    "`~/Library/Application Support/<Vendor>`, `~/Documents/<Vendor>`, "
+    "`/Users/Shared/<Vendor>`. Roda em qualquer Mac — nao depende de "
+    "hardcoding do filesystem do autor. Vendors dentro de Application Support / "
+    "Documents / Shared sao filtrados por whitelist (Native Instruments, "
+    "Spectrasonics, Toontrack, XLN Audio, Neural DSP, IK Multimedia, FabFilter, "
+    "Waves, iZotope, reFX, u-he, Xfer, Arturia, UVI, etc.). Extensoes de "
+    "preset sao whitelisted (aupreset/pst/exs/acp/fxp/fxb/vstpreset/nki/h2p/"
+    "serumpreset/vital/ffp/adkit/at4p/at5p/prt_a/prt_b/prt_c/nxp/...); sample "
+    "de audio (.wav/.aif/.mp3) e ignorado. O fluxo normal NAO pede ao usuario "
+    "para configurar paths nem variaveis de ambiente. `extra_roots` e os envs "
+    "legados existem apenas como escape hatch de diagnostico para o harness. "
+    "A resposta lista `searched_roots`, `discovered_roots` com proveniencia e "
+    "`unresolved_roots` (por exemplo, volume externo desmontado). Preset achado "
+    "sai com verified=true e e o "
+    "UNICO tipo de sugestao que pode ir para `instrument.preset` como nome "
+    "exato. Ausencia de preset real para o plugin desejado NUNCA autoriza "
+    "inventar um nome plausivel — sugira so a categoria do instrumento (ex.: "
+    "\"Synth Piano — escolha o preset na sua biblioteca\") com verified=false. "
+    "Libraries em DB binario proprietario (ex.: Toontrack Superior Drummer 3, "
+    "EZdrummer) aparecem em `opaque_libraries` com motivo — o harness deve "
+    "avisar o usuario que existem presets, mas jamais inventar nome a partir "
+    "delas. Nao modifica o sistema; nao acessa rede; so roda em sessao local "
+    "com acesso ao disco do usuario."
 )
 
 
@@ -1920,6 +1934,9 @@ def _presets_scan_impl(
         if addictive_input
         else None
     )
+    extra_input = payload.get("extra_roots") or []
+    extra_roots = tuple(Path(p).expanduser() for p in extra_input)
+    disable_defaults = bool(payload.get("disable_defaults", False))
 
     roots = presets_mod.PresetRoots(
         omnisphere=_root("omnisphere"),
@@ -1928,8 +1945,11 @@ def _presets_scan_impl(
         serum=_root("serum"),
         vital=_root("vital"),
         addictive=addictive,
+        extra_roots=extra_roots,
+        disable_defaults=disable_defaults,
     )
-    grouped = presets_mod.scan_all(roots)
+    grouped, opaque = presets_mod.scan_all_with_opaque(roots)
+    searched_roots, discovered_roots, unresolved_roots = presets_mod.discover_roots(roots)
 
     data = {
         "supported_plugins": list(grouped.keys()),
@@ -1937,12 +1957,39 @@ def _presets_scan_impl(
             {
                 "name": p.name,
                 "plugin": p.plugin,
+                "vendor": p.vendor,
                 "format": p.format,
                 "path": p.path,
                 "verified": p.verified,
             }
             for plugin_presets in grouped.values()
             for p in plugin_presets
+        ],
+        "opaque_libraries": [
+            {
+                "plugin": op.plugin,
+                "vendor": op.vendor,
+                "root": op.root,
+                "reason": op.reason,
+            }
+            for op in opaque
+        ],
+        "searched_roots": [str(root) for root in searched_roots],
+        "discovered_roots": [
+            {
+                "path": item.path,
+                "source": item.source,
+                "method": item.method,
+            }
+            for item in discovered_roots
+        ],
+        "unresolved_roots": [
+            {
+                "source": item.source,
+                "target": item.target,
+                "reason": item.reason,
+            }
+            for item in unresolved_roots
         ],
     }
     return data, []
@@ -1965,6 +2012,13 @@ PRESETS_SCAN_TOOL = Tool(
                     {"type": "array", "items": {"type": "string"}},
                 ],
             },
+            "extra_roots": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+            "disable_defaults": {"type": "boolean"},
         },
         "required": [],
     },
@@ -1979,6 +2033,7 @@ PRESETS_SCAN_TOOL = Tool(
                     "properties": {
                         "name": {"type": "string"},
                         "plugin": {"type": "string"},
+                        "vendor": {"type": ["string", "null"]},
                         "format": {"type": "string"},
                         "path": {"type": ["string", "null"]},
                         "verified": {"type": "boolean"},
@@ -1986,8 +2041,52 @@ PRESETS_SCAN_TOOL = Tool(
                     "required": ["name", "plugin", "format", "path", "verified"],
                 },
             },
+            "opaque_libraries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "plugin": {"type": "string"},
+                        "vendor": {"type": "string"},
+                        "root": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["plugin", "vendor", "root", "reason"],
+                },
+            },
+            "searched_roots": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "discovered_roots": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "source": {"type": "string"},
+                        "method": {"type": "string"},
+                    },
+                    "required": ["path", "source", "method"],
+                },
+            },
+            "unresolved_roots": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["source", "target", "reason"],
+                },
+            },
         },
-        "required": ["supported_plugins", "presets"],
+        "required": [
+            "supported_plugins", "presets", "opaque_libraries",
+            "searched_roots", "discovered_roots", "unresolved_roots",
+        ],
     },
     func=_presets_scan_impl,
 )

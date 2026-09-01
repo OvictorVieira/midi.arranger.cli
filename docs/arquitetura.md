@@ -282,14 +282,28 @@ com aquele nome.
 A regra é a mesma que já rejeitou `_identity_apply` e a atribuição falsa a `cmuse.org`: **nunca
 apresentar chute como fato, mesmo marcado como chute**. Concretamente:
 
-- `presets.scan` (`tools/presets.py`) varre em disco os presets reais dos plugins com scanner
-  suportado (Omnisphere, Alchemy/ES2/Sampler/Retro Synth do Logic, Kontakt, Serum, Vital, Addictive
-  Drums 2) — hoje só macOS; caminhos Windows ficam para depois. Só roda numa sessão local com acesso
-  ao filesystem do usuário, nunca em sessão remota/sandbox.
+- `presets.scan` (`tools/presets.py`) primeiro descobre automaticamente roots de libraries a partir
+  dos locais canônicos e de ponteiros locais (por exemplo, o symlink `Spectrasonics/STEAM` deixado
+  pelo instalador para uma library em volume externo), depois varre os presets reais. A resposta
+  expõe `searched_roots`, `discovered_roots` com proveniência e `unresolved_roots` para volume
+  desmontado/permissão. Hoje só macOS; caminhos Windows ficam para depois. Só roda numa sessão local
+  com acesso ao filesystem do usuário, nunca em sessão remota/sandbox.
+- O usuário não configura path nem variável de ambiente no fluxo normal. Depois de rodar
+  `plugins.scan` e `presets.scan` sem overrides, o agente compara os inventários. Plugin instalado
+  sem preset encontrado aciona diagnóstico read-only: o agente inspeciona configs, symlinks e aliases
+  locais e repete `presets.scan` passando o root descoberto em `extra_roots`. Só pede intervenção ao
+  usuário quando a máquina comprova que o destino está inacessível. Overrides/envs são escape hatch
+  de diagnóstico e retrocompatibilidade, não requisito de instalação.
+- Na Spectrasonics, os `.db` de factory começam com um manifesto `FileSystem` que lista nomes reais
+  e offsets antes do payload concatenado. A tool lê somente esse manifesto e para em
+  `</FileSystem>`; isso permite verificar nomes de Omnisphere/Trilian/Keyscape sem interpretar o
+  payload. A busca na STEAM fica restrita a `<Produto>/Settings Library/{Patches,Multis}`, nunca
+  atravessa `Soundsources`, samples ou wavetables. Isso é diferente das DBs Toontrack realmente
+  opacas, que continuam aparecendo somente em `opaque_libraries`.
 - Preset encontrado no disco é o **único** tipo de sugestão que pode virar nome exato em
   `instrument.preset`, com `verified: true` de verdade.
-- Sem preset real para o plugin desejado (`Nexus`, cuja base binária fechada não pode ser
-  escaneada; plugin fora dos scanners suportados; ou biblioteca vazia), a sugestão cai para a
+- Sem preset real para o plugin desejado (base binária fechada, library realmente ausente ou
+  inacessível), a sugestão cai para a
   **categoria** do instrumento (ex.: "Synth Piano — escolha o preset na sua biblioteca"), nunca um
   nome de preset inventado — mesmo com `verified: false`.
 - `plugins.scan` continua respondendo só pelo inventário de plugins (formato, fabricante, papel

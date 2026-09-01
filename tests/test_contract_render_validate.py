@@ -309,9 +309,76 @@ def test_presets_scan_finds_real_files_on_disk_as_verified(tmp_path: Path):
 
 
 def test_presets_scan_missing_dirs_return_no_presets_without_error(tmp_path: Path):
+    # `disable_defaults=True` desliga o sweep dos `DEFAULT_ROOTS` (que varrem
+    # o Mac real). So processa os overrides passados; dirs inexistentes viram
+    # lista vazia, sem erro.
     env = call("presets.scan", {
         "omnisphere": str(tmp_path / "ghost"),
         "kontakt": str(tmp_path / "ghost2"),
+        "disable_defaults": True,
     })
     assert env["ok"] is True
     assert env["data"]["presets"] == []
+
+
+def test_presets_scan_reports_opaque_libraries(tmp_path: Path):
+    # Toontrack Superior3 aparece em `opaque_libraries` com motivo, nunca em
+    # `presets` — DB binario proprietario nao vira nome de preset.
+    root = tmp_path / "app-support"
+    (root / "Toontrack" / "Superior3").mkdir(parents=True)
+    (root / "Toontrack" / "Superior3" / "SoundDB").write_bytes(b"\x00\x01")
+    env = call("presets.scan", {
+        "extra_roots": [str(root)],
+        "disable_defaults": True,
+    })
+    assert env["ok"] is True
+    assert env["data"]["presets"] == []
+    opaque = env["data"]["opaque_libraries"]
+    assert any(op["plugin"] == "Superior Drummer 3" for op in opaque)
+
+
+def test_presets_scan_sweeps_extra_roots(tmp_path: Path):
+    # Sweep generico acha .fxp do Nexus, .ffp do FabFilter em roots customizados.
+    root = tmp_path / "presets"
+    (root / "reFX" / "NEXUS library" / "Presets" / "Pack").mkdir(parents=True)
+    (root / "reFX" / "NEXUS library" / "Presets" / "Pack" / "Wack.fxp").write_bytes(b"\x00")
+    (root / "FabFilter" / "Pro-Q 3").mkdir(parents=True)
+    (root / "FabFilter" / "Pro-Q 3" / "Boost.ffp").write_bytes(b"\x00")
+    env = call("presets.scan", {
+        "extra_roots": [str(root)],
+        "disable_defaults": True,
+    })
+    assert env["ok"] is True
+    by_plugin: dict[str, list[str]] = {}
+    for p in env["data"]["presets"]:
+        by_plugin.setdefault(p["plugin"], []).append(p["name"])
+    assert by_plugin["Nexus"] == ["Wack"]
+    assert by_plugin["Pro-Q 3"] == ["Boost"]
+
+
+def test_presets_scan_reports_automatically_discovered_library_root(tmp_path: Path):
+    app_support = tmp_path / "Library" / "Application Support"
+    steam = tmp_path / "External" / "STEAM"
+    patch = steam / "Omnisphere" / "Settings Library" / "Patches" / "Air.prt_a"
+    patch.parent.mkdir(parents=True)
+    patch.write_bytes(b"preset")
+    pointer = app_support / "Spectrasonics" / "STEAM"
+    pointer.parent.mkdir(parents=True)
+    pointer.symlink_to(steam, target_is_directory=True)
+
+    env = call("presets.scan", {
+        "extra_roots": [str(app_support)],
+        "disable_defaults": True,
+    })
+
+    assert env["ok"] is True
+    assert any(
+        p["plugin"] == "Omnisphere" and p["name"] == "Air"
+        for p in env["data"]["presets"]
+    )
+    assert env["data"]["discovered_roots"] == [{
+        "path": str(steam),
+        "source": str(pointer),
+        "method": "symlink",
+    }]
+    assert env["data"]["unresolved_roots"] == []

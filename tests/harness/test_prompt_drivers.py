@@ -149,6 +149,18 @@ def test_all_drivers_show_exact_tool_cli_invocation_shape() -> None:
         assert "python -m tools.cli --schema <nome-da-tool>" in text
 
 
+def test_all_drivers_discover_preset_libraries_without_user_configuration() -> None:
+    for name in DRIVER_NAMES:
+        text = _driver_text(name)
+
+        assert "Rode primeiro sem overrides" in text
+        assert "Compare plugins instalados com presets" in text
+        assert "`searched_roots`, `discovered_roots` e `unresolved_roots`" in text
+        assert "inspecione de forma read-only symlinks/aliases e configuracoes locais" in text
+        assert "Nao peca ao usuario para definir env var nem path" in text
+        assert "volume desmontado/permissao" in text
+
+
 def test_all_drivers_restrict_completion_sentinel_to_validated_delivery() -> None:
     for name in DRIVER_NAMES:
         text = _driver_text(name)
