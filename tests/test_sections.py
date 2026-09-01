@@ -175,6 +175,18 @@ def test_normalize_kind_leading_cue_beats_named_destination_in_portuguese():
     assert sections.normalize_kind("TRANSICAO PARA VERSO") == "interlude"
 
 
+def test_normalize_kind_leading_cue_beats_named_source_section():
+    # Achado do Codex na PR: rotulo que nomeia ORIGEM e DESTINO
+    # ('TRANSITION FROM VERSE TO CHORUS') classificava pelo nome da secao
+    # de origem ('verse'), porque o fragmento a esquerda do destino
+    # ('TRANSITION FROM VERSE') ainda continha 'VERSE', canonico, e vencia
+    # 'transition' por precedencia canonical-primeiro. A clausula de
+    # origem ('FROM X'/'DO X' em portugues) tem que ser descartada antes.
+    assert sections.normalize_kind("TRANSITION FROM VERSE TO CHORUS") == "interlude"
+    assert sections.normalize_kind("BUILD FROM VERSE TO CHORUS") == "pre"
+    assert sections.normalize_kind("TRANSICAO DO VERSO PARA O REFRAO") == "interlude"
+
+
 def test_normalize_kind_recognizes_accented_pre_spelling():
     # Achado do Codex na PR: a grafia acentuada 'PRE'/'PRE-DROP' nao casava
     # com nenhum padrao de 'pre' (que so tinha 'e' sem acento), entao
