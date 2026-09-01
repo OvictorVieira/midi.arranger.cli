@@ -10,12 +10,37 @@ Delega intencionalmente para tools.primitives:
   - chord_root (raiz do acorde a partir de pitch classes)
   - chordal_bars (contrato — usado no teste de contrato desta rodada)
   - KICKS / SNARES (mesmo mapa GM usado pelo humanize)
+
+## Anotacoes textuais (issue #32)
+
+O MIDI de origem pode trazer meta-eventos de texto (`text` 0x01, `cue_point`
+0x07) e marcadores nao-secao (`marker` 0x06) que descrevem como o arranjo deve
+soar naquele ponto. `analyze` extrai esses eventos como `Annotation`, com
+texto, tick, compasso, segundo, track de origem, tipo de evento, secao em que
+caem e escopo (do tick da propria anotacao ate a proxima anotacao dentro da
+mesma secao OU ate o fim da secao, o que vier primeiro — empate vai para o fim
+da secao).
+
+Regras de filtragem:
+- Marcador cujo texto casa `sections.normalize_kind` (INTRO A, VERSE 1, etc.)
+  continua indo para `sections`, NAO vira anotacao — sao coisas diferentes.
+- Ruido de DAW e descartado por padrao com listagem explicita na saida
+  (`discarded_annotations`), com a razao textual do descarte. Nunca em
+  silencio — filtro silencioso esconde anotacao real classificada errado.
+- Padroes de ruido default cobrem `END_OF_VOICE` e `MEASURE_\\d+` (Logic e
+  Songsterr geram em volume industrial). Texto que se repete acima do limiar
+  (default 5 posicoes distintas) tambem e descartado como ruido — repeticao em
+  massa e assinatura de ruido, nao de intencao.
+- A interpretacao do texto e da IA, NAO do maquinario. Esta tool entrega
+  texto e posicao estruturados; nao existe parser de linguagem natural aqui.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
+import mido
 import pretty_midi
 
 from .constants import REGISTER_BANDS
@@ -23,11 +48,34 @@ from .primitives import KICKS, SNARES
 from .primitives import bars_from as _bars_from
 from .primitives import chord_root as _chord_root
 from .primitives import key_root as _key_root
+from .sections import Section, normalize_kind, read_sections
 from .tuning import TrackChannelDistribution, TrackTuningInference, fallback_track_name
 from .tuning import channel_distribution as _channel_distribution
 from .tuning import tuning_inference as _tuning_inference
 
 UNISON_WINDOW_S = 0.010  # 10 ms — mesmo limiar de cluster de strum do humanize
+
+# Ruido de DAW: default cobrindo o que ja conhecemos por medicao de fixtures.
+# `END_OF_VOICE` vem do export de MIDI da Songsterr; `MEASURE_\d+` do Logic
+# Drummer e afins. Ambos aparecem em volume industrial (984 e 6 respectivamente
+# em `tests/fixtures/corpus_drums/ENTRE NÓS.mid`).
+DEFAULT_ANNOTATION_NOISE_PATTERNS: tuple[str, ...] = (
+    r"^END_OF_VOICE$",
+    r"^MEASURE_\d+$",
+)
+
+# Acima deste numero de posicoes distintas para o mesmo texto, o marcador e
+# considerado ruido — repeticao em massa e assinatura de DAW, nao de intencao.
+# Default estrito o suficiente para pegar automation mas permissivo para o
+# usuario que quer marcar 3-5 pontos com a mesma legenda ("attack", "hit").
+DEFAULT_ANNOTATION_REPETITION_THRESHOLD = 5
+
+# Eventos meta que carregam texto de anotacao. `marker` (0x06) e triado pela
+# `sections.normalize_kind`: os que sao rotulo de secao ficam de fora daqui.
+# `cue_marker` e o nome que o `mido` da para o meta-evento 0x07 (MIDI standard
+# "cue point") — usamos o mesmo string na saida para nao ter duas verdades.
+_ANNOTATION_META_TYPES = frozenset({"text", "cue_marker", "marker"})
+ANNOTATION_EVENT_TYPES = ("marker", "text", "cue_marker")
 
 
 @dataclass
@@ -65,6 +113,56 @@ class GuitarNote:
 
 
 @dataclass
+class Annotation:
+    """Anotacao textual encontrada no MIDI (issue #32).
+
+    - `text`: literal do meta-evento, preservado como veio (sem interpretacao).
+    - `tick`: posicao absoluta em ticks.
+    - `bar`: compasso 1-based em que a anotacao cai.
+    - `time_s`: instante em segundos (tick_to_time).
+    - `track`: nome da track SMF em que o evento apareceu (primeira track
+      observada quando (tick, texto, tipo) aparece em varias).
+    - `event_type`: `marker` | `text` | `cue_point`.
+    - `section_label`: rotulo da secao que contem a anotacao (None quando
+      cai fora do range de qualquer secao).
+    - `end_tick`, `end_bar`, `end_time_s`: fim do escopo da anotacao.
+    - `scope_end_source`: `next_annotation` | `section_end` | `file_end`.
+      Regra: escopo vai ate a proxima anotacao dentro da mesma secao OU ate
+      o fim da secao, o que vier PRIMEIRO. Empate (proxima anotacao no mesmo
+      tick que o fim da secao) vai para `section_end` — anotacao que cai na
+      fronteira pertence a secao que comeca ali, entao nao e "proxima na
+      mesma secao".
+    """
+    text: str
+    tick: int
+    bar: int
+    time_s: float
+    track: str
+    event_type: str
+    section_label: str | None
+    end_tick: int
+    end_bar: int
+    end_time_s: float
+    scope_end_source: str
+
+
+@dataclass
+class DiscardedAnnotation:
+    """Anotacao que o filtro de ruido descartou, com a razao textual.
+
+    Nunca omitir — filtro silencioso esconde anotacao real classificada errado.
+    A razao carrega o padrao literal do filtro (`pattern:^END_OF_VOICE$`) ou o
+    limiar de repeticao (`repetition:12>5`). O relatorio da tool agrega
+    contagens por razao.
+    """
+    text: str
+    tick: int
+    track: str
+    event_type: str
+    reason: str
+
+
+@dataclass
 class Analysis:
     key_root: int                              # 0-11
     bars: list[BarAnalysis]
@@ -75,6 +173,8 @@ class Analysis:
     guitar_notes: list[GuitarNote] = field(default_factory=list)
     channel_distribution: list[TrackChannelDistribution] = field(default_factory=list)
     tuning_inference: list[TrackTuningInference] = field(default_factory=list)
+    annotations: list[Annotation] = field(default_factory=list)
+    discarded_annotations: list[DiscardedAnnotation] = field(default_factory=list)
 
 
 def find_bar(analysis: Analysis, onset_s: float) -> BarAnalysis | None:
@@ -201,6 +301,230 @@ def _find_unisons(
     return unisons
 
 
+def _collect_raw_annotation_events(mid: mido.MidiFile) -> list[dict]:
+    """Coleta candidatos brutos a anotacao de todas as tracks.
+
+    Devolve dict com keys `type`, `text`, `tick`, `track` (nome ou fallback).
+    Marker cujo texto casa `sections.normalize_kind` fica FORA — sao rotulos de
+    secao e vao para `sections`, nao viram anotacao.
+    """
+    raw: list[dict] = []
+    for track_idx, track in enumerate(mid.tracks):
+        name = ""
+        for msg in track:
+            if msg.type == "track_name" and not name:
+                name = (msg.name or "").strip()
+                break
+        if not name:
+            name = fallback_track_name(track_idx)
+        abs_tick = 0
+        for msg in track:
+            abs_tick += msg.time
+            if msg.type not in _ANNOTATION_META_TYPES:
+                continue
+            text = getattr(msg, "text", None)
+            if text is None:
+                continue
+            if msg.type == "marker" and normalize_kind(text) is not None:
+                # Rotulo de secao — sai por `sections`, nao por `annotations`.
+                continue
+            raw.append({
+                "type": msg.type,
+                "text": text,
+                "tick": abs_tick,
+                "track": name,
+            })
+    return raw
+
+
+def _dedupe_annotation_events(raw: list[dict]) -> list[dict]:
+    """Colapsa eventos identicos (tick, texto, tipo) em diferentes tracks.
+
+    DAW as vezes replica a mesma anotacao em varias tracks; contar cada uma
+    como evento distinto inflaria falsamente a repeticao e criaria duplicatas
+    na saida. Mantem a primeira track observada como origem.
+    """
+    seen: dict[tuple[int, str, str], dict] = {}
+    for event in raw:
+        key = (event["tick"], event["text"], event["type"])
+        if key not in seen:
+            seen[key] = event
+    return list(seen.values())
+
+
+def _classify_annotation_noise(
+    events: list[dict],
+    noise_patterns: tuple[str, ...],
+    repetition_threshold: int,
+) -> dict[int, str]:
+    """Marca eventos como ruido; devolve {index_in_events: reason}.
+
+    Duas regras, aplicadas nesta ordem:
+      1. Texto casa qualquer padrao em `noise_patterns` (regex ancorado).
+      2. Texto aparece em > `repetition_threshold` posicoes (ticks) distintas.
+    """
+    compiled = [(pat, re.compile(pat)) for pat in noise_patterns]
+
+    # Repeticao por texto: quantos TICKS distintos usam esse texto.
+    ticks_per_text: dict[str, set[int]] = {}
+    for event in events:
+        ticks_per_text.setdefault(event["text"], set()).add(event["tick"])
+
+    reasons: dict[int, str] = {}
+    for i, event in enumerate(events):
+        text = event["text"]
+        matched_pattern: str | None = None
+        for raw_pat, regex in compiled:
+            if regex.search(text):
+                matched_pattern = raw_pat
+                break
+        if matched_pattern is not None:
+            reasons[i] = f"pattern:{matched_pattern}"
+            continue
+        occurrences = len(ticks_per_text.get(text, ()))
+        if occurrences > repetition_threshold:
+            reasons[i] = f"repetition:{occurrences}>{repetition_threshold}"
+    return reasons
+
+
+def _section_for_tick(sections_list: list[Section], tick: int) -> Section | None:
+    """Secao que contem `tick` — inclusive no start_tick, exclusiva no end_tick.
+
+    Anotacao exatamente na fronteira pertence a secao que COMECA ali (regra
+    do issue #32).
+    """
+    for s in sections_list:
+        if s.start_tick <= tick < s.end_tick:
+            return s
+    return None
+
+
+def _tick_to_bar(pm: pretty_midi.PrettyMIDI, tick: int, downbeats: list[float]) -> int:
+    """Compasso 1-based que contem o tick informado.
+
+    Retorna 0 quando fora do range (comportamento igual ao `bar_number`
+    helper). Usa a mesma tabela de downbeats do `_bar_index_at_time` de
+    `sections.py`.
+    """
+    if not downbeats:
+        return 0
+    t = float(pm.tick_to_time(tick))
+    # busca linear em segundos (quantidade cabe em centenas)
+    idx = 0
+    for i, db in enumerate(downbeats):
+        if db > t + 1e-6:
+            break
+        idx = i
+    return idx + 1
+
+
+def _extract_annotations(
+    midi_path: str,
+    pm: pretty_midi.PrettyMIDI,
+    sections_list: list[Section],
+    noise_patterns: tuple[str, ...] = DEFAULT_ANNOTATION_NOISE_PATTERNS,
+    repetition_threshold: int = DEFAULT_ANNOTATION_REPETITION_THRESHOLD,
+) -> tuple[list[Annotation], list[DiscardedAnnotation]]:
+    """Pipeline completo de extracao de anotacoes.
+
+    1. Coleta candidatos brutos (marker nao-secao, text, cue_point).
+    2. Deduplica por (tick, texto, tipo) para o pool KEPT — DAW as vezes
+       replica a mesma anotacao em varias tracks e contar cada uma inflaria
+       a repeticao.
+    3. Classifica ruido pelos EVENTOS UNICOS (padroes + repeticao acima do
+       limiar) — a repeticao mede posicoes distintas, nao instancias.
+    4. Descarta EM BRUTO: cada evento raw considerado ruido vira uma entrada
+       em `discarded_annotations`, para que a contagem do relatorio bata com
+       o que o usuario ve ao inspecionar o arquivo (984 MEASURE_* + 6
+       END_OF_VOICE em ENTRE NOS, nao 165).
+    5. Calcula bar/tempo/secao/escopo de cada anotacao mantida.
+    """
+    mid = mido.MidiFile(midi_path)
+    raw = _collect_raw_annotation_events(mid)
+    events = _dedupe_annotation_events(raw)
+    # Ordem estavel: por tick, depois por texto — a saida da tool nao pode
+    # depender da ordem de leitura das tracks.
+    events.sort(key=lambda e: (e["tick"], e["text"], e["type"]))
+
+    noise_reasons_by_key: dict[tuple[int, str, str], str] = {}
+    idx_noise = _classify_annotation_noise(
+        events, noise_patterns, repetition_threshold,
+    )
+    for i, reason in idx_noise.items():
+        e = events[i]
+        noise_reasons_by_key[(e["tick"], e["text"], e["type"])] = reason
+
+    downbeats = list(pm.get_downbeats())
+    end_time = pm.get_end_time()
+    file_end_tick = int(round(pm.time_to_tick(end_time)))
+
+    # Descarta cada evento raw individualmente para relatar a poluicao real.
+    discarded: list[DiscardedAnnotation] = []
+    for event in raw:
+        key = (event["tick"], event["text"], event["type"])
+        reason = noise_reasons_by_key.get(key)
+        if reason is None:
+            continue
+        discarded.append(DiscardedAnnotation(
+            text=event["text"],
+            tick=int(event["tick"]),
+            track=event["track"],
+            event_type=event["type"],
+            reason=reason,
+        ))
+
+    kept_events: list[dict] = [
+        e for e in events
+        if (e["tick"], e["text"], e["type"]) not in noise_reasons_by_key
+    ]
+
+    kept_events.sort(key=lambda e: e["tick"])
+
+    annotations: list[Annotation] = []
+    for idx, event in enumerate(kept_events):
+        section = _section_for_tick(sections_list, event["tick"])
+        # Escopo: proxima anotacao mantida DENTRO da mesma secao OU fim da
+        # secao — o que vier primeiro. Empate vai para `section_end`.
+        section_end_tick = section.end_tick if section is not None else file_end_tick
+        section_label = section.label if section is not None else None
+
+        next_tick_in_section: int | None = None
+        for future in kept_events[idx + 1:]:
+            if future["tick"] <= event["tick"]:
+                continue
+            if section is not None and future["tick"] >= section.end_tick:
+                # Ja saiu da secao — proxima anotacao pertence a outra secao.
+                break
+            next_tick_in_section = future["tick"]
+            break
+
+        if next_tick_in_section is None:
+            end_tick = section_end_tick
+            scope_end_source = "section_end" if section is not None else "file_end"
+        elif next_tick_in_section < section_end_tick:
+            end_tick = next_tick_in_section
+            scope_end_source = "next_annotation"
+        else:
+            # empate: proxima anotacao no mesmo tick que o fim da secao
+            end_tick = section_end_tick
+            scope_end_source = "section_end"
+
+        annotations.append(Annotation(
+            text=event["text"],
+            tick=int(event["tick"]),
+            bar=_tick_to_bar(pm, event["tick"], downbeats),
+            time_s=float(pm.tick_to_time(event["tick"])),
+            track=event["track"],
+            event_type=event["type"],
+            section_label=section_label,
+            end_tick=int(end_tick),
+            end_bar=_tick_to_bar(pm, end_tick, downbeats),
+            end_time_s=float(pm.tick_to_time(end_tick)),
+            scope_end_source=scope_end_source,
+        ))
+    return annotations, discarded
+
+
 def analyze(
     midi_path: str,
     declared_stringed_tracks: list[str] | None = None,
@@ -262,6 +586,34 @@ def analyze(
             guitar_notes.append(GuitarNote(start=n.start, pitch=n.pitch, track=name))
     guitar_notes.sort(key=lambda g: (g.start, g.pitch))
 
+    all_sections = read_sections(midi_path)
+    # Escopo de anotacao ancora nas secoes CANONICAS (normalize_kind casou),
+    # nunca em marker de texto livre que o `read_sections` tambem promove a
+    # secao — misturar as duas quebraria a semantica do issue #32: "marcador
+    # que delimita secao continua indo para sections, nao vira anotacao".
+    # Reconstroi as extensoes canonicas: cada secao canonica vai ate a
+    # PROXIMA secao canonica (ignorando markers de texto livre no meio),
+    # ou ate o fim do arquivo se for a ultima.
+    end_tick_file = int(round(pm.time_to_tick(pm.get_end_time())))
+    canonical = [s for s in all_sections if s.kind]
+    canonical_sections: list[Section] = []
+    for i, s in enumerate(canonical):
+        next_start = (
+            canonical[i + 1].start_tick if i + 1 < len(canonical) else end_tick_file
+        )
+        canonical_sections.append(Section(
+            label=s.label,
+            kind=s.kind,
+            start_tick=s.start_tick,
+            end_tick=next_start,
+            start_bar=s.start_bar,
+            end_bar=s.end_bar,
+            source=s.source,
+        ))
+    annotations, discarded_annotations = _extract_annotations(
+        midi_path, pm, canonical_sections,
+    )
+
     return Analysis(
         key_root=key_root,
         bars=bars,
@@ -272,6 +624,8 @@ def analyze(
         guitar_notes=guitar_notes,
         channel_distribution=_channel_distribution(midi_path),
         tuning_inference=_tuning_inference(midi_path, declared_stringed_tracks),
+        annotations=annotations,
+        discarded_annotations=discarded_annotations,
     )
 
 

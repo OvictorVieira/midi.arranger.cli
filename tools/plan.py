@@ -164,6 +164,51 @@ class PlanSection:
 
 
 @dataclass
+class SourceAnnotation:
+    """Anotacao textual do MIDI de origem que motivou este elemento (issue #32).
+
+    Campos espelham `tools.analyze.Annotation` no que interessa para auditoria:
+    o texto exato como o usuario escreveu e a posicao (tick/bar/track/tipo).
+    Elemento que carrega `source_annotation` DEVE citar o texto no `rationale`
+    — a validacao exige, para que a rastreabilidade da autoria seja auditavel.
+    """
+    text: str
+    tick: int
+    bar: int
+    track: str
+    event_type: str
+
+
+@dataclass
+class PlanAnnotation:
+    """Anotacao declarada no plano com seu status de execucao (issue #32).
+
+    Toda anotacao lida do MIDI de origem deve aparecer aqui — inclusive as
+    que a IA leu e decidiu NAO acionar. Status:
+
+    - `actioned`: virou elemento; `element_id` aponta para ele.
+    - `declined`: a IA leu e decidiu nao acionar; `reason` diz por que.
+    - `conflict`: a anotacao entra em conflito com uma restricao do brief
+      (veto de familia/instrumento); nao foi executada e o `reason` nomeia
+      os dois lados (o que a anotacao pediu e o que o brief veta).
+
+    Anotacao com `status=actioned` precisa apontar um elemento existente; com
+    `status` diferente, `element_id` fica None e `reason` e obrigatorio.
+    """
+    text: str
+    tick: int
+    bar: int
+    track: str
+    event_type: str
+    status: str
+    element_id: str | None = None
+    reason: str | None = None
+
+
+ANNOTATION_STATUSES = ("actioned", "declined", "conflict")
+
+
+@dataclass
 class Element:
     id: str
     role: str
@@ -179,6 +224,7 @@ class Element:
     instrument: dict[str, Any] | None = None
     rationale: str | None = None
     is_protagonist: bool = False
+    source_annotation: SourceAnnotation | None = None
 
 
 @dataclass
@@ -245,6 +291,7 @@ class ArrangementPlan:
     transitions: list[Transition] = field(default_factory=list)
     edits: list[PlanEdit] = field(default_factory=list)
     style: dict[str, FamilyStyle] | None = None
+    annotations: list[PlanAnnotation] = field(default_factory=list)
 
 
 # --- validacao --------------------------------------------------------------
@@ -823,6 +870,32 @@ def normalize_style_defaults(plan: ArrangementPlan) -> ArrangementPlan:
     return normalized
 
 
+SOURCE_ANNOTATION_FIELDS = ("text", "tick", "bar", "track", "event_type")
+PLAN_ANNOTATION_FIELDS = (
+    "text", "tick", "bar", "track", "event_type", "status", "element_id", "reason",
+)
+ANNOTATION_EVENT_TYPES = ("marker", "text", "cue_marker")
+
+
+def _validate_source_annotation(data: Any, path: str) -> None:
+    """Regras estruturais de `SourceAnnotation` (issue #32)."""
+    if not isinstance(data, SourceAnnotation):
+        raise PlanValidationError(
+            path, f"must be SourceAnnotation, got {type(data).__name__}",
+        )
+    _require_nonblank_str(data.text, f"{path}.text")
+    _require_nonblank_str(data.track, f"{path}.track")
+    _require_in(data.event_type, ANNOTATION_EVENT_TYPES, f"{path}.event_type")
+    if not isinstance(data.tick, int) or isinstance(data.tick, bool) or data.tick < 0:
+        raise PlanValidationError(
+            f"{path}.tick", f"must be non-negative int, got {data.tick!r}",
+        )
+    if not isinstance(data.bar, int) or isinstance(data.bar, bool) or data.bar < 0:
+        raise PlanValidationError(
+            f"{path}.bar", f"must be non-negative int, got {data.bar!r}",
+        )
+
+
 SUGGESTED_INSTRUMENT_FIELDS = ("plugin", "preset", "verified")
 
 
@@ -1016,6 +1089,72 @@ def validate(
                     f"section {label!r} not declared in plan.sections",
                 )
 
+    # BLOQUEIO: `source_annotation` do elemento cita o texto no `rationale`.
+    # Sem essa amarra a autoria da anotacao vira decorativa — mesma categoria
+    # do `rationale` vazio ja rejeitado acima.
+    element_ids_seen: set[str] = set()
+    for i, e in enumerate(plan.elements):
+        element_ids_seen.add(e.id)
+        if e.source_annotation is None:
+            continue
+        base = f"elements[{i}].source_annotation"
+        _validate_source_annotation(e.source_annotation, base)
+        text = e.source_annotation.text
+        if not isinstance(e.rationale, str) or text not in e.rationale:
+            raise PlanValidationError(
+                f"elements[{i}].rationale",
+                (
+                    f"element carries source_annotation {text!r} but rationale "
+                    "does not cite it verbatim; anotacao acionada precisa ser "
+                    "referenciada no rationale para a autoria ser auditavel"
+                ),
+            )
+
+    # BLOQUEIO: annotations do plano — status/refs consistentes.
+    for i, annot in enumerate(plan.annotations):
+        base = f"annotations[{i}]"
+        if not isinstance(annot, PlanAnnotation):
+            raise PlanValidationError(
+                base,
+                f"must be PlanAnnotation, got {type(annot).__name__}",
+            )
+        _require_nonblank_str(annot.text, f"{base}.text")
+        _require_nonblank_str(annot.track, f"{base}.track")
+        _require_nonblank_str(annot.event_type, f"{base}.event_type")
+        _require_in(annot.status, ANNOTATION_STATUSES, f"{base}.status")
+        if not isinstance(annot.tick, int) or isinstance(annot.tick, bool) or annot.tick < 0:
+            raise PlanValidationError(f"{base}.tick", f"must be non-negative int, got {annot.tick!r}")
+        if not isinstance(annot.bar, int) or isinstance(annot.bar, bool) or annot.bar < 0:
+            raise PlanValidationError(f"{base}.bar", f"must be non-negative int, got {annot.bar!r}")
+        if annot.status == "actioned":
+            if annot.element_id is None or not annot.element_id:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    "annotation with status='actioned' must reference an element_id",
+                )
+            if annot.element_id not in element_ids_seen:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    f"element_id {annot.element_id!r} not declared in plan.elements",
+                )
+        else:
+            if annot.element_id is not None:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    (
+                        f"annotation with status={annot.status!r} must not carry "
+                        "an element_id — it was not actioned"
+                    ),
+                )
+            if not isinstance(annot.reason, str) or not annot.reason.strip():
+                raise PlanValidationError(
+                    f"{base}.reason",
+                    (
+                        f"annotation with status={annot.status!r} must carry a "
+                        "non-empty reason explaining why it was not actioned"
+                    ),
+                )
+
     # BLOQUEIO: duas camadas na mesma secao nao podem ambas declarar protagonista.
     protagonists_by_section: dict[str, list[str]] = {}
     for e in plan.elements:
@@ -1108,8 +1247,31 @@ def _section_to_dict(s: PlanSection) -> dict[str, Any]:
     }
 
 
-def _element_to_dict(e: Element) -> dict[str, Any]:
+def _source_annotation_to_dict(sa: SourceAnnotation) -> dict[str, Any]:
     return {
+        "text": sa.text,
+        "tick": int(sa.tick),
+        "bar": int(sa.bar),
+        "track": sa.track,
+        "event_type": sa.event_type,
+    }
+
+
+def _plan_annotation_to_dict(a: PlanAnnotation) -> dict[str, Any]:
+    return {
+        "text": a.text,
+        "tick": int(a.tick),
+        "bar": int(a.bar),
+        "track": a.track,
+        "event_type": a.event_type,
+        "status": a.status,
+        "element_id": a.element_id,
+        "reason": a.reason,
+    }
+
+
+def _element_to_dict(e: Element) -> dict[str, Any]:
+    data: dict[str, Any] = {
         "id": e.id,
         "role": e.role,
         "sections": list(e.sections),
@@ -1125,6 +1287,9 @@ def _element_to_dict(e: Element) -> dict[str, Any]:
         "rationale": e.rationale,
         "is_protagonist": e.is_protagonist,
     }
+    if e.source_annotation is not None:
+        data["source_annotation"] = _source_annotation_to_dict(e.source_annotation)
+    return data
 
 
 def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
@@ -1182,6 +1347,7 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
         "elements": [_element_to_dict(e) for e in plan.elements],
         "transitions": [_transition_to_dict(t) for t in plan.transitions],
         "edits": [_edit_to_dict(ed) for ed in plan.edits],
+        "annotations": [_plan_annotation_to_dict(a) for a in plan.annotations],
     }
     if plan.style is not None:
         data["style"] = {
@@ -1225,7 +1391,37 @@ def _section_from_dict(data: dict[str, Any]) -> PlanSection:
     )
 
 
+def _source_annotation_from_dict(data: Any, path: str) -> SourceAnnotation:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, SOURCE_ANNOTATION_FIELDS, path)
+    return SourceAnnotation(
+        text=_require_field(data, "text", path),
+        tick=_require_field(data, "tick", path),
+        bar=_require_field(data, "bar", path),
+        track=_require_field(data, "track", path),
+        event_type=_require_field(data, "event_type", path),
+    )
+
+
+def _plan_annotation_from_dict(data: Any, path: str) -> PlanAnnotation:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, PLAN_ANNOTATION_FIELDS, path)
+    return PlanAnnotation(
+        text=_require_field(data, "text", path),
+        tick=_require_field(data, "tick", path),
+        bar=_require_field(data, "bar", path),
+        track=_require_field(data, "track", path),
+        event_type=_require_field(data, "event_type", path),
+        status=_require_field(data, "status", path),
+        element_id=data.get("element_id"),
+        reason=data.get("reason"),
+    )
+
+
 def _element_from_dict(data: dict[str, Any], path: str) -> Element:
+    sa_raw = data.get("source_annotation")
     return Element(
         id=data["id"],
         role=data["role"],
@@ -1241,6 +1437,10 @@ def _element_from_dict(data: dict[str, Any], path: str) -> Element:
         instrument=data.get("instrument"),
         rationale=_require_field(data, "rationale", path),
         is_protagonist=data.get("is_protagonist", False),
+        source_annotation=(
+            _source_annotation_from_dict(sa_raw, f"{path}.source_annotation")
+            if sa_raw is not None else None
+        ),
     )
 
 
@@ -1341,6 +1541,10 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],
         style=_style_from_dict(data["style"]) if "style" in data else None,
         brief_ref=_brief_ref_from_dict(data["brief_ref"]) if "brief_ref" in data else None,
+        annotations=[
+            _plan_annotation_from_dict(a, f"annotations[{i}]")
+            for i, a in enumerate(data.get("annotations", []))
+        ],
     )
 
 
