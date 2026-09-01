@@ -3279,13 +3279,6 @@ def _apply_bass_let_ring(
 # confirma isso por medicao — se a numeracao de corda do MODO BASS do
 # usuario divergir dessa convencao padrao, o resultado sai errado e precisa
 # de correcao manual.
-_BASS_STRING_KEYSWITCH_ORDER_BY_COUNT: dict[int, tuple[str, ...]] = {
-    4: ("keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
-    5: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
-    6: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G", "keyswitch_corda_C"),
-}
-
-
 @register_technique("bass.string_selection", "technique")
 def _apply_bass_string_selection(
     mid: mido.MidiFile,
@@ -3319,10 +3312,17 @@ def _apply_bass_string_selection(
         muito abaixo do piso de qualquer afinacao real de baixo e saem do
         contrato estrutural via `_keyswitch_pitches_from_recipe`
         (tools/techniques/physical.py), o mesmo mecanismo generico que ja
-        protege `bass.attack_style`.
-      - Idempotente: mesma seed produz os mesmos runs; track que ja tem
-        algum dos seis keyswitches e pulada inteira (mesmo padrao de
-        `bass.attack_style`).
+        protege `bass.attack_style` — por isso os seis valores vem SEMPRE do
+        manual (`manual_value`), nunca de override em `context.parameters`:
+        um valor arbitrario ali divergiria do que a excecao fisica generica
+        reconhece via `context.recipe`, e um numero abaixo do piso de
+        afinacao seria rejeitado como se fosse nota impossivel.
+      - Idempotente: recalcula o mesmo conjunto de runs a cada chamada
+        (filtrando pitches de keyswitch do material estrutural) e deixa o
+        dedup central por assinatura exata (track/canal/pitch/inicio/fim)
+        descartar a repeticao — nao pula a track inteira so por ja ter
+        ALGUM keyswitch (isso deixaria de forcar corda no resto da track se
+        so um trecho tivesse keyswitch previo).
     """
 
     import mido as _mido
@@ -3346,21 +3346,27 @@ def _apply_bass_string_selection(
 
     from ._helpers import manual_value, technique_from_manual
 
+    def _iter_structural_pairs(track):
+        # Nested pra manter o aplicador autocontido: uma referencia direta a
+        # `_iter_note_pairs` no corpo da funcao externa apareceria em
+        # `inspect.getclosurevars` como estado global capturado.
+        return list(_iter_note_pairs(track))
+
     technique = technique_from_manual(context)
     tuning_raw = context.parameters.get("tuning")
     tuning = tuple(tuning_raw) if tuning_raw else _BASS_DEFAULT_TUNING
 
-    string_order = _BASS_STRING_KEYSWITCH_ORDER_BY_COUNT.get(len(tuning))
+    string_order_by_count: dict[int, tuple[str, ...]] = {
+        4: ("keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
+        5: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
+        6: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G", "keyswitch_corda_C"),
+    }
+    string_order = string_order_by_count.get(len(tuning))
     if string_order is None:
         return mid
 
     keyswitch_by_string: list[int] = []
     for key in string_order:
-        # precedencia parameters (plano) > manual — nunca hardcode aqui.
-        override = context.parameters.get(key)
-        if isinstance(override, int) and not isinstance(override, bool):
-            keyswitch_by_string.append(override)
-            continue
         value = manual_value(context, technique, key)
         if not isinstance(value, int) or isinstance(value, bool):
             return mid
@@ -3382,7 +3388,7 @@ def _apply_bass_string_selection(
             (
                 (start, end, channel, pitch)
                 for channel, pitch, start, end, _velocity, _on, _off
-                in _iter_note_pairs(track)
+                in _iter_structural_pairs(track)
                 if pitch >= floor and pitch not in keyswitch_pitches
             ),
             key=lambda item: item[0],
@@ -3390,21 +3396,9 @@ def _apply_bass_string_selection(
         if not structural:
             continue
 
-        channel = structural[0][2]
-
-        already_applied = any(
-            not msg.is_meta
-            and msg.type == "note_on"
-            and msg.velocity > 0
-            and msg.note in keyswitch_pitches
-            for msg in track
-        )
-        if already_applied:
-            continue
-
-        assignments: list[tuple[int, int, int]] = []
+        assignments: list[tuple[int, int, int, int]] = []
         assignable = True
-        for start, end, _channel, pitch in structural:
+        for start, end, channel, pitch in structural:
             string_index = None
             for idx, open_pitch in enumerate(tuning):
                 if open_pitch <= pitch <= open_pitch + max_fret:
@@ -3413,23 +3407,26 @@ def _apply_bass_string_selection(
             if string_index is None:
                 assignable = False
                 break
-            assignments.append((start, end, string_index))
+            assignments.append((start, end, channel, string_index))
         if not assignable:
             continue
 
-        runs: list[tuple[int, int, int]] = []
-        run_start, run_end, run_string = assignments[0]
-        for start, end, string_index in assignments[1:]:
-            if string_index == run_string:
+        # Run quebra por troca de corda OU de canal — o keyswitch e por
+        # canal, entao notas da mesma corda em canais diferentes nao podem
+        # compartilhar um run so.
+        runs: list[tuple[int, int, int, int]] = []
+        run_start, run_end, run_channel, run_string = assignments[0]
+        for start, end, channel, string_index in assignments[1:]:
+            if string_index == run_string and channel == run_channel:
                 run_end = max(run_end, end)
             else:
-                runs.append((run_start, run_end, run_string))
-                run_start, run_end, run_string = start, end, string_index
-        runs.append((run_start, run_end, run_string))
+                runs.append((run_start, run_end, run_channel, run_string))
+                run_start, run_end, run_channel, run_string = start, end, channel, string_index
+        runs.append((run_start, run_end, run_channel, run_string))
 
         absolute = _collect_absolute(track)
         order = len(absolute)
-        for i, (r_start, r_end, string_index) in enumerate(runs):
+        for i, (r_start, r_end, r_channel, string_index) in enumerate(runs):
             ks_pitch = keyswitch_by_string[string_index]
             on_tick = max(0, r_start - 1)
             if i + 1 < len(runs):
@@ -3438,12 +3435,12 @@ def _apply_bass_string_selection(
                 off_tick = max(on_tick + 1, r_end)
             absolute.append((
                 on_tick, -2, order,
-                _mido.Message("note_on", channel=channel, note=ks_pitch, velocity=127),
+                _mido.Message("note_on", channel=r_channel, note=ks_pitch, velocity=127),
             ))
             order += 1
             absolute.append((
                 off_tick, -1, order,
-                _mido.Message("note_off", channel=channel, note=ks_pitch, velocity=0),
+                _mido.Message("note_off", channel=r_channel, note=ks_pitch, velocity=0),
             ))
             order += 1
 

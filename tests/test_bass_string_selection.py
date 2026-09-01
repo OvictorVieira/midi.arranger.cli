@@ -59,6 +59,46 @@ def _note_on_pitches(mid: mido.MidiFile) -> list[int]:
     ]
 
 
+def _note_on_pitch_channel_pairs(mid: mido.MidiFile) -> list[tuple[int, int]]:
+    return [
+        (msg.note, msg.channel)
+        for track in mid.tracks
+        for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+
+
+def _make_multi_channel_bass_line(
+    events: list[tuple[int, int, int, int]],
+    *,
+    ticks_per_beat: int = 480,
+) -> mido.MidiFile:
+    """events: list of (start_tick_absolute, duration_ticks, pitch, channel)."""
+
+    mid = mido.MidiFile(ticks_per_beat=ticks_per_beat)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    absolute: list[tuple[int, int, mido.Message]] = []
+    order = 0
+    for start, duration, pitch, channel in events:
+        absolute.append((
+            start, order,
+            mido.Message("note_on", channel=channel, note=pitch, velocity=100, time=0),
+        ))
+        order += 1
+        absolute.append((
+            start + duration, order,
+            mido.Message("note_off", channel=channel, note=pitch, velocity=0, time=0),
+        ))
+        order += 1
+    prev = 0
+    for tick, _order, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+        track.append(msg.copy(time=tick - prev))
+        prev = tick
+    mid.tracks.append(track)
+    return mid
+
+
 def test_string_selection_is_supported():
     assert "bass.string_selection" in SUPPORTED_TECHNIQUES
 
@@ -149,3 +189,51 @@ def test_unmappable_string_count_is_a_noop():
         parameters={"tuning": (20, 25, 30, 35, 40, 45, 50)},
     )
     assert _note_on_pitches(result) == [30]
+
+
+def test_string_selection_emits_keyswitch_on_each_notes_own_channel():
+    # Achado do Codex: track fisica com notas em mais de um canal usava o
+    # canal da PRIMEIRA nota estrutural pra todo keyswitch, inclusive runs
+    # vindos de outro canal — essas notas ficavam sem o keyswitch delas.
+    source = _make_multi_channel_bass_line([
+        (0, 480, 30, 1), (480, 480, 32, 1),   # corda E, canal 1
+        (960, 480, 60, 2),                     # corda D, canal 2
+    ])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    pairs = _note_on_pitch_channel_pairs(result)
+    assert pairs == [
+        (_KS_E, 1), (30, 1), (32, 1),
+        (_KS_D, 2), (60, 2),
+    ]
+
+
+def test_string_selection_recomputes_runs_when_partial_keyswitch_exists():
+    # Achado do Codex: pular a track inteira so por achar QUALQUER keyswitch
+    # deixa o resto da track sem corda forcada quando so um trecho ja tinha
+    # keyswitch previo (ex.: autor manual parcial cobrindo so a primeira
+    # nota). A reaplicacao tem que recalcular o conjunto completo de runs
+    # em vez de tratar qualquer pitch de keyswitch como prova de que a
+    # track inteira ja foi processada.
+    mid = mido.MidiFile(ticks_per_beat=480)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+    # Keyswitch de E pre-existente (autor manual), so cobrindo a primeira nota.
+    track.append(mido.Message("note_on", channel=1, note=_KS_E, velocity=127, time=0))
+    track.append(mido.Message("note_off", channel=1, note=_KS_E, velocity=0, time=479))
+    track.append(mido.Message("note_on", channel=1, note=30, velocity=100, time=1))
+    track.append(mido.Message("note_off", channel=1, note=30, velocity=0, time=479))
+    # Segunda nota, corda G (so alcancavel acima do alcance de E/A/D com
+    # max_fret=24) — a track NUNCA recebeu keyswitch de G.
+    track.append(mido.Message("note_on", channel=1, note=65, velocity=100, time=1))
+    track.append(mido.Message("note_off", channel=1, note=65, velocity=0, time=479))
+    mid.tracks.append(track)
+
+    result = apply_technique(
+        "bass.string_selection", mid, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    pitches = _note_on_pitches(result)
+    assert _KS_G in pitches
