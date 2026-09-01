@@ -288,16 +288,17 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
 {
   "name": "palm_mute",
   "family": "bass",
-  "summary": "Abafamento generico; MODO BASS so pode aplicar depois que MUTING for mapeado no plugin.",
+  "summary": "Abafamento por gate/velocity e, no MODO BASS configurado, automacao CC9.",
   "verified": false,
-  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plugin precisa de um CC ou keyswitch mapeado pelo usuario e de uma curva com retorno a zero. Enquanto esse mapeamento e a curva nao forem declarados e implementados, pedir esta tecnica para MODO BASS falha explicitamente: nunca cai no fallback generico e nunca inventa evento MIDI.",
+  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. Na pagina CONTROL, ative MUTING como CC 9 antes de renderizar: o motor escreve CC9 antes de cada nota escolhida e CC9=0 no fim dela. Sem esse mapeamento no plugin, os eventos continuam validos no MIDI, mas nao controlam o timbre; a skill deve orientar essa configuracao antes de autorizar a tecnica.",
   "parameters": [
     {"name": "velocity", "range": [60, 100], "source": "CONVENCAO — mute abafa timbre, nao reduz forca de ataque a niveis de ghost note; faixa media escolhida para o motor, sem medicao publicada"},
-    {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"}
+    {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"},
+    {"name": "amount", "range": [18, 35], "source": "CONVENCAO — perfil de muting por secao em base_conhecimento_midi_realista_modo_bass.md (verso 35, refrão 18, breakdown 28); faixa moderada para automacao deterministica"}
   ],
   "tools": {
     "generic": {"note": "gate curto e velocity media; sem CC dedicado"},
-    "modo_bass": {"unsupported": true, "note": "MUTING vem Off na pagina CONTROL v1.5.2. Mapeie um CC ou keyswitch no plugin e documente a curva antes de autorizar a tecnica"}
+    "modo_bass": {"cc": 9, "note": "Antes de renderizar, configure MUTING na pagina CONTROL como CC 9. O motor envia valor antes da nota e CC9=0 ao fim; nao e keyswitch"}
   }
 }
 ```

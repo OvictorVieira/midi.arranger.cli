@@ -2579,7 +2579,12 @@ def _apply_bass_ghost_notes(
     return mid
 
 
-@register_technique("bass.palm_mute", "humanize")
+@register_technique(
+    "bass.palm_mute",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
 def _apply_bass_palm_mute(
     mid: mido.MidiFile,
     *,
@@ -2597,6 +2602,9 @@ def _apply_bass_palm_mute(
         faixa mais baixa (< P25) da propria origem, mesmo abafada.
       - Encurta pelo `gate_pct` do manual sobre a duracao original — nao inventa
         numero.
+      - Receita MODO BASS emite CC9 antes de cada nota escolhida e CC9=0 no
+        fim dela. O usuario configura MUTING=CC9 na pagina CONTROL; sem isso
+        o MIDI continua correto, mas o plugin nao associa a automacao.
       - Determinismo por seed atraves de `context.rng()`.
     """
 
@@ -2615,21 +2623,6 @@ def _apply_bass_palm_mute(
 
     technique, _range = load_range_resolver(context)
 
-    if context.tool == "modo_bass":
-        # Import local de um modulo DIFERENTE do proprio (`tools/techniques/
-        # errors.py`, nao `engine.py`) — `engine.py` nunca importa o nome
-        # solto no seu proprio escopo (ver comentario acima de
-        # `TechniqueContractError`), entao isto e uma dependencia de verdade
-        # noutro modulo, nao uma evasao de `inspect.getclosurevars`.
-        from .errors import TechniqueRecipeError
-
-        raise TechniqueRecipeError(
-            f"tecnica {context.canonical!r}: MODO BASS esta com MUTING Off "
-            "e nao declara CC/keyswitch de fabrica. Configure o mapeamento "
-            "no plugin e documente a curva antes de autorizar esta tecnica; "
-            "o motor nao usa fallback generico para alvo MODO Bass"
-        )
-
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
     velocity_hi = max(velocity_lo, int(velocity_range[1]))
@@ -2638,12 +2631,33 @@ def _apply_bass_palm_mute(
     gate_lo = max(1.0, float(gate_range[0]))
     gate_hi = max(gate_lo, float(gate_range[1]))
 
+    muting_cc: int | None = None
+    muting_lo = muting_hi = 0
+    if context.tool == "modo_bass":
+        # Import local de modulo DIFERENTE do proprio (`errors.py`, nao
+        # `engine.py`): `engine.py` nunca importa TechniqueRecipeError solto
+        # no proprio escopo, entao isto e dependencia de verdade em outro
+        # modulo, nao evasao de `inspect.getclosurevars` (ver comentario
+        # acima de `TechniqueContractError` em engine.py).
+        from .errors import TechniqueRecipeError
+
+        cc_value = context.recipe.get("cc")
+        if not isinstance(cc_value, int) or isinstance(cc_value, bool):
+            raise TechniqueRecipeError(
+                f"tecnica {context.canonical!r}: receita modo_bass sem CC de muting"
+            )
+        amount_range = _range("amount") or (18.0, 35.0)
+        muting_cc = cc_value
+        muting_lo = max(1, min(127, int(amount_range[0])))
+        muting_hi = max(muting_lo, min(127, int(amount_range[1])))
+
     if mid.ticks_per_beat <= 0:
         return mid
 
     selection_rng = context.rng("selection")
     velocity_rng = context.rng("velocity")
     gate_rng = context.rng("gate")
+    muting_rng = context.rng("muting")
 
     def collect_pairs(track):
         return list(_iter_note_pairs(track))
@@ -2666,6 +2680,7 @@ def _apply_bass_palm_mute(
 
         new_velocity_by_msg: dict[int, int] = {}
         new_end_tick_by_msg: dict[int, int] = {}
+        control_events: list[tuple[int, int, mido.Message]] = []
         for pair_index, pair in enumerate(pairs):
             if pair_index not in selected:
                 continue
@@ -2678,6 +2693,29 @@ def _apply_bass_palm_mute(
                 note_on_index,
                 note_off_index,
             ) = pair
+            if muting_cc is not None:
+                # No MODO o proprio CC9 produz o abafamento. Nao encurtamos
+                # nem recalculamos velocity por cima dele: alem de somar um
+                # segundo efeito sem necessidade, isso mudaria o alvo na
+                # reaplicacao e impediria o dedup central dos mesmos CCs.
+                amount = muting_rng.randint(muting_lo, muting_hi)
+                control_events.append((
+                    start_tick,
+                    -2,
+                    _mido.Message(
+                        "control_change", channel=_channel,
+                        control=muting_cc, value=amount,
+                    ),
+                ))
+                control_events.append((
+                    end_tick,
+                    -3,
+                    _mido.Message(
+                        "control_change", channel=_channel,
+                        control=muting_cc, value=0,
+                    ),
+                ))
+                continue
             duration = max(1, end_tick - start_tick)
             gate_pct = gate_rng.uniform(gate_lo, gate_hi)
             new_duration = max(1, int(round(duration * gate_pct / 100.0)))
@@ -2712,6 +2750,25 @@ def _apply_bass_palm_mute(
                 rebuilt.append(msg.copy(time=delta))
             previous_tick = absolute_tick
         track[:] = rebuilt
+
+        if control_events:
+            absolute_events: list[tuple[int, int, int, mido.Message]] = []
+            tick = 0
+            for order, msg in enumerate(track):
+                tick += msg.time
+                absolute_events.append((tick, 0, order, msg))
+            offset = len(absolute_events)
+            absolute_events.extend(
+                (event_tick, bias, offset + order, msg)
+                for order, (event_tick, bias, msg) in enumerate(control_events)
+            )
+            absolute_events.sort(key=lambda item: (item[0], item[1], item[2]))
+            rebuilt = _mido.MidiTrack()
+            previous_tick = 0
+            for event_tick, _bias, _order, msg in absolute_events:
+                rebuilt.append(msg.copy(time=event_tick - previous_tick))
+                previous_tick = event_tick
+            track[:] = rebuilt
 
     return mid
 
