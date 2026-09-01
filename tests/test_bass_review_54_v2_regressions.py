@@ -107,6 +107,25 @@ def test_palm_mute_aceita_modo_bass_com_cc_declarado():
     assert out is not None
 
 
+def test_palm_mute_density_zero_e_noop_mesmo_sem_cc_declarado():
+    """Achado do Codex na PR: o guard de `cc` obrigatorio pro MODO BASS
+    rodava ANTES do gate de `density <= 0`, entao uma tecnica desligada
+    (density=0.0) recusava o plano por falta de um parametro que ela nem
+    ia usar. O gate de density agora vem primeiro."""
+    events = [(0, 480, 40, 100)]
+    source = _bass_track(events)
+    out = apply_technique(
+        "bass.palm_mute", source, seed=1, tool="modo_bass",
+        parameters={"density": 0.0},
+    )
+    out_notes = [
+        (msg.note, msg.velocity)
+        for track in out.tracks for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert out_notes == [(40, 100)]
+
+
 def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():
     """Achado 1+2: `style` nao tinha como trafegar pelo plano — o schema
     so aceitava numero ou par. `bass.attack_style` estava registrada e
@@ -156,6 +175,25 @@ def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():
     out_path = tmp / "out.mid"
     render(reloaded, out_path)  # nao levanta
     assert out_path.exists()
+
+
+def test_attack_style_density_zero_e_noop():
+    """Achado do Codex na PR: `bass.attack_style` nao olhava `density` em
+    lugar nenhum, entao `density=0.0` (que deveria desligar a tecnica,
+    mesma convencao de `bass.palm_mute`/`bass.ghost_notes`) nao impedia o
+    keyswitch de ser inserido quando `tool='modo_bass'` resolvia a receita
+    especifica."""
+    events = [(0, 480, 40, 100)]
+    out = apply_technique(
+        "bass.attack_style", _bass_track(events), seed=1, tool="modo_bass",
+        parameters={"style": "dedo", "density": 0.0},
+    )
+    out_notes = [
+        (msg.note, msg.velocity)
+        for track in out.tracks for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert out_notes == [(40, 100)]
 
 
 def test_attack_style_recusa_string_fora_do_vocabulario_fechado():

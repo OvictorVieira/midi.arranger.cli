@@ -2597,6 +2597,18 @@ def _apply_bass_palm_mute(
 
     from ._param_range import load_range_resolver
 
+    # Tecnica DESLIGADA (density ausente ou <= 0) e no-op antes de qualquer
+    # outra checagem — inclusive antes de exigir `cc` pro MODO BASS logo
+    # abaixo. Ordem importa: checar o requisito de tool-especifico antes do
+    # gate de density faria uma tecnica desligada recusar o plano por falta
+    # de um parametro que ela nem ia usar (achado do Codex na PR #93).
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
     technique, _range = load_range_resolver(context)
 
     # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
@@ -2635,13 +2647,6 @@ def _apply_bass_palm_mute(
     gate_range = _range("gate_pct") or (25.0, 50.0)
     gate_lo = max(1.0, float(gate_range[0]))
     gate_hi = max(gate_lo, float(gate_range[1]))
-
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
-        return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
 
     if mid.ticks_per_beat <= 0:
         return mid
@@ -2749,6 +2754,12 @@ def _apply_bass_attack_style(
         estrutural via `_keyswitch_pitches_from_recipe`.
       - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
         dedup do dispatch descarta a duplicata.
+      - `density` explicita <= 0 DESLIGA a tecnica inteira (achado do Codex
+        na PR #93): sem essa checagem, `tool="modo_bass"` inseria o
+        keyswitch mesmo com `density=0.0` declarado no plano, porque nada
+        aqui olhava `density`. Ausencia de `density` continua aplicando
+        normalmente quando `style` esta declarado — comportamento anterior
+        preservado, so o "0.0 explicito" ganhou sentido de desligar.
     """
 
     import mido as _mido
@@ -2760,6 +2771,14 @@ def _apply_bass_attack_style(
     from ._track_rebuild import (
         sort_and_flush as _sort_and_flush,
     )
+
+    density_raw = context.parameters.get("density")
+    if (
+        isinstance(density_raw, (int, float))
+        and not isinstance(density_raw, bool)
+        and density_raw <= 0.0
+    ):
+        return mid
 
     technique, _range = load_range_resolver(context)
     recipe = context.recipe
