@@ -141,6 +141,19 @@ def test_normalize_kind_new_modifiers_do_not_match_as_substring():
     assert sections.normalize_kind("VAMP 2") == "interlude"
 
 
+def test_normalize_kind_treats_underscore_as_cue_separator():
+    # Achado do Codex na PR: "_" e caractere de palavra pra "\b" (diferente
+    # de espaco/hifen), entao marcador de DAW com underscore como separador
+    # ("GUITAR_SOLO", "VOCAL_HOOK", "DROP_1") nao tinha fronteira nenhuma
+    # antes do cue e caia em None -> "verse" no skeleton.
+    assert sections.normalize_kind("GUITAR_SOLO") == "bridge"
+    assert sections.normalize_kind("VOCAL_HOOK") == "chorus"
+    assert sections.normalize_kind("DROP_1") == "breakdown"
+    assert sections.normalize_kind("PRE_CHORUS") == "pre"
+    assert sections.normalize_kind("PRE_DROP") == "pre"
+    assert sections.normalize_kind("BUILD_UP") == "pre"
+
+
 def test_normalize_kind_pre_drop_beats_breakdown_drop():
     # 'PRE-DROP' contem 'drop'; a regra precisa dar 'pre' e nao 'breakdown',
     # mesma logica que ja protege 'pre-chorus' vs 'chorus'.
