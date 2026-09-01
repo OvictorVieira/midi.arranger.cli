@@ -191,6 +191,42 @@ def test_unmappable_string_count_is_a_noop():
     assert _note_on_pitches(result) == [30]
 
 
+def test_string_selection_does_not_split_run_when_another_channel_interleaves():
+    # Achado do Codex: formar run numa lista global ordenada por tick fazia
+    # uma nota de OUTRO canal, intercalada no meio de duas notas do MESMO
+    # canal na MESMA corda, quebrar o run do canal 1 em dois — soltando e
+    # reacionando o mesmo keyswitch sem necessidade. Canal 1: duas notas na
+    # corda E (tick 0 e tick 960). Canal 2: uma nota na corda D (tick 240),
+    # cronologicamente ENTRE as duas notas do canal 1.
+    source = _make_multi_channel_bass_line([
+        (0, 480, 30, 1),     # corda E, canal 1
+        (240, 480, 60, 2),   # corda D, canal 2 — intercalada no meio
+        (960, 480, 32, 1),   # corda E, canal 1 — mesma corda da primeira
+    ])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4},
+    )
+    pitches = _note_on_pitches(result)
+    # Um unico keyswitch de E pro canal 1 inteiro — nao dois.
+    assert pitches.count(_KS_E) == 1
+
+
+def test_string_selection_resolves_max_fret_parameter_pair():
+    # Achado do Codex: max_fret como par [min, max] (formato aceito por
+    # qualquer style.parameters) caia no default 24 em silencio. Com
+    # max_fret=[12, 12] (ponto medio 12) e afinacao E-A-D-G, pitch 45 nao
+    # alcanca mais a corda E (28+12=40 < 45) e forca a corda A (33+12=45).
+    source = _make_bass_line([(0, 480, 45)])
+    result = apply_technique(
+        "bass.string_selection", source, seed=1, tool="modo_bass",
+        parameters={"tuning": _STANDARD_4, "max_fret": [12, 12]},
+    )
+    pitches = _note_on_pitches(result)
+    assert _KS_A in pitches
+    assert _KS_E not in pitches
+
+
 def _ticks_for_channel_pitch(mid: mido.MidiFile, *, channel: int, pitch: int) -> tuple[int, int]:
     """(on_tick, off_tick) do primeiro par note_on/off daquele canal/pitch."""
     tick = 0

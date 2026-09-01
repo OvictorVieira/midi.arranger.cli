@@ -3367,14 +3367,26 @@ def _apply_bass_string_selection(
         keyswitch_by_string.append(value)
     keyswitch_pitches = set(keyswitch_by_string)
 
+    def _positive_number(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value > 0 else None
+
     max_fret_raw = context.parameters.get("max_fret")
-    max_fret = (
-        int(max_fret_raw)
-        if isinstance(max_fret_raw, (int, float))
-        and not isinstance(max_fret_raw, bool)
-        and max_fret_raw > 0
-        else 24
-    )
+    max_fret_value = _positive_number(max_fret_raw)
+    if max_fret_value is None and (
+        isinstance(max_fret_raw, (list, tuple)) and len(max_fret_raw) == 2
+    ):
+        lo = _positive_number(max_fret_raw[0])
+        hi = _positive_number(max_fret_raw[1])
+        # `style.parameters` aceita par [min, max] pra qualquer parametro;
+        # max_fret e um limite fisico unico (nao uma faixa pra sortear), por
+        # isso resolve pro PONTO MEDIO — mesma convencao de `_midrange` em
+        # `bass.attack_style` pra transformar range em valor estrutural
+        # unico e deterministico.
+        if lo is not None and hi is not None:
+            max_fret_value = (lo + hi) / 2
+    max_fret = int(round(max_fret_value)) if max_fret_value is not None else 24
     floor = min(tuning)
 
     for track in mid.tracks:
@@ -3404,47 +3416,50 @@ def _apply_bass_string_selection(
         if not assignable:
             continue
 
-        # Run quebra por troca de corda OU de canal — o keyswitch e por
-        # canal, entao notas da mesma corda em canais diferentes nao podem
-        # compartilhar um run so.
-        runs: list[tuple[int, int, int, int]] = []
-        run_start, run_end, run_channel, run_string = assignments[0]
-        for start, end, channel, string_index in assignments[1:]:
-            if string_index == run_string and channel == run_channel:
-                run_end = max(run_end, end)
-            else:
-                runs.append((run_start, run_end, run_channel, run_string))
-                run_start, run_end, run_channel, run_string = start, end, channel, string_index
-        runs.append((run_start, run_end, run_channel, run_string))
+        # Agrupa por canal ANTES de formar run — runs sao independentes por
+        # canal (o keyswitch e por canal). Formar run numa lista global
+        # ordenada por tick faria uma nota de OUTRO canal, intercalada no
+        # meio de duas notas do mesmo canal na mesma corda, quebrar o run
+        # em dois — soltando e reacionando o mesmo keyswitch sem
+        # necessidade (o note_on do proximo run pode ate ordenar antes do
+        # note_off do anterior no mesmo tick, corrompendo o pareamento).
+        by_channel: dict[int, list[tuple[int, int, int]]] = {}
+        for start, end, channel, string_index in assignments:
+            by_channel.setdefault(channel, []).append((start, end, string_index))
+
+        runs_by_channel: dict[int, list[tuple[int, int, int]]] = {}
+        for channel, channel_assignments in by_channel.items():
+            channel_runs: list[tuple[int, int, int]] = []
+            run_start, run_end, run_string = channel_assignments[0]
+            for start, end, string_index in channel_assignments[1:]:
+                if string_index == run_string:
+                    run_end = max(run_end, end)
+                else:
+                    channel_runs.append((run_start, run_end, run_string))
+                    run_start, run_end, run_string = start, end, string_index
+            channel_runs.append((run_start, run_end, run_string))
+            runs_by_channel[channel] = channel_runs
 
         absolute = _collect_absolute(track)
         order = len(absolute)
-        for i, (r_start, r_end, r_channel, string_index) in enumerate(runs):
-            ks_pitch = keyswitch_by_string[string_index]
-            on_tick = max(0, r_start - 1)
-            # O keyswitch so pode ser liberado quando o PROPRIO canal troca
-            # de corda — usar o proximo run na ordem global (que pode ser de
-            # OUTRO canal, ja que `runs` e ordenado por inicio entre todos
-            # os canais) soltava o keyswitch cedo demais quando runs de
-            # canais diferentes se intercalam no tempo.
-            next_same_channel = next(
-                (later for later in runs[i + 1:] if later[2] == r_channel),
-                None,
-            )
-            if next_same_channel is not None:
-                off_tick = max(on_tick + 1, next_same_channel[0] - 1)
-            else:
-                off_tick = max(on_tick + 1, r_end)
-            absolute.append((
-                on_tick, -2, order,
-                _mido.Message("note_on", channel=r_channel, note=ks_pitch, velocity=127),
-            ))
-            order += 1
-            absolute.append((
-                off_tick, -1, order,
-                _mido.Message("note_off", channel=r_channel, note=ks_pitch, velocity=0),
-            ))
-            order += 1
+        for channel, channel_runs in runs_by_channel.items():
+            for position, (r_start, r_end, string_index) in enumerate(channel_runs):
+                ks_pitch = keyswitch_by_string[string_index]
+                on_tick = max(0, r_start - 1)
+                if position + 1 < len(channel_runs):
+                    off_tick = max(on_tick + 1, channel_runs[position + 1][0] - 1)
+                else:
+                    off_tick = max(on_tick + 1, r_end)
+                absolute.append((
+                    on_tick, -2, order,
+                    _mido.Message("note_on", channel=channel, note=ks_pitch, velocity=127),
+                ))
+                order += 1
+                absolute.append((
+                    off_tick, -1, order,
+                    _mido.Message("note_off", channel=channel, note=ks_pitch, velocity=0),
+                ))
+                order += 1
 
         _sort_and_flush(absolute, track)
 
