@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import mido
+import pytest
 
-from tools.techniques.engine import SUPPORTED_TECHNIQUES, apply_technique
+from tools.techniques.engine import (
+    SUPPORTED_TECHNIQUES,
+    TechniqueRecipeError,
+    apply_technique,
+)
 
 # Afinacao padrao de 4 cordas (E-A-D-G), grave para agudo — mesma usada por
 # `tools.techniques.physical._BASS_DEFAULT_TUNING`.
@@ -225,6 +230,36 @@ def test_string_selection_resolves_max_fret_parameter_pair():
     pitches = _note_on_pitches(result)
     assert _KS_A in pitches
     assert _KS_E not in pitches
+
+
+def test_string_selection_rejects_invalid_max_fret_instead_of_defaulting():
+    # Achado do Codex: max_fret=0/negativo/tipo invalido normalizava pra
+    # None e caia no default 24 em silencio — um limite fisico DECLARADO
+    # errado nao pode virar "nao declarado". Falha explicita em vez disso.
+    source = _make_bass_line([(0, 480, 30)])
+    for bad_max_fret in (0, -5, "doze", [12]):
+        with pytest.raises(TechniqueRecipeError, match="max_fret"):
+            apply_technique(
+                "bass.string_selection", source, seed=1, tool="modo_bass",
+                parameters={"tuning": _STANDARD_4, "max_fret": bad_max_fret},
+            )
+
+
+def test_string_selection_rejects_overlapping_notes_needing_different_strings():
+    # Achado do Codex: notas sobrepostas no MESMO canal pedindo cordas
+    # diferentes nao tem como manter os dois keyswitches "ligados" ao
+    # mesmo tempo (estado unico por canal) — soltar um deles cedo
+    # corromperia a nota estrutural ainda soando. Corda E (tick 0-1000) e
+    # corda D (tick 480-960, sobreposta) no MESMO canal.
+    source = _make_multi_channel_bass_line([
+        (0, 1000, 30, 1),   # corda E, canal 1, tick 0-1000
+        (480, 480, 60, 1),  # corda D, canal 1, tick 480-960 — SOBREPOE a de cima
+    ])
+    with pytest.raises(TechniqueRecipeError, match="sobrepostas"):
+        apply_technique(
+            "bass.string_selection", source, seed=1, tool="modo_bass",
+            parameters={"tuning": _STANDARD_4},
+        )
 
 
 def _ticks_for_channel_pitch(mid: mido.MidiFile, *, channel: int, pitch: int) -> tuple[int, int]:

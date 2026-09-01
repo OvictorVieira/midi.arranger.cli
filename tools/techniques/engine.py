@@ -3373,20 +3373,33 @@ def _apply_bass_string_selection(
         return float(value) if value > 0 else None
 
     max_fret_raw = context.parameters.get("max_fret")
-    max_fret_value = _positive_number(max_fret_raw)
-    if max_fret_value is None and (
-        isinstance(max_fret_raw, (list, tuple)) and len(max_fret_raw) == 2
-    ):
-        lo = _positive_number(max_fret_raw[0])
-        hi = _positive_number(max_fret_raw[1])
-        # `style.parameters` aceita par [min, max] pra qualquer parametro;
-        # max_fret e um limite fisico unico (nao uma faixa pra sortear), por
-        # isso resolve pro PONTO MEDIO — mesma convencao de `_midrange` em
-        # `bass.attack_style` pra transformar range em valor estrutural
-        # unico e deterministico.
-        if lo is not None and hi is not None:
-            max_fret_value = (lo + hi) / 2
-    max_fret = int(round(max_fret_value)) if max_fret_value is not None else 24
+    if max_fret_raw is None:
+        max_fret = 24
+    else:
+        max_fret_value = _positive_number(max_fret_raw)
+        if max_fret_value is None and (
+            isinstance(max_fret_raw, (list, tuple)) and len(max_fret_raw) == 2
+        ):
+            lo = _positive_number(max_fret_raw[0])
+            hi = _positive_number(max_fret_raw[1])
+            # `style.parameters` aceita par [min, max] pra qualquer
+            # parametro; max_fret e um limite fisico unico (nao uma faixa
+            # pra sortear), por isso resolve pro PONTO MEDIO — mesma
+            # convencao de `_midrange` em `bass.attack_style` pra
+            # transformar range em valor estrutural unico e deterministico.
+            if lo is not None and hi is not None:
+                max_fret_value = (lo + hi) / 2
+        if max_fret_value is None:
+            # Declarado mas invalido (0, negativo, tipo errado, par
+            # invalido): rejeita explicitamente em vez de cair no default
+            # 24 em silencio — um limite fisico declarado errado nao pode
+            # virar "nao declarado" (achado do Codex na PR).
+            raise TechniqueRecipeError(
+                f"tecnica {context.canonical!r}: style.bass.parameters."
+                f"max_fret declarado invalido (precisa ser numero positivo "
+                f"ou par [min, max] positivo), got {max_fret_raw!r}"
+            )
+        max_fret = int(round(max_fret_value))
     floor = min(tuning)
 
     for track in mid.tracks:
@@ -3434,6 +3447,21 @@ def _apply_bass_string_selection(
             for start, end, string_index in channel_assignments[1:]:
                 if string_index == run_string:
                     run_end = max(run_end, end)
+                elif start < run_end:
+                    # Notas sobrepostas no MESMO canal pedindo cordas
+                    # diferentes: o keyswitch e estado unico por canal, entao
+                    # nao existe forma de manter as duas cordas "ligadas" ao
+                    # mesmo tempo — soltar uma delas cedo corromperia a nota
+                    # estrutural que ainda esta soando. Falha explicita em
+                    # vez de emitir keyswitch conflitante em silencio.
+                    raise TechniqueRecipeError(
+                        f"tecnica {context.canonical!r}: notas sobrepostas no "
+                        f"canal {channel} pedem cordas diferentes (corda "
+                        f"{run_string} ate tick {run_end}, corda {string_index} "
+                        f"comecando tick {start}) — impossivel manter os dois "
+                        "keyswitches simultaneos num canal so; declare essas "
+                        "notas em canais separados"
+                    )
                 else:
                     channel_runs.append((run_start, run_end, run_string))
                     run_start, run_end, run_string = start, end, string_index
