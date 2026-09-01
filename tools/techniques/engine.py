@@ -3438,14 +3438,19 @@ def _apply_bass_string_selection(
                 f"ou par [min, max] positivo), got {max_fret_raw!r}"
             )
         max_fret = int(round(max_fret_value))
-    floor = min(tuning)
 
     for track in mid.tracks:
+        # So exclui pitch de KEYSWITCH por valor exato — nao por
+        # `pitch >= floor`. Um filtro por piso deixaria passar em silencio
+        # uma nota estrutural genuina ABAIXO da afinacao declarada (achado
+        # do Codex na PR #94): o loop de atribuicao logo abaixo e quem
+        # precisa ver essa nota, pra falhar explicito em vez dela nunca
+        # chegar la.
         structural = sorted(
             (
                 (note["start"], note["end"], note["channel"], note["pitch"])
                 for note in iter_note_dicts(track)
-                if note["pitch"] >= floor and note["pitch"] not in keyswitch_pitches
+                if note["pitch"] not in keyswitch_pitches
             ),
             key=lambda item: item[0],
         )

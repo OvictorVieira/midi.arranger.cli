@@ -2192,6 +2192,42 @@ def test_bass_string_selection_reachable_end_to_end_via_real_render(tmp_path):
     )
 
 
+def test_bass_string_selection_noop_without_modo_tool_omitted_from_stamp(tmp_path):
+    """Achado do Codex na PR #94: sem `tool="MODO Bass"`, o aplicador de
+    `bass.string_selection` e NO-OP interno legitimo (a receita `generic`
+    do manual diz que a intencao de corda nao pode ser honrada fora do
+    MODO BASS) — mas o carimbo listava a tecnica em `techniques=[...]`
+    mesmo assim, so por ter sido despachada com `density>0`. O carimbo
+    precisa refletir o que de fato mudou o MIDI, nao so o que foi tentado.
+    """
+    src = _build_bass_string_switch_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.0, tool=None),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo em drop, sem MODO Bass declarado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(name="bass.string_selection")],
+            parameters={},
+        ),
+    }
+    plan.brief_ref = _bass_string_selection_brief_ref(tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    assert not _has_note_on(out, 16), (
+        "sem tool=MODO Bass a receita e generic — nenhum keyswitch pode sair"
+    )
+    stamp = _stamp_text(out, "Bass")
+    assert "bass.string_selection" not in stamp
+
+
 def test_edit_tool_modo_bass_palm_mute_fails_without_mapping(tmp_path):
     """Render nao usa fallback para um alvo MODO sem evento de mute."""
     src = _build_synthetic_source(tmp_path)

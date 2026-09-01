@@ -235,6 +235,20 @@ def test_string_selection_rejects_single_unmappable_note_instead_of_skipping_tra
         )
 
 
+def test_string_selection_rejects_note_below_tuning_floor():
+    # Achado do Codex na PR #94: o filtro `pitch >= floor` excluia uma nota
+    # estrutural ABAIXO do piso da afinacao ANTES do loop de atribuicao
+    # sequer ve-la, deixando-a sem forcar em silencio — so pitches ACIMA do
+    # alcance de qualquer corda estavam caindo no `TechniqueRecipeError`.
+    # Pitch 20 esta abaixo da corda mais grave (E=28) em qualquer max_fret.
+    source = _make_bass_line([(0, 480, 20)])
+    with pytest.raises(TechniqueRecipeError, match="20"):
+        apply_technique(
+            "bass.string_selection", source, seed=1, tool="modo_bass",
+            parameters={"tuning": _STANDARD_4},
+        )
+
+
 def test_unmappable_string_count_is_a_noop():
     # 7 cordas nao tem convencao documentada (so 4/5/6) — no-op explicito
     # em vez de adivinhar uma ordem.

@@ -517,6 +517,19 @@ def _tracks_as_midi(
     return mid
 
 
+def _midi_bytes(mid: mido.MidiFile) -> bytes:
+    """Serializa `mid` pra comparacao byte a byte — usado por
+    `_run_style_pipeline` pra saber se uma tecnica de fato mudou algo, em
+    vez de assumir que "foi despachada" significa "foi aplicada" (uma
+    tecnica pode ser NO-OP interno legitimo, como `bass.string_selection`
+    com `tool != "modo_bass"` ou contagem de corda sem convencao — nesses
+    casos o motor devolve o MIDI intocado)."""
+
+    buffer = BytesIO()
+    mid.save(file=buffer)
+    return buffer.getvalue()
+
+
 def _tempo_track_from_pretty_midi(pm: pretty_midi.PrettyMIDI) -> mido.MidiTrack:
     track = mido.MidiTrack()
     previous_tick = 0
@@ -553,8 +566,11 @@ def _run_style_pipeline(
     `density` explicitamente <= 0.0 significa tecnica desligada (AGENTS.md):
     nem resolve receita nem dispara `W_NO_TOOL_RECIPE` para uma tecnica que
     nao vai fazer nada. O terceiro item do retorno lista, em ordem, apenas as
-    tecnicas que de fato foram despachadas — usado para o carimbo nao citar
-    tecnica desligada como se tivesse sido aplicada.
+    tecnicas que de fato MUDARAM o MIDI — comparado por bytes antes/depois de
+    cada despacho, nao apenas as que foram despachadas: um aplicador pode ser
+    NO-OP interno legitimo mesmo com `density > 0` (ex.: `bass.string_selection`
+    com `tool != "modo_bass"` ou contagem de corda sem convencao), e nesse
+    caso o carimbo nao pode alegar que a tecnica foi aplicada.
     """
 
     warnings: list[str] = []
@@ -564,6 +580,7 @@ def _run_style_pipeline(
         canonical = _canonical_style_technique(index, family, technique.name)
         if technique.density is not None and technique.density <= 0.0:
             continue
+        before_bytes = _midi_bytes(current)
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
@@ -596,7 +613,8 @@ def _run_style_pipeline(
             f"{warning_prefix}{_format_engine_warning(w)}"
             for w in applied.warnings
         )
-        applied_names.append(canonical)
+        if _midi_bytes(current) != before_bytes:
+            applied_names.append(canonical)
     return current, warnings, tuple(applied_names)
 
 
