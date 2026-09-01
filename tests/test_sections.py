@@ -167,6 +167,20 @@ def test_normalize_kind_leading_cue_beats_named_destination():
     assert sections.normalize_kind("CHORUS DROP") == "chorus"
 
 
+def test_normalize_kind_falls_back_to_full_label_when_leading_cue_unknown():
+    # Achado do Codex na PR: truncar sempre em 'to'/'into' descartava o
+    # UNICO nome de secao do rotulo quando o cue a esquerda nao era
+    # vocabulario conhecido ('fade'/'count in'/'swell' nao classificam
+    # sozinhos) — 'FADE TO OUTRO' virava None em vez de 'outro'. So usa o
+    # fragmento truncado quando ELE MESMO classifica; senao cai pro rotulo
+    # inteiro.
+    assert sections.normalize_kind("FADE TO OUTRO") == "outro"
+    assert sections.normalize_kind("COUNT IN TO INTRO") == "intro"
+    assert sections.normalize_kind("SWELL INTO CHORUS") == "chorus"
+    # Precedencia do cue a esquerda continua intacta quando ele classifica.
+    assert sections.normalize_kind("BUILD TO CHORUS") == "pre"
+
+
 def test_normalize_kind_outro_synonym_beats_coexisting_modifier():
     # Achado do Codex na PR: 'ending'/'final'/'coda'/'tag' sao sinonimo
     # direto de 'outro' (documentado no comentario do modulo), mas estavam
