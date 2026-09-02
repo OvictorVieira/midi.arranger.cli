@@ -214,6 +214,18 @@ def test_normalize_kind_strips_all_portuguese_source_contractions():
     assert sections.normalize_kind("TRANSICAO DE VERSO PARA REFRAO") == "interlude"
 
 
+def test_normalize_kind_source_clause_truncation_requires_destination_marker():
+    # Achado de auto-revisao: a truncagem de clausula de origem
+    # ('DA'/'DO'/'DE'/'DOS'/'DAS') rodava mesmo sem nenhum marcador de
+    # destino ('to'/'into'/'para'/'pro'/'pra') no rotulo, cortando conteudo
+    # real do UNICO cue presente. 'TAG DA PONTE' truncava pra 'tag' antes
+    # de classificar e retornava 'outro' (via 'tag'), quando a precedencia
+    # canonical-primeiro do rotulo INTEIRO deveria dar 'bridge' (via
+    # 'ponte', que vem antes de 'outro' em _CANONICAL_KIND_PATTERNS).
+    assert sections.normalize_kind("TAG DA PONTE") == "bridge"
+    assert sections.normalize_kind("VERSE DO REFRAO") == "chorus"
+
+
 def test_normalize_kind_recognizes_accented_pre_spelling():
     # Achado do Codex na PR: a grafia acentuada 'PRE'/'PRE-DROP' nao casava
     # com nenhum padrao de 'pre' (que so tinha 'e' sem acento), entao

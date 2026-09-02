@@ -134,7 +134,12 @@ def normalize_kind(label: str) -> str | None:
     'TRANSICAO DA ESTROFE PARA O REFRAO') antes de classificar — senao o
     nome da secao de ORIGEM (canonico, ex. 'verse'/'estrofe') venceria o
     cue real do trecho atual pela mesma precedencia canonical-primeiro
-    que protege 'CHORUS DROP'.
+    que protege 'CHORUS DROP'. Essa truncagem de origem SO roda quando ha
+    um marcador de destino de verdade no rotulo (senao nao existe fragmento
+    "a esquerda de to/into/para/pro/pra" nenhum pra proteger) — sem isso,
+    'TAG DA PONTE' truncaria pra 'tag' antes de classificar e perderia
+    'ponte' (bridge), que a precedencia canonical-primeiro deveria vencer
+    sobre 'tag' (outro) no rotulo inteiro.
 
     Retorna None quando o rotulo nao casa com nenhuma familia conhecida —
     quem chama decide se levanta erro ou trata como generico.
@@ -156,15 +161,20 @@ def normalize_kind(label: str) -> str | None:
     leading = re.split(
         r"\bto\b|\binto\b|\bpara\b|\bpro\b|\bpra\b", s, maxsplit=1,
     )[0].strip()
+    has_destination_clause = leading != s
     # Descarta a clausula de origem ('FROM X'/'DO X'/'DA X'/'DE X') do
     # fragmento a esquerda ANTES de classificar — mantem o fragmento
     # original se a remocao esvaziar tudo (nada a ganhar em cair pra
-    # string vazia).
-    leading_without_source = re.split(
-        r"\bfrom\b|\bdo\b|\bda\b|\bdos\b|\bdas\b|\bde\b", leading, maxsplit=1,
-    )[0].strip()
-    if leading_without_source:
-        leading = leading_without_source
+    # string vazia). So faz sentido dentro de um rotulo com destino: sem
+    # 'to'/'into'/'para'/'pro'/'pra', `leading` ja E o rotulo inteiro, e
+    # truncar por preposicao de origem cortaria conteudo real do unico cue
+    # presente (ex. 'TAG DA PONTE') em vez de isolar um trecho ATUAL.
+    if has_destination_clause:
+        leading_without_source = re.split(
+            r"\bfrom\b|\bdo\b|\bda\b|\bdos\b|\bdas\b|\bde\b", leading, maxsplit=1,
+        )[0].strip()
+        if leading_without_source:
+            leading = leading_without_source
     if leading and leading != s:
         leading_kind = _match(leading)
         if leading_kind is not None:
