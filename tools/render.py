@@ -542,7 +542,7 @@ def _run_style_pipeline(
     index: TechniqueIndex,
     edit_track: str | None = None,
     tuning: tuple[int, ...] | None = None,
-) -> tuple[mido.MidiFile, list[str], tuple[str, ...]]:
+) -> tuple[mido.MidiFile, list[str], tuple[str, ...], bool]:
     """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
 
     Comum aos dois caminhos que aplicam estilo: tracks recem-renderizadas por
@@ -553,17 +553,25 @@ def _run_style_pipeline(
     `density` explicitamente <= 0.0 significa tecnica desligada (AGENTS.md):
     nem resolve receita nem dispara `W_NO_TOOL_RECIPE` para uma tecnica que
     nao vai fazer nada. O terceiro item do retorno lista, em ordem, apenas as
-    tecnicas que de fato foram despachadas — usado para o carimbo nao citar
-    tecnica desligada como se tivesse sido aplicada.
+    tecnicas que de fato MUDARAM o MIDI. O quarto item (`any_dispatched`) e
+    verdadeiro quando ao menos uma tecnica passou do gate de density e foi
+    de fato despachada (`apply_technique_with_warnings` chamada, `tool_target`
+    de fato consultado) — mesmo que o resultado nao tenha mudado nada. Usado
+    por `_stamp_edit_tracks` pra decidir se `edit.tool` pode ser estampado
+    como `plugin`: com TODAS as tecnicas desligadas por `density<=0.0`,
+    `tool_target` nunca chega a ser consultado por ninguem, entao o carimbo
+    nao pode alegar que a ferramenta foi usada.
     """
 
     warnings: list[str] = []
     applied_names: list[str] = []
+    any_dispatched = False
     warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
     for technique in style.techniques:
         canonical = _canonical_style_technique(index, family, technique.name)
         if technique.density is not None and technique.density <= 0.0:
             continue
+        any_dispatched = True
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
@@ -597,7 +605,7 @@ def _run_style_pipeline(
             for w in applied.warnings
         )
         applied_names.append(canonical)
-    return current, warnings, tuple(applied_names)
+    return current, warnings, tuple(applied_names), any_dispatched
 
 
 def _apply_style_techniques_to_tracks(
@@ -634,7 +642,7 @@ def _apply_style_techniques_to_tracks(
         ticks_per_beat=ticks_per_beat,
         midi_type=midi_type,
     )
-    current, warnings, applied_names = _run_style_pipeline(
+    current, warnings, applied_names, _any_dispatched = _run_style_pipeline(
         current,
         plan=plan,
         family=family,
@@ -702,7 +710,7 @@ def _apply_style_techniques_to_edit_tracks(
             ticks_per_beat=out_mid.ticks_per_beat,
             midi_type=out_mid.type,
         )
-        working, edit_warnings, applied_names = _run_style_pipeline(
+        working, edit_warnings, applied_names, any_dispatched = _run_style_pipeline(
             working,
             plan=plan,
             family=family,
@@ -713,7 +721,13 @@ def _apply_style_techniques_to_edit_tracks(
             tuning=(tuning_by_family or {}).get(family),
         )
         warnings.extend(edit_warnings)
-        applied_by_track[edit.track] = applied_names
+        # So registra a track quando algo de fato foi despachado — com
+        # TODAS as tecnicas desligadas por `density<=0.0`, `edit.tool`
+        # nunca chega a ser consultado, e a chave precisa ficar ausente pra
+        # `_stamp_edit_tracks` nao estampar `plugin=edit.tool` como se a
+        # ferramenta tivesse sido usada (achado de auto-revisao).
+        if any_dispatched:
+            applied_by_track[edit.track] = applied_names
         for slot, new_track in zip(
             target_indices, working.tracks, strict=True,
         ):
