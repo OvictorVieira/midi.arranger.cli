@@ -323,6 +323,67 @@ def test_prose_that_mentions_a_single_note_is_allowed():
     validate(payload)
 
 
+# --- anticopia semantica: notas nao-contiguas (achado PR #101) ------------
+
+
+def test_semantic_value_note_names_scattered_with_connectives_rejected():
+    # Achado do review na PR #101: conectivo ("subindo pra", "depois")
+    # entre as notas escapava da deteccao antiga, que so contava tokens
+    # CONTIGUOS no split. Esta e a forma mais provavel de a IA do usuario
+    # escrever `summary`/`semantic_value` em prosa natural.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = (
+        "groove com nota pedal em D4, subindo pra F4, depois A4"
+    )
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
+def test_semantic_value_note_names_repeated_with_depois_rejected():
+    # Segundo caso do achado: "depois" repetido entre cada nota.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = (
+        "toca C4 depois D4 depois E4 depois F4"
+    )
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
+def test_semantic_value_bare_note_names_scattered_in_prose_rejected():
+    # Nota SEM numero de oitava, espalhada em prosa. NOTE_NAME_RE (que
+    # exige digito de oitava) nunca casaria "C", "D", "E", "F" soltos —
+    # por isso `_BARE_NOTE_RE`, local a `tools/influence.py`, cobre esse
+    # caso sem alterar `style_schema.NOTE_NAME_RE`.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = "sobe de C pra D pra E pra F"
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
+def test_summary_midi_numbers_scattered_with_connectives_rejected():
+    # Mesma logica de contagem nao-contigua vale para inteiros MIDI.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["summary"] = (
+        "primeiro toca 60, depois sobe pra 64, e fecha em 67"
+    )
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
+def test_prose_with_single_bare_note_mention_still_allowed():
+    # Falso-positivo preservado: mencao ISOLADA (< 3 ocorrencias) de nota
+    # sem oitava continua passando, mesmo em prosa com conectivo.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = (
+        "tonica em D4 sustentada por dois compassos antes do refrao"
+    )
+    validate(payload)
+
+
 # --- unknown field --------------------------------------------------------
 
 

@@ -600,20 +600,47 @@ def _validate_no_musical_content(node: Any, path: str) -> None:
 def _validate_free_string(value: str, path: str) -> None:
     """Recusa string que carregue disfarcadamente uma sequencia de notas.
 
-    Duas heuristicas:
-    - Tres ou mais tokens em sequencia batendo com `NOTE_NAME_RE` (ex.
-      `"C4 D4 E4"`, `"C4, D4, E4"`) — sequencia de nomes de nota.
-    - Tres ou mais tokens inteiros em faixa MIDI (0..127) intercalados
-      por espaco ou virgula (ex. `"60 64 67"`) — sequencia de numeros MIDI.
-    Prosa que MENCIONA uma nota isolada (`"tonica em C"`, `"pedal em 40"`)
-    continua passando: a regra dispara so quando aparece SEQUENCIA, que
-    e o que caracteriza conteudo musical.
+    ACHADO PR #101: a versao anterior so contava sequencia quando os
+    tokens batiam CONTIGUAMENTE no split (`"C4 D4 E4"`). Prosa natural
+    intercala conectivo entre as notas — exatamente a forma mais provavel
+    de a IA do usuario escrever `summary`/`semantic_value` — e escapava
+    ilesa: `"groove com nota pedal em D4, subindo pra F4, depois A4"` ou
+    `"toca C4 depois D4 depois E4 depois F4"` passavam, enquanto so a
+    lista colada `"riff: C4 D4 E4"` era bloqueada. A heuristica corrigida
+    NAO exige adjacencia posicional: conta quantos tokens da string
+    INTEIRA batem com o padrao, em qualquer posicao, ignorando quantas
+    palavras nao-nota existam entre eles. Tres ou mais ocorrencias na
+    mesma string (`semantic_value`/`summary` sao curtos — uma frase ou
+    duas — entao "na string inteira" ja e a janela razoavel; nao ha
+    necessidade de uma janela deslizante menor) e o sinal de sequencia
+    musical disfarcada de prosa. Mencao ISOLADA de uma unica nota
+    (`"tonica em D4"`, `"pedaliza a tonica em C"`) continua tendo so 1
+    ocorrencia e passa — a barreira nao pode virar bloqueio hiperagressivo
+    de qualquer mencao musical legitima.
+
+    Duas familias de padrao, ambas contadas por ocorrencia total (nao por
+    run contiguo):
+    - Nome de nota em notacao cientifica COM oitava (`NOTE_NAME_RE`,
+      importado de `style_schema` — mesmo padrao usado por brief/plano,
+      nao duplicado aqui) — `C4`, `F#3`, `Bb-1`.
+    - Nome de nota SEM oitava (`_BARE_NOTE_RE`, regex LOCAL a este
+      modulo — decisao deliberada de NAO alterar `NOTE_NAME_RE` em
+      `style_schema.py`, que exige digito de oitava e e reusado em outros
+      pontos do projeto; mudar seu formato ali teria efeito colateral fora
+      do escopo deste achado). `_BARE_NOTE_RE` so casa letra MAIUSCULA
+      A-G com acidente opcional (`C`, `F#`, `Bb`): em portugues, "a" e "e"
+      minusculos sao preposicao/conjuncao de altissima frequencia e
+      virariam falso-positivo constante se contassem como nota; exigir
+      maiuscula E 3+ ocorrencias na mesma string reduz esse risco sem
+      reabrir o furo de nota solta em prosa (`"sobe de C pra D pra E pra
+      F"` tem 4 ocorrencias e e rejeitado).
+    - Sequencia de inteiros em faixa MIDI (0..127) — mesma contagem
+      nao-contigua.
     """
     tokens = [t for t in re.split(r"[\s,;]+", value) if t]
-    max_note_run = _max_matching_run(
-        tokens, lambda t: bool(NOTE_NAME_RE.match(t))
-    )
-    if max_note_run >= 3:
+
+    note_hits = sum(1 for t in tokens if _looks_like_note_name(t))
+    if note_hits >= 3:
         raise InfluenceValidationError(
             "E_INFLUENCE_MUSICAL_CONTENT",
             path,
@@ -627,15 +654,8 @@ def _validate_free_string(value: str, path: str) -> None:
             ),
         )
 
-    def _is_midi_int_token(token: str) -> bool:
-        try:
-            n = int(token)
-        except ValueError:
-            return False
-        return 0 <= n <= 127
-
-    max_midi_run = _max_matching_run(tokens, _is_midi_int_token)
-    if max_midi_run >= 3:
+    midi_hits = sum(1 for t in tokens if _is_midi_int_token(t))
+    if midi_hits >= 3:
         raise InfluenceValidationError(
             "E_INFLUENCE_MUSICAL_CONTENT",
             path,
@@ -650,17 +670,25 @@ def _validate_free_string(value: str, path: str) -> None:
         )
 
 
-def _max_matching_run(tokens: list[str], predicate: Any) -> int:
-    """Maior sequencia contigua de tokens que satisfazem `predicate`."""
-    best = 0
-    current = 0
-    for t in tokens:
-        if predicate(t):
-            current += 1
-            best = max(best, current)
-        else:
-            current = 0
-    return best
+# Nome de nota SEM oitava (`C`, `F#`, `Bb`, `G♯`) — LOCAL a este modulo, ver
+# docstring de `_validate_free_string` para a razao de nao mexer em
+# `style_schema.NOTE_NAME_RE`. Restrito a maiuscula para nao casar "a"/"e"
+# minusculos (preposicao/conjuncao comuns em portugues).
+_BARE_NOTE_RE = re.compile(r"^[A-G](#|b|♯|♭)?$")
+
+
+def _looks_like_note_name(token: str) -> bool:
+    """Casa nome de nota COM oitava (`style_schema.NOTE_NAME_RE`) OU SEM
+    oitava (`_BARE_NOTE_RE`, local)."""
+    return bool(NOTE_NAME_RE.match(token) or _BARE_NOTE_RE.match(token))
+
+
+def _is_midi_int_token(token: str) -> bool:
+    try:
+        n = int(token)
+    except ValueError:
+        return False
+    return 0 <= n <= 127
 
 
 __all__ = [
