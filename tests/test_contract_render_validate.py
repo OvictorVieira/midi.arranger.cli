@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+import pretty_midi
 import pytest
 
 from tools import contract as _contract  # noqa: F401
@@ -34,6 +35,33 @@ def _synthetic_fixture() -> str:
     `tests/conftest.py::_build_synthetic_contract_midi`."""
     from tests.conftest import _build_synthetic_contract_midi
     return _build_synthetic_contract_midi()
+
+
+def _bass_plan(midi: str) -> dict:
+    """Plano minimo com 1 elemento `bass` gerado do zero (issue #20). Ao
+    contrario do `pad` de `_pad_plan` (sustain_through, 1 evento por
+    secao), o baixo emite uma nota por batida/ancora de kick — material
+    suficiente para exercitar a janela de N=6 eventos do anti-copia
+    (AC-16, `tools/validators/anticopy.py`)."""
+    env = call("plan.skeleton", {"midi_path": midi, "seed": 7})
+    plan = env["data"]["plan"]
+    plan["elements"] = [{
+        "id": "bass_test",
+        "role": "bass",
+        "sections": [plan["sections"][0]["label"]],
+        "register": [28, 52],
+        "layers": 1,
+        "sync_role": "kick_support",
+        "articulation": "tight",
+        "harmony": "follow_chords",
+        "pattern": None, "degrees": None, "dynamics": None,
+        "instrument": {
+            "plugin": "Trilian", "preset": "Fingered Bass", "verified": True,
+        },
+        "rationale": "Baixo de teste para o anti-copia.",
+        "is_protagonist": False,
+    }]
+    return plan
 
 
 def _pad_plan(midi: str) -> dict:
@@ -189,6 +217,102 @@ def test_render_unknown_field_returns_ok_false():
     })
     assert env["ok"] is False
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
+
+
+# --- anti-copia (AC-16) via reference_corpus -------------------------------
+#
+# Achado de review da PR #100: `tools/validators/anticopy.py` foi ligado a
+# `tools.render.render()` (parametro `reference_corpus`, campo
+# `RenderReport.anticopy_issues`) mas a fachada `tools/contract.py` nunca
+# repassava isso — ninguem que usa a tool `render` de verdade (CLI/skill/
+# harness) via `tools.contract` acionava ou via a checagem. Os testes abaixo
+# provam o fluxo PONTA A PONTA passando por `tools.registry.call("render",
+# ...)`, nao chamando `tools.render.render()` direto.
+
+def test_render_without_reference_corpus_skips_anticopy_check(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _bass_plan(midi)
+    out = tmp_path / "out.mid"
+    env = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out),
+    })
+    assert env["ok"] is True, env.get("error")
+    assert env["data"]["anticopy_issues"] == []
+
+
+def test_render_reference_corpus_flags_deliberate_copy(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _bass_plan(midi)
+
+    # 1) Renderiza uma vez sem corpus para conhecer a linha de baixo REAL que
+    #    o motor gera (determinismo: mesmo plano/seed/source sempre repete).
+    out1 = tmp_path / "out1.mid"
+    env1 = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out1),
+    })
+    assert env1["ok"] is True, env1.get("error")
+
+    bass_track = next(
+        inst for inst in pretty_midi.PrettyMIDI(str(out1)).instruments
+        if inst.name.startswith("bass_test")
+    )
+    window = sorted(bass_track.notes, key=lambda n: n.start)[:6]
+    assert len(window) == 6, "fixture nao gerou eventos suficientes para N=6"
+
+    # 2) Constroi um "corpus de referencia" com uma copia DELIBERADA dessa
+    #    janela, transposta uma quinta acima — AC-16 e invariante a
+    #    transposicao (ver docstring de tools/validators/anticopy.py), entao
+    #    isso ainda tem que ser flagueado como copia.
+    TRANSPOSITION = 7
+    corpus_pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    corpus_track = pretty_midi.Instrument(program=32, name="Stolen Riff")
+    for note in window:
+        corpus_track.notes.append(pretty_midi.Note(
+            velocity=int(note.velocity),
+            pitch=int(note.pitch) + TRANSPOSITION,
+            start=float(note.start),
+            end=float(note.end),
+        ))
+    corpus_pm.instruments.append(corpus_track)
+    corpus_path = tmp_path / "reference.mid"
+    corpus_pm.write(str(corpus_path))
+
+    # 3) Rerenderiza o MESMO plano com o corpus declarado.
+    out2 = tmp_path / "out2.mid"
+    env2 = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out2),
+        "reference_corpus": [str(corpus_path)],
+    })
+    assert env2["ok"] is True, env2.get("error")
+
+    issues = env2["data"]["anticopy_issues"]
+    assert issues, "corpus com copia deliberada (transposta) deveria acionar anticopy_issues"
+    issue = issues[0]
+    assert issue["validator"] == "anticopy"
+    assert issue["severity"] == "error"
+    assert issue["element_id"] == "bass_test"
+    assert issue["source"] == str(corpus_path)
+    assert issue["source_track"] == "Stolen Riff"
+    assert isinstance(issue["bar"], int)
+    assert isinstance(issue["n"], int)
+    assert issue["message"]
+
+    # Saida ainda e escrita (anti-copia e `error` mas nao aborta o render —
+    # o CLI decide o exit code a partir do relatorio).
+    assert out2.exists()
+
+
+def test_render_reference_corpus_missing_file_returns_error(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _bass_plan(midi)
+    env = call("render", {
+        "midi_path": midi, "plan": plan,
+        "output_path": str(tmp_path / "out.mid"),
+        "reference_corpus": ["/no/such/reference.mid"],
+    })
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_MIDI_NOT_FOUND"
+    assert env["error"]["path"] == "reference_corpus"
 
 
 # --- validate -------------------------------------------------------------
