@@ -581,11 +581,14 @@ def _run_style_pipeline(
     warnings: list[str] = []
     applied_names: list[str] = []
     warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
+    # Cacheia a serializacao pra nao rodar `_midi_bytes` duas vezes por
+    # despacho (uma vez como "before" da tecnica seguinte, outra como
+    # "after" da tecnica anterior) — `current` so muda dentro deste loop.
+    before_bytes = _midi_bytes(current)
     for technique in style.techniques:
         canonical = _canonical_style_technique(index, family, technique.name)
         if technique.density is not None and technique.density <= 0.0:
             continue
-        before_bytes = _midi_bytes(current)
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
@@ -618,8 +621,10 @@ def _run_style_pipeline(
             f"{warning_prefix}{_format_engine_warning(w)}"
             for w in applied.warnings
         )
-        if _midi_bytes(current) != before_bytes:
+        after_bytes = _midi_bytes(current)
+        if after_bytes != before_bytes:
             applied_names.append(canonical)
+        before_bytes = after_bytes
     return current, warnings, tuple(applied_names)
 
 
