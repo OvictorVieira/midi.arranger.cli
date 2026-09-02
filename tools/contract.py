@@ -315,7 +315,7 @@ def _plan_schema() -> dict[str, Any]:
                                         "bar": {"type": "integer", "minimum": 0},
                                         "track": {"type": "string", "minLength": 1},
                                         "event_type": {
-                                            "enum": ["marker", "text", "cue_point"],
+                                            "enum": ["marker", "text", "cue_marker"],
                                         },
                                     },
                                     "required": [
