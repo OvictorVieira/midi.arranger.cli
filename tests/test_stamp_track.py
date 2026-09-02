@@ -187,6 +187,28 @@ def test_edit_track_stamp_reflects_tool_as_plugin(tmp_path):
     assert "verified=false" in stamp
 
 
+def test_edit_track_stamp_omits_tool_when_no_technique_pipeline_ran(tmp_path):
+    """Achado de auto-revisao: `edit.tool` so descreve a ferramenta-alvo pra
+    resolucao de receita de `style.<familia>.techniques[]` (ver docstring de
+    `PlanEdit.tool` em tools/plan.py) — profile `generic` nao tem familia, e
+    o pipeline de tecnicas nunca chega a olhar `edit.tool` pra essa track.
+    Antes deste fix, o carimbo estampava `plugin=edit.tool` incondicionalmente
+    mesmo assim, alegando que uma ferramenta foi usada quando nada a
+    consultou."""
+    src = _build_source(tmp_path)
+    plan = _base_plan(src)
+    plan.edits = [PlanEdit(
+        track="Bass", profile="generic", intensity=0.5, tool="Kontakt",
+    )]
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    texts = _iter_text_meta(out, "Bass")
+    assert len(texts) == 1
+    stamp = texts[0]
+    assert "plugin=" not in stamp
+
+
 def test_edit_track_stamp_includes_applied_techniques(tmp_path):
     src = _build_source(tmp_path)
     plan = _base_plan(src)

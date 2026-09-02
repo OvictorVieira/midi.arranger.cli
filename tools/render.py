@@ -851,8 +851,20 @@ def _stamp_edit_tracks(
             continue
         family = _style_family_for_edit(edit.profile)
         techniques: tuple[str, ...] = ()
+        # `dispatched` e verdadeiro so quando o pipeline de tecnicas de
+        # verdade RODOU pra essa track (family com `style.techniques`
+        # declarado) — nao basta `edit.tool` estar preenchido no plano.
+        # Achado de auto-revisao: `profile="generic"` (sem familia) ou
+        # familia sem `style.techniques` declarado nunca chega a olhar
+        # `edit.tool` (nem em `_apply_style_techniques_to_edit_tracks`, nem
+        # aqui antes desse fix), mas o carimbo alegava `plugin=edit.tool`
+        # mesmo assim — a mesma classe de "no-op carimbado como aplicado"
+        # que `_midi_bytes` ja corrigiu para `techniques=[...]`.
+        dispatched = False
         if applied_techniques is not None:
-            techniques = applied_techniques.get(edit.track, ())
+            if edit.track in applied_techniques:
+                techniques = applied_techniques[edit.track]
+                dispatched = True
         elif family is not None and plan.style is not None:
             style = plan.style.get(family)
             if style is not None and style.techniques:
@@ -864,6 +876,7 @@ def _stamp_edit_tracks(
                     _canonical_style_technique(index, family, tech.name)
                     for tech in style.techniques
                 )
+                dispatched = True
         suggested = edit.suggested_instrument or {}
         suggested_plugin = suggested.get("plugin") if suggested else None
         suggested_preset = suggested.get("preset") if suggested else None
@@ -873,9 +886,13 @@ def _stamp_edit_tracks(
         # do MODO BASS gravado nas notas) — o carimbo precisa refletir isso
         # como `plugin`, nao so como sugestao, senao a track carrega dado
         # estrutural amarrado a uma ferramenta que o carimbo nao menciona.
+        # So estampa quando o pipeline de tecnicas de fato rodou pra essa
+        # track (`dispatched`) — senao `edit.tool` nunca foi consultado por
+        # nada, e o carimbo mentiria sobre uma ferramenta que so foi
+        # declarada no plano, nunca de fato usada.
         stamp = _format_stamp(
             role=edit.profile,
-            plugin=edit.tool,
+            plugin=edit.tool if dispatched else None,
             preset=None,
             verified=False,
             techniques=techniques,
