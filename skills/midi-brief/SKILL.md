@@ -311,9 +311,9 @@ com tecnica fora de `authorized_techniques`; a barreira e real, nao aviso.
 Faca assim, depois da pesquisa e antes de gravar o brief:
 
 1. Para cada familia com estilo/referencia declarado, rode
-   `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
-   techniques.list --input -` e, para as tecnicas que a pesquisa sugeriu, rode
-   `techniques.describe` para ter o resumo em maos.
+   `echo '{"family": "<familia>", "implemented_only": true}' | python3 -m
+   tools.cli tool techniques.list --input -` e, para as tecnicas que a
+   pesquisa sugeriu, rode `techniques.describe` para ter o resumo em maos.
 2. **Apresente ao usuario, familia por familia**, a lista das tecnicas
    disponiveis com uma linha de resumo cada. Destaque as que a pesquisa
    sugeriu (em `suggested_techniques`) com a razao curta da sugestao.
