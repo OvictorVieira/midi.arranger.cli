@@ -8,7 +8,6 @@ from .engine import (
     TechniqueContractError,
     TechniqueLevel,
     TechniquePhysicalError,
-    TechniqueRecipeError,
     TechniqueRegistrationError,
     TechniqueRegistry,
     UnknownTechniqueError,
@@ -19,6 +18,7 @@ from .engine import (
     registered_techniques,
     validate_registry_against_index,
 )
+from .errors import TechniqueRecipeError
 from .index import (
     DEFAULT_MANUALS_DIR,
     Technique,

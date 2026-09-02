@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import mido
 
+from . import errors as _errors
 from .index import Technique, TechniqueIndex, build_index
 from .notes import _collect_notes
 from .physical import TechniquePhysicalError, validate_physical_plausibility
@@ -52,8 +53,14 @@ class TechniqueContractError(ValueError):
     """Violacao do contrato runtime de uma tecnica aplicavel."""
 
 
-class TechniqueRecipeError(ValueError):
-    """Falha ao resolver receita MIDI documentada para uma tecnica."""
+# `TechniqueRecipeError` mora em `tools/techniques/errors.py`, nao aqui, e
+# `engine.py` NUNCA importa o nome solto (nem re-exporta) — ver o docstring
+# daquele modulo para o motivo: qualquer aplicador registrado neste modulo
+# que precise da excecao so fica de fato autocontido se "TechniqueRecipeError"
+# nunca virar uma global do proprio `engine.py`. Codigo deste modulo que
+# precisar dela usa `_errors.TechniqueRecipeError` (qualificado); quem
+# importa a excecao de fora usa `tools.techniques.errors` ou
+# `tools.techniques` (re-exportada la, nao aqui).
 
 
 @dataclass(frozen=True)
@@ -312,7 +319,7 @@ def _resolve_recipe(
     idx = index if index is not None else build_index()
     technique = idx.get(canonical)
     if technique is None:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {canonical!r} nao existe no indice dos manuais"
         )
     return _recipe_for_tool(technique, tool_target)
@@ -350,12 +357,12 @@ def _recipe_for_tool(
         )
 
     if tool_target:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {technique.canonical!r} nao tem receita para "
             f"tool={tool_target!r} nem fallback generic; disponiveis: "
             f"{sorted(technique.tools.keys())!r}"
         )
-    raise TechniqueRecipeError(
+    raise _errors.TechniqueRecipeError(
         f"tecnica {technique.canonical!r} nao tem receita generic; declare "
         f"uma ferramenta-alvo com receita disponivel: {sorted(technique.tools.keys())!r}"
     )
@@ -2572,7 +2579,12 @@ def _apply_bass_ghost_notes(
     return mid
 
 
-@register_technique("bass.palm_mute", "humanize")
+@register_technique(
+    "bass.palm_mute",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
 def _apply_bass_palm_mute(
     mid: mido.MidiFile,
     *,
@@ -2590,6 +2602,9 @@ def _apply_bass_palm_mute(
         faixa mais baixa (< P25) da propria origem, mesmo abafada.
       - Encurta pelo `gate_pct` do manual sobre a duracao original — nao inventa
         numero.
+      - Receita MODO BASS emite CC9 antes de cada nota escolhida e CC9=0 no
+        fim dela. O usuario configura MUTING=CC9 na pagina CONTROL; sem isso
+        o MIDI continua correto, mas o plugin nao associa a automacao.
       - Determinismo por seed atraves de `context.rng()`.
     """
 
@@ -2597,31 +2612,16 @@ def _apply_bass_palm_mute(
 
     from ._param_range import load_range_resolver
 
-    technique, _range = load_range_resolver(context)
+    # Tecnica DESLIGADA (density ausente ou <= 0) e no-op antes de consultar
+    # os ranges do manual.
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
 
-    # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
-    # uma quantidade continua aplicada por cima do estilo ativo... NAO
-    # EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario
-    # atribuiu, ou a tecnica nao sai." A receita `modo_bass` carrega
-    # `cc: null` de proposito.
-    #
-    # Sem esta guarda, pedir `tool=modo_bass` sem declarar o CC caia no
-    # comportamento generic (so encurta duracao e ajusta velocity) SEM
-    # avisar — o usuario acharia que ganhou o palm mute continuo do plugin
-    # e recebeu outra coisa. FALHA ALTA em vez de fallback silencioso.
-    #
-    # A emissao real da curva de CC continua fora do escopo desta correcao:
-    # o manual pede "desenhe uma curva", nao um valor unico, e a FORMA dessa
-    # curva nao tem fonte — inventa-la aqui repetiria o erro que motivou a
-    # issue #53. Rastreado separadamente.
-    if context.tool == "modo_bass" and context.recipe.get("cc") is None:
-        cc_param = context.parameters.get("cc")
-        if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
-            raise ValueError(
-                f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
-                "de style.bass.parameters.cc (0-127) declarado no plano — o "
-                "MODO BASS nao tem CC de fabrica para palm mute"
-            )
+    technique, _range = load_range_resolver(context)
 
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
@@ -2631,12 +2631,25 @@ def _apply_bass_palm_mute(
     gate_lo = max(1.0, float(gate_range[0]))
     gate_hi = max(gate_lo, float(gate_range[1]))
 
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
-        return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
+    muting_cc: int | None = None
+    muting_lo = muting_hi = 0
+    if context.tool == "modo_bass":
+        # Import local de modulo DIFERENTE do proprio (`errors.py`, nao
+        # `engine.py`): `engine.py` nunca importa TechniqueRecipeError solto
+        # no proprio escopo, entao isto e dependencia de verdade em outro
+        # modulo, nao evasao de `inspect.getclosurevars` (ver comentario
+        # acima de `TechniqueContractError` em engine.py).
+        from .errors import TechniqueRecipeError
+
+        cc_value = context.recipe.get("cc")
+        if not isinstance(cc_value, int) or isinstance(cc_value, bool):
+            raise TechniqueRecipeError(
+                f"tecnica {context.canonical!r}: receita modo_bass sem CC de muting"
+            )
+        amount_range = _range("amount") or (18.0, 35.0)
+        muting_cc = cc_value
+        muting_lo = max(1, min(127, int(amount_range[0])))
+        muting_hi = max(muting_lo, min(127, int(amount_range[1])))
 
     if mid.ticks_per_beat <= 0:
         return mid
@@ -2644,6 +2657,7 @@ def _apply_bass_palm_mute(
     selection_rng = context.rng("selection")
     velocity_rng = context.rng("velocity")
     gate_rng = context.rng("gate")
+    muting_rng = context.rng("muting")
 
     def collect_pairs(track):
         return list(_iter_note_pairs(track))
@@ -2666,6 +2680,7 @@ def _apply_bass_palm_mute(
 
         new_velocity_by_msg: dict[int, int] = {}
         new_end_tick_by_msg: dict[int, int] = {}
+        control_events: list[tuple[int, int, mido.Message]] = []
         for pair_index, pair in enumerate(pairs):
             if pair_index not in selected:
                 continue
@@ -2678,6 +2693,29 @@ def _apply_bass_palm_mute(
                 note_on_index,
                 note_off_index,
             ) = pair
+            if muting_cc is not None:
+                # No MODO o proprio CC9 produz o abafamento. Nao encurtamos
+                # nem recalculamos velocity por cima dele: alem de somar um
+                # segundo efeito sem necessidade, isso mudaria o alvo na
+                # reaplicacao e impediria o dedup central dos mesmos CCs.
+                amount = muting_rng.randint(muting_lo, muting_hi)
+                control_events.append((
+                    start_tick,
+                    -2,
+                    _mido.Message(
+                        "control_change", channel=_channel,
+                        control=muting_cc, value=amount,
+                    ),
+                ))
+                control_events.append((
+                    end_tick,
+                    -3,
+                    _mido.Message(
+                        "control_change", channel=_channel,
+                        control=muting_cc, value=0,
+                    ),
+                ))
+                continue
             duration = max(1, end_tick - start_tick)
             gate_pct = gate_rng.uniform(gate_lo, gate_hi)
             new_duration = max(1, int(round(duration * gate_pct / 100.0)))
@@ -2713,6 +2751,25 @@ def _apply_bass_palm_mute(
             previous_tick = absolute_tick
         track[:] = rebuilt
 
+        if control_events:
+            absolute_events: list[tuple[int, int, int, mido.Message]] = []
+            tick = 0
+            for order, msg in enumerate(track):
+                tick += msg.time
+                absolute_events.append((tick, 0, order, msg))
+            offset = len(absolute_events)
+            absolute_events.extend(
+                (event_tick, bias, offset + order, msg)
+                for order, (event_tick, bias, msg) in enumerate(control_events)
+            )
+            absolute_events.sort(key=lambda item: (item[0], item[1], item[2]))
+            rebuilt = _mido.MidiTrack()
+            previous_tick = 0
+            for event_tick, _bias, _order, msg in absolute_events:
+                rebuilt.append(msg.copy(time=event_tick - previous_tick))
+                previous_tick = event_tick
+            track[:] = rebuilt
+
     return mid
 
 
@@ -2744,6 +2801,12 @@ def _apply_bass_attack_style(
         estrutural via `_keyswitch_pitches_from_recipe`.
       - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
         dedup do dispatch descarta a duplicata.
+      - `density` explicita <= 0 DESLIGA a tecnica inteira (achado do Codex
+        na PR #93): sem essa checagem, `tool="modo_bass"` inseria o
+        keyswitch mesmo com `density=0.0` declarado no plano, porque nada
+        aqui olhava `density`. Ausencia de `density` continua aplicando
+        normalmente quando `style` esta declarado — comportamento anterior
+        preservado, so o "0.0 explicito" ganhou sentido de desligar.
     """
 
     import mido as _mido
@@ -2755,6 +2818,14 @@ def _apply_bass_attack_style(
     from ._track_rebuild import (
         sort_and_flush as _sort_and_flush,
     )
+
+    density_raw = context.parameters.get("density")
+    if (
+        isinstance(density_raw, (int, float))
+        and not isinstance(density_raw, bool)
+        and density_raw <= 0.0
+    ):
+        return mid
 
     technique, _range = load_range_resolver(context)
     recipe = context.recipe
@@ -3868,7 +3939,6 @@ __all__ = [
     "TechniqueContext",
     "TechniqueLevel",
     "TechniquePhysicalError",
-    "TechniqueRecipeError",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
     "UnknownTechniqueError",

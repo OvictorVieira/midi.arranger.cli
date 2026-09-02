@@ -539,7 +539,7 @@ def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_p
     with pytest.raises(RenderError, match="not available"):
         _canonical_style_technique(index, "keys", "bass.ghost_notes")
 
-    tracks, warnings, applied = _apply_style_techniques_to_tracks(
+    tracks, warnings, applied, applied_names = _apply_style_techniques_to_tracks(
         [],
         plan=plan,
         family=None,
@@ -548,7 +548,7 @@ def test_render_style_technique_helpers_handle_empty_targets_and_bad_names(tmp_p
         midi_type=1,
         index=index,
     )
-    assert (tracks, warnings, applied) == ([], [], False)
+    assert (tracks, warnings, applied, applied_names) == ([], [], False, ())
 
 
 def test_render_wraps_style_technique_engine_errors(tmp_path, monkeypatch):
@@ -2016,3 +2016,230 @@ def test_render_uses_declared_instrument_tuning_for_physical_plausibility(
         "com a afinacao declarada o motor tem que acrescentar ornamento — "
         "sem isso o outro lado do teste nao prova nada"
     )
+
+
+# --- edit.tool resolve receita especifica de tecnica (achado real) ---------
+#
+# Sem `edit.tool`, `_apply_style_techniques_to_edit_tracks` passava
+# `tool_target=None` incondicionalmente — a track de `plan.edits` NUNCA
+# conseguia pedir a receita `modo_bass`, so a `generic`. Para
+# `bass.attack_style`, a receita `generic` nao tem `keyswitch_dedo`
+# nenhum: a funcao le `recipe.get(style_key)`, acha `None` e devolve o
+# MIDI sem tocar em nada — o keyswitch que diz ao MODO BASS pra tocar
+# com dedo nunca era inserido, apesar da tecnica estar "aplicada" sem
+# erro nenhum. Achado real, numa musica de verdade, com brief pedindo
+# "fingers" explicitamente.
+
+def _bass_attack_style_plan(source: Path, *, tool: str | None) -> ArrangementPlan:
+    plan = _build_plan(source)
+    plan.elements = []  # so testamos o caminho de edits aqui
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool=tool),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com fingers",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.attack_style", density=1.0,
+                rationale="fingers", style="dedo",
+            )],
+            parameters={},
+        ),
+    }
+    return plan
+
+
+def _has_note_on(path: Path, pitch: int) -> bool:
+    m = mido.MidiFile(str(path))
+    return any(
+        msg.type == "note_on" and msg.velocity > 0 and msg.note == pitch
+        for tr in m.tracks for msg in tr
+    )
+
+
+def test_edit_tool_resolves_modo_bass_recipe_and_inserts_keyswitch(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _bass_attack_style_plan(src, tool="MODO Bass")
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    # keyswitch_dedo = 13 no manual (tecnicas_baixo_midi.md, bass.attack_style,
+    # tools.modo_bass) — so aparece quando a receita `modo_bass` foi resolvida.
+    assert _has_note_on(out, 13), (
+        "com edit.tool='MODO Bass', bass.attack_style tem que inserir o "
+        "keyswitch_dedo (13) que diz ao plugin para tocar com dedo"
+    )
+
+
+def test_edit_without_tool_falls_back_to_generic_without_keyswitch(tmp_path):
+    src = _build_synthetic_source(tmp_path)
+    plan = _bass_attack_style_plan(src, tool=None)
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    # Documenta o comportamento correto do fallback: sem `tool` declarado,
+    # a receita e `generic` (sem keyswitch) por design — nao e erro, so
+    # nao ha ferramenta especifica pedida. Continua sem keyswitch 13.
+    assert not _has_note_on(out, 13)
+
+
+def test_edit_tool_modo_bass_palm_mute_emits_cc9(tmp_path):
+    """MODO Bass recebe a automacao real de muting, nunca fallback."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com palm mute",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.palm_mute", density=1.0, rationale="mute",
+            )],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+    rendered = mido.MidiFile(str(out))
+    assert any(
+        msg.type == "control_change" and msg.control == 9 and msg.value > 0
+        for track in rendered.tracks for msg in track
+    )
+
+
+def test_edit_technique_internal_noop_despite_density_omitted_from_stamp(tmp_path):
+    """Achado de auto-revisao com /code-review (Codex fora do ar por cota):
+    `applied_names` listava toda tecnica DESPACHADA com sucesso, mesmo que
+    o aplicador tenha sido NO-OP interno legitimo por outro motivo que nao
+    `density` (aqui, `bass.attack_style` sem `style` declarado — nunca
+    reescreve a linha sem intencao explicita de estilo, mesmo com
+    `density=1.0`). O carimbo nao pode alegar que a tecnica foi aplicada
+    quando o MIDI nao mudou nada."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo sem estilo de ataque declarado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.attack_style", density=1.0, rationale="sem style",
+            )],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    assert not _has_note_on(out, 13), (
+        "sem style declarado, bass.attack_style e NO-OP mesmo com "
+        "density=1.0 — nenhum keyswitch pode sair"
+    )
+    stamp = _stamp_text(out, "Bass")
+    assert "bass.attack_style" not in stamp
+    # Achado de auto-revisao, rodada seguinte: o mesmo NO-OP interno tambem
+    # nao pode deixar `plugin=edit.tool` no carimbo — `edit.tool="MODO Bass"`
+    # foi declarado, mas nada de fato usou essa ferramenta pra produzir
+    # tecnica nenhuma na track.
+    assert "plugin=" not in stamp
+
+
+def _stamp_text(path: Path, track_name_value: str) -> str:
+    mid = mido.MidiFile(str(path))
+    for tr in mid.tracks:
+        names = [m.name for m in tr if m.is_meta and m.type == "track_name"]
+        if track_name_value not in names:
+            continue
+        for msg in tr:
+            if msg.is_meta and msg.type == "text":
+                return msg.text
+    raise AssertionError(f"no stamp found on track {track_name_value!r}")
+
+
+def test_edit_technique_with_density_zero_skips_recipe_and_warning(tmp_path):
+    """AGENTS.md: density=0.0 desliga a tecnica — nao deve nem resolver
+    receita nem emitir `W_NO_TOOL_RECIPE` para algo que nao vai fazer nada."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com palm mute desligado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.palm_mute", density=0.0, rationale="mute desligado",
+            )],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out)
+
+    assert not any("W_NO_TOOL_RECIPE" in warning for warning in report.warnings), (
+        "density=0.0 e 'desligado', nao 'sem receita' — nao deve avisar nada"
+    )
+
+
+def test_edit_technique_with_density_zero_omitted_from_stamp(tmp_path):
+    """A tecnica desligada por density=0.0 nao pode aparecer em
+    `techniques=[...]` no carimbo — a track nao recebeu nada dela de fato."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com dois techniques, um desligado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[
+                StyleTechnique(
+                    name="bass.attack_style", density=1.0,
+                    rationale="fingers", style="dedo",
+                ),
+                StyleTechnique(
+                    name="bass.palm_mute", density=0.0, rationale="mute desligado",
+                ),
+            ],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    stamp = _stamp_text(out, "Bass")
+    assert "bass.attack_style" in stamp
+    assert "bass.palm_mute" not in stamp

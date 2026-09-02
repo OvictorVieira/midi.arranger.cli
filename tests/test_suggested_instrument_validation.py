@@ -175,8 +175,9 @@ def test_apply_style_techniques_to_edit_tracks_skips_missing_target():
     real = mido.MidiTrack()
     real.append(mido.MetaMessage("track_name", name="Piano", time=0))
     mid.tracks.append(real)
-    warnings = _apply_style_techniques_to_edit_tracks(mid, plan=plan, index=None)
+    warnings, applied = _apply_style_techniques_to_edit_tracks(mid, plan=plan, index=None)
     assert warnings == []
+    assert applied == {}
 
 
 def test_ghost_notes_rejects_unknown_canonical():
