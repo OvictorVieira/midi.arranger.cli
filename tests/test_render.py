@@ -2158,6 +2158,11 @@ def test_edit_technique_internal_noop_despite_density_omitted_from_stamp(tmp_pat
     )
     stamp = _stamp_text(out, "Bass")
     assert "bass.attack_style" not in stamp
+    # Achado de auto-revisao, rodada seguinte: o mesmo NO-OP interno tambem
+    # nao pode deixar `plugin=edit.tool` no carimbo — `edit.tool="MODO Bass"`
+    # foi declarado, mas nada de fato usou essa ferramenta pra produzir
+    # tecnica nenhuma na track.
+    assert "plugin=" not in stamp
 
 
 def _stamp_text(path: Path, track_name_value: str) -> str:

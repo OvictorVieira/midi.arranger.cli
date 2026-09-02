@@ -555,7 +555,7 @@ def _run_style_pipeline(
     index: TechniqueIndex,
     edit_track: str | None = None,
     tuning: tuple[int, ...] | None = None,
-) -> tuple[mido.MidiFile, list[str], tuple[str, ...], bool]:
+) -> tuple[mido.MidiFile, list[str], tuple[str, ...]]:
     """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
 
     Comum aos dois caminhos que aplicam estilo: tracks recem-renderizadas por
@@ -569,27 +569,22 @@ def _run_style_pipeline(
     tecnicas que de fato MUDARAM o MIDI — comparado por bytes antes/depois de
     cada despacho (`_midi_bytes`), nao apenas as que foram despachadas: um
     aplicador pode ser NO-OP interno legitimo mesmo com `density > 0` (ex.:
-    `bass.string_selection` com `tool != "modo_bass"` ou contagem de corda
-    sem convencao), e nesse caso o carimbo nao pode alegar que a tecnica foi
-    aplicada. O quarto item (`any_dispatched`) e verdadeiro quando ao menos
-    uma tecnica passou do gate de density e foi de fato despachada
-    (`apply_technique_with_warnings` chamada, `tool_target` de fato
-    consultado) — mesmo que o resultado nao tenha mudado nada (diferente do
-    terceiro item). Usado por `_stamp_edit_tracks` pra decidir se `edit.tool`
-    pode ser estampado como `plugin`: com TODAS as tecnicas desligadas por
-    `density<=0.0`, `tool_target` nunca chega a ser consultado por ninguem,
-    entao o carimbo nao pode alegar que a ferramenta foi usada.
+    `bass.string_selection` com `tool != "modo_bass"`, ou `bass.attack_style`
+    sem `style` declarado), e nesse caso o carimbo nao pode alegar que a
+    tecnica foi aplicada. `_stamp_edit_tracks` usa `bool(techniques)` direto
+    (nao um flag separado de "foi despachada") pra decidir se `edit.tool`
+    pode ser estampado como `plugin` — cobre de uma vez os casos de family
+    ausente, `style.techniques` nao declarado, `density<=0.0` em tudo, e
+    tecnica despachada mas NO-OP por outro motivo.
     """
 
     warnings: list[str] = []
     applied_names: list[str] = []
-    any_dispatched = False
     warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
     for technique in style.techniques:
         canonical = _canonical_style_technique(index, family, technique.name)
         if technique.density is not None and technique.density <= 0.0:
             continue
-        any_dispatched = True
         before_bytes = _midi_bytes(current)
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
@@ -625,7 +620,7 @@ def _run_style_pipeline(
         )
         if _midi_bytes(current) != before_bytes:
             applied_names.append(canonical)
-    return current, warnings, tuple(applied_names), any_dispatched
+    return current, warnings, tuple(applied_names)
 
 
 def _apply_style_techniques_to_tracks(
@@ -662,7 +657,7 @@ def _apply_style_techniques_to_tracks(
         ticks_per_beat=ticks_per_beat,
         midi_type=midi_type,
     )
-    current, warnings, applied_names, _any_dispatched = _run_style_pipeline(
+    current, warnings, applied_names = _run_style_pipeline(
         current,
         plan=plan,
         family=family,
@@ -730,7 +725,7 @@ def _apply_style_techniques_to_edit_tracks(
             ticks_per_beat=out_mid.ticks_per_beat,
             midi_type=out_mid.type,
         )
-        working, edit_warnings, applied_names, any_dispatched = _run_style_pipeline(
+        working, edit_warnings, applied_names = _run_style_pipeline(
             working,
             plan=plan,
             family=family,
@@ -741,13 +736,7 @@ def _apply_style_techniques_to_edit_tracks(
             tuning=(tuning_by_family or {}).get(family),
         )
         warnings.extend(edit_warnings)
-        # So registra a track quando algo de fato foi despachado — com
-        # TODAS as tecnicas desligadas por `density<=0.0`, `edit.tool`
-        # nunca chega a ser consultado, e a chave precisa ficar ausente pra
-        # `_stamp_edit_tracks` nao estampar `plugin=edit.tool` como se a
-        # ferramenta tivesse sido usada (achado de auto-revisao).
-        if any_dispatched:
-            applied_by_track[edit.track] = applied_names
+        applied_by_track[edit.track] = applied_names
         for slot, new_track in zip(
             target_indices, working.tracks, strict=True,
         ):
@@ -885,20 +874,19 @@ def _stamp_edit_tracks(
             continue
         family = _style_family_for_edit(edit.profile)
         techniques: tuple[str, ...] = ()
-        # `dispatched` e verdadeiro so quando o pipeline de tecnicas de
-        # verdade RODOU pra essa track (family com `style.techniques`
-        # declarado) — nao basta `edit.tool` estar preenchido no plano.
-        # Achado de auto-revisao: `profile="generic"` (sem familia) ou
-        # familia sem `style.techniques` declarado nunca chega a olhar
-        # `edit.tool` (nem em `_apply_style_techniques_to_edit_tracks`, nem
-        # aqui antes desse fix), mas o carimbo alegava `plugin=edit.tool`
-        # mesmo assim — a mesma classe de "no-op carimbado como aplicado"
-        # que `_midi_bytes` ja corrigiu para `techniques=[...]`.
-        dispatched = False
+        # `dispatched` e verdadeiro so quando `edit.tool` de fato ajudou a
+        # produzir alguma tecnica APLICADA (`techniques` nao vazio) — nunca
+        # so por family+style existirem ou por dispatch ter sido tentado.
+        # Achado de auto-revisao (varias rodadas): `profile="generic"` (sem
+        # familia), familia sem `style.techniques` declarado, TODAS as
+        # tecnicas com `density<=0.0`, e uma tecnica despachada mas NO-OP
+        # interno por outro motivo (ex.: `bass.attack_style` sem `style`)
+        # sao todos casos em que nada de fato mudou na track — em nenhum
+        # deles o carimbo pode alegar `plugin=edit.tool`. `applied_techniques`
+        # (quando vem do pipeline real de `render()`) ja e por si so a fonte
+        # de verdade: `bool(techniques)` cobre os quatro casos de uma vez.
         if applied_techniques is not None:
-            if edit.track in applied_techniques:
-                techniques = applied_techniques[edit.track]
-                dispatched = True
+            techniques = applied_techniques.get(edit.track, ())
         elif family is not None and plan.style is not None:
             style = plan.style.get(family)
             if style is not None and style.techniques:
@@ -910,7 +898,7 @@ def _stamp_edit_tracks(
                     _canonical_style_technique(index, family, tech.name)
                     for tech in style.techniques
                 )
-                dispatched = True
+        dispatched = bool(techniques)
         suggested = edit.suggested_instrument or {}
         suggested_plugin = suggested.get("plugin") if suggested else None
         suggested_preset = suggested.get("preset") if suggested else None
