@@ -567,10 +567,15 @@ def _run_style_pipeline(
     nem resolve receita nem dispara `W_NO_TOOL_RECIPE` para uma tecnica que
     nao vai fazer nada. O terceiro item do retorno lista, em ordem, apenas as
     tecnicas que de fato MUDARAM o MIDI — comparado por bytes antes/depois de
-    cada despacho, nao apenas as que foram despachadas: um aplicador pode ser
-    NO-OP interno legitimo mesmo com `density > 0` (ex.: `bass.string_selection`
-    com `tool != "modo_bass"` ou contagem de corda sem convencao), e nesse
-    caso o carimbo nao pode alegar que a tecnica foi aplicada.
+    cada despacho (`_midi_bytes`), nao apenas as que foram despachadas: um
+    aplicador pode ser NO-OP interno legitimo mesmo com `density > 0` (ex.:
+    `bass.string_selection` com `tool != "modo_bass"`, ou `bass.attack_style`
+    sem `style` declarado), e nesse caso o carimbo nao pode alegar que a
+    tecnica foi aplicada. `_stamp_edit_tracks` usa `bool(techniques)` direto
+    (nao um flag separado de "foi despachada") pra decidir se `edit.tool`
+    pode ser estampado como `plugin` — cobre de uma vez os casos de family
+    ausente, `style.techniques` nao declarado, `density<=0.0` em tudo, e
+    tecnica despachada mas NO-OP por outro motivo.
     """
 
     warnings: list[str] = []
@@ -869,6 +874,17 @@ def _stamp_edit_tracks(
             continue
         family = _style_family_for_edit(edit.profile)
         techniques: tuple[str, ...] = ()
+        # `dispatched` e verdadeiro so quando `edit.tool` de fato ajudou a
+        # produzir alguma tecnica APLICADA (`techniques` nao vazio) — nunca
+        # so por family+style existirem ou por dispatch ter sido tentado.
+        # Achado de auto-revisao (varias rodadas): `profile="generic"` (sem
+        # familia), familia sem `style.techniques` declarado, TODAS as
+        # tecnicas com `density<=0.0`, e uma tecnica despachada mas NO-OP
+        # interno por outro motivo (ex.: `bass.attack_style` sem `style`)
+        # sao todos casos em que nada de fato mudou na track — em nenhum
+        # deles o carimbo pode alegar `plugin=edit.tool`. `applied_techniques`
+        # (quando vem do pipeline real de `render()`) ja e por si so a fonte
+        # de verdade: `bool(techniques)` cobre os quatro casos de uma vez.
         if applied_techniques is not None:
             techniques = applied_techniques.get(edit.track, ())
         elif family is not None and plan.style is not None:
@@ -882,6 +898,7 @@ def _stamp_edit_tracks(
                     _canonical_style_technique(index, family, tech.name)
                     for tech in style.techniques
                 )
+        dispatched = bool(techniques)
         suggested = edit.suggested_instrument or {}
         suggested_plugin = suggested.get("plugin") if suggested else None
         suggested_preset = suggested.get("preset") if suggested else None
@@ -891,9 +908,13 @@ def _stamp_edit_tracks(
         # do MODO BASS gravado nas notas) — o carimbo precisa refletir isso
         # como `plugin`, nao so como sugestao, senao a track carrega dado
         # estrutural amarrado a uma ferramenta que o carimbo nao menciona.
+        # So estampa quando o pipeline de tecnicas de fato rodou pra essa
+        # track (`dispatched`) — senao `edit.tool` nunca foi consultado por
+        # nada, e o carimbo mentiria sobre uma ferramenta que so foi
+        # declarada no plano, nunca de fato usada.
         stamp = _format_stamp(
             role=edit.profile,
-            plugin=edit.tool,
+            plugin=edit.tool if dispatched else None,
             preset=None,
             verified=False,
             techniques=techniques,
