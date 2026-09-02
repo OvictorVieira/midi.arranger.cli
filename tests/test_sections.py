@@ -141,6 +141,19 @@ def test_normalize_kind_new_modifiers_do_not_match_as_substring():
     assert sections.normalize_kind("VAMP 2") == "interlude"
 
 
+def test_normalize_kind_break_modifier_requires_word_boundary():
+    # Achado de auto-revisao: ao contrario dos irmaos "vamp"/"drop" (ja
+    # protegidos por fronteira de palavra pelo achado acima), o modificador
+    # "break" continuava sem `\b`, casando como substring de qualquer
+    # palavra: "Heartbreak", "Breakfast" e "Unbreakable" viravam
+    # "breakdown" sem nenhuma intencao de cue.
+    assert sections.normalize_kind("Heartbreak") is None
+    assert sections.normalize_kind("Breakfast") is None
+    assert sections.normalize_kind("Unbreakable") is None
+    # A palavra inteira continua casando normalmente.
+    assert sections.normalize_kind("BREAK") == "breakdown"
+
+
 def test_normalize_kind_treats_underscore_as_cue_separator():
     # Achado do Codex na PR: "_" e caractere de palavra pra "\b" (diferente
     # de espaco/hifen), entao marcador de DAW com underscore como separador
@@ -212,6 +225,18 @@ def test_normalize_kind_strips_all_portuguese_source_contractions():
     assert sections.normalize_kind("TRANSICAO DA ESTROFE PARA O REFRAO") == "interlude"
     assert sections.normalize_kind("TRANSICAO DOS VERSOS PARA O REFRAO") == "interlude"
     assert sections.normalize_kind("TRANSICAO DE VERSO PARA REFRAO") == "interlude"
+
+
+def test_normalize_kind_source_clause_truncation_requires_destination_marker():
+    # Achado de auto-revisao: a truncagem de clausula de origem
+    # ('DA'/'DO'/'DE'/'DOS'/'DAS') rodava mesmo sem nenhum marcador de
+    # destino ('to'/'into'/'para'/'pro'/'pra') no rotulo, cortando conteudo
+    # real do UNICO cue presente. 'TAG DA PONTE' truncava pra 'tag' antes
+    # de classificar e retornava 'outro' (via 'tag'), quando a precedencia
+    # canonical-primeiro do rotulo INTEIRO deveria dar 'bridge' (via
+    # 'ponte', que vem antes de 'outro' em _CANONICAL_KIND_PATTERNS).
+    assert sections.normalize_kind("TAG DA PONTE") == "bridge"
+    assert sections.normalize_kind("VERSE DO REFRAO") == "chorus"
 
 
 def test_normalize_kind_recognizes_accented_pre_spelling():
