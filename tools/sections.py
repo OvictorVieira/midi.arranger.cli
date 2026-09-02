@@ -87,7 +87,7 @@ _CANONICAL_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _MODIFIER_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pre",       (r"build[-\s_]?up", r"\bbuild\b", r"riser")),
     ("interlude", (r"\bhold\b", r"transi[cç][aã]o", r"transition", r"turnaround", r"\bvamp\b")),
-    ("breakdown", (r"break", r"\bdrop\b")),
+    ("breakdown", (r"\bbreak\b", r"\bdrop\b")),
     ("bridge",    (r"\bsolo\b",)),
     ("chorus",    (r"\bhook\b", r"\bgancho\b")),
     ("verse",     ()),

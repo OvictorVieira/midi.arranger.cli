@@ -141,6 +141,19 @@ def test_normalize_kind_new_modifiers_do_not_match_as_substring():
     assert sections.normalize_kind("VAMP 2") == "interlude"
 
 
+def test_normalize_kind_break_modifier_requires_word_boundary():
+    # Achado de auto-revisao: ao contrario dos irmaos "vamp"/"drop" (ja
+    # protegidos por fronteira de palavra pelo achado acima), o modificador
+    # "break" continuava sem `\b`, casando como substring de qualquer
+    # palavra: "Heartbreak", "Breakfast" e "Unbreakable" viravam
+    # "breakdown" sem nenhuma intencao de cue.
+    assert sections.normalize_kind("Heartbreak") is None
+    assert sections.normalize_kind("Breakfast") is None
+    assert sections.normalize_kind("Unbreakable") is None
+    # A palavra inteira continua casando normalmente.
+    assert sections.normalize_kind("BREAK") == "breakdown"
+
+
 def test_normalize_kind_treats_underscore_as_cue_separator():
     # Achado do Codex na PR: "_" e caractere de palavra pra "\b" (diferente
     # de espaco/hifen), entao marcador de DAW com underscore como separador
