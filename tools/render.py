@@ -517,6 +517,19 @@ def _tracks_as_midi(
     return mid
 
 
+def _midi_bytes(mid: mido.MidiFile) -> bytes:
+    """Serializa `mid` pra comparacao byte a byte — usado por
+    `_run_style_pipeline` pra saber se uma tecnica de fato mudou algo, em
+    vez de assumir que "foi despachada" significa "foi aplicada" (uma
+    tecnica pode ser NO-OP interno legitimo, como `bass.string_selection`
+    com `tool != "modo_bass"` ou contagem de corda sem convencao — nesses
+    casos o motor devolve o MIDI intocado)."""
+
+    buffer = BytesIO()
+    mid.save(file=buffer)
+    return buffer.getvalue()
+
+
 def _tempo_track_from_pretty_midi(pm: pretty_midi.PrettyMIDI) -> mido.MidiTrack:
     track = mido.MidiTrack()
     previous_tick = 0
@@ -553,14 +566,19 @@ def _run_style_pipeline(
     `density` explicitamente <= 0.0 significa tecnica desligada (AGENTS.md):
     nem resolve receita nem dispara `W_NO_TOOL_RECIPE` para uma tecnica que
     nao vai fazer nada. O terceiro item do retorno lista, em ordem, apenas as
-    tecnicas que de fato MUDARAM o MIDI. O quarto item (`any_dispatched`) e
-    verdadeiro quando ao menos uma tecnica passou do gate de density e foi
-    de fato despachada (`apply_technique_with_warnings` chamada, `tool_target`
-    de fato consultado) — mesmo que o resultado nao tenha mudado nada. Usado
-    por `_stamp_edit_tracks` pra decidir se `edit.tool` pode ser estampado
-    como `plugin`: com TODAS as tecnicas desligadas por `density<=0.0`,
-    `tool_target` nunca chega a ser consultado por ninguem, entao o carimbo
-    nao pode alegar que a ferramenta foi usada.
+    tecnicas que de fato MUDARAM o MIDI — comparado por bytes antes/depois de
+    cada despacho (`_midi_bytes`), nao apenas as que foram despachadas: um
+    aplicador pode ser NO-OP interno legitimo mesmo com `density > 0` (ex.:
+    `bass.string_selection` com `tool != "modo_bass"` ou contagem de corda
+    sem convencao), e nesse caso o carimbo nao pode alegar que a tecnica foi
+    aplicada. O quarto item (`any_dispatched`) e verdadeiro quando ao menos
+    uma tecnica passou do gate de density e foi de fato despachada
+    (`apply_technique_with_warnings` chamada, `tool_target` de fato
+    consultado) — mesmo que o resultado nao tenha mudado nada (diferente do
+    terceiro item). Usado por `_stamp_edit_tracks` pra decidir se `edit.tool`
+    pode ser estampado como `plugin`: com TODAS as tecnicas desligadas por
+    `density<=0.0`, `tool_target` nunca chega a ser consultado por ninguem,
+    entao o carimbo nao pode alegar que a ferramenta foi usada.
     """
 
     warnings: list[str] = []
@@ -572,6 +590,7 @@ def _run_style_pipeline(
         if technique.density is not None and technique.density <= 0.0:
             continue
         any_dispatched = True
+        before_bytes = _midi_bytes(current)
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
@@ -604,7 +623,8 @@ def _run_style_pipeline(
             f"{warning_prefix}{_format_engine_warning(w)}"
             for w in applied.warnings
         )
-        applied_names.append(canonical)
+        if _midi_bytes(current) != before_bytes:
+            applied_names.append(canonical)
     return current, warnings, tuple(applied_names), any_dispatched
 
 

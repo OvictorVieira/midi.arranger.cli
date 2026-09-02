@@ -2121,6 +2121,45 @@ def test_edit_tool_modo_bass_palm_mute_emits_cc9(tmp_path):
     )
 
 
+def test_edit_technique_internal_noop_despite_density_omitted_from_stamp(tmp_path):
+    """Achado de auto-revisao com /code-review (Codex fora do ar por cota):
+    `applied_names` listava toda tecnica DESPACHADA com sucesso, mesmo que
+    o aplicador tenha sido NO-OP interno legitimo por outro motivo que nao
+    `density` (aqui, `bass.attack_style` sem `style` declarado — nunca
+    reescreve a linha sem intencao explicita de estilo, mesmo com
+    `density=1.0`). O carimbo nao pode alegar que a tecnica foi aplicada
+    quando o MIDI nao mudou nada."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.elements = []
+    plan.edits = [
+        PlanEdit(track="Bass", profile="bass", intensity=0.5, tool="MODO Bass"),
+    ]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo sem estilo de ataque declarado",
+            researched_at="2026-09-01",
+            sources=["teste"],
+            confidence="medium",
+            techniques=[StyleTechnique(
+                name="bass.attack_style", density=1.0, rationale="sem style",
+            )],
+            parameters={},
+        ),
+    }
+    _attach_brief_authorizing_techniques(plan, tmp_path)
+    out = tmp_path / "out.mid"
+
+    render(plan, out)
+
+    assert not _has_note_on(out, 13), (
+        "sem style declarado, bass.attack_style e NO-OP mesmo com "
+        "density=1.0 — nenhum keyswitch pode sair"
+    )
+    stamp = _stamp_text(out, "Bass")
+    assert "bass.attack_style" not in stamp
+
+
 def _stamp_text(path: Path, track_name_value: str) -> str:
     mid = mido.MidiFile(str(path))
     for tr in mid.tracks:
