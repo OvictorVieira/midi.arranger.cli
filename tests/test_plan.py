@@ -1327,6 +1327,52 @@ def test_rejects_non_string_to_section():
     assert exc.value.path == "transitions[0].to_section"
 
 
+def test_rejects_none_transition_elements():
+    """Codex finding #2 do PR #106 (issue #24): `render(plan_path,
+    only="transitions")` faz `element.id in transition.elements`
+    (`tools.render._element_matches_only`) sem passar pela fachada JSON
+    Schema, que ja bloqueia isso. Um plano em memoria com
+    `transitions[i].elements=None` quebrava esse teste de pertencimento com
+    `TypeError` la dentro, tarde. `validate()` agora rejeita cedo."""
+    plan = _valid_plan()
+    plan.transitions[0].elements = None
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements"
+    assert "list" in exc.value.message
+
+
+def test_rejects_bare_string_transition_elements():
+    """Mesmo achado do teste acima: `transitions[i].elements="pad_main"`
+    (string bare, nao lista) e silenciosamente convertida por `from_dict`
+    numa lista de caracteres (`from_dict` -> dataclass em memoria itera a
+    string), e o teste `element.id in transition.elements` passa a casar
+    caractere por caractere em vez do ID inteiro — misfiltro silencioso,
+    nao crash. `validate()` rejeita antes disso."""
+    plan = _valid_plan()
+    plan.transitions[0].elements = "pad_main"
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements"
+    assert "list" in exc.value.message
+
+
+def test_rejects_non_string_item_in_transition_elements():
+    plan = _valid_plan()
+    plan.transitions[0].elements = ["pad_main", 42]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements[1]"
+
+
+def test_rejects_blank_item_in_transition_elements():
+    plan = _valid_plan()
+    plan.transitions[0].elements = ["pad_main", "   "]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements[1]"
+
+
 def test_rejects_unknown_sync_role_with_element_path():
     """AC: 'rejeita sync_role desconhecido' + path exato aponta o elemento."""
     plan = _valid_plan()

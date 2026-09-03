@@ -1147,6 +1147,44 @@ def _rendered_tracks_from_midi_tracks(
     return rendered
 
 
+def _rendered_tracks_from_instrument_list(
+    instruments: Iterable[pretty_midi.Instrument],
+) -> list[RenderedTrack]:
+    """Converte `pretty_midi.Instrument` de tracks de ORIGEM/EDICAO (ja
+    identificadas como tal pelo chamador — nao ha `Element` do plano pra
+    elas) em `RenderedTrack` sintetica com `element_id` `source:<nome>`.
+
+    Compartilhado entre `_rendered_tracks_from_source_tracks` (fresh render
+    em `render()`, issue #24 finding 1) e a fachada `tools.validate`
+    (`tools.contract._rendered_tracks_from_midi`, issue #24 finding 1 —
+    auditoria de um MIDI JA renderizado, que reconstroi as mesmas tracks de
+    origem/edicao a partir dos instrumentos nao casados a nenhum elemento).
+    `is_drum` preserva `pretty_midi.Instrument.is_drum` (canal 10 GM) por
+    track — inclusive tracks de origem NAO declaradas em `plan.edits`
+    (issue #24 finding 3), que nao tem `PlanEdit`/`Element` nenhum pra
+    casar por `role`/`profile` em
+    `tools.validators.transitions._drum_element_ids`.
+    """
+    rendered: list[RenderedTrack] = []
+    for fallback_index, instrument in enumerate(instruments):
+        track_name = instrument.name or f"source L{fallback_index + 1}"
+        rendered.append(RenderedTrack(
+            element_id=f"source:{track_name}",
+            track_name=track_name,
+            is_drum=bool(instrument.is_drum),
+            notes=tuple(
+                RenderedNote(
+                    pitch=int(note.pitch),
+                    velocity=int(note.velocity),
+                    start_s=float(note.start),
+                    end_s=float(note.end),
+                )
+                for note in instrument.notes
+            ),
+        ))
+    return rendered
+
+
 def _rendered_tracks_from_source_tracks(
     tracks: list[mido.MidiTrack],
     *,
@@ -1173,24 +1211,7 @@ def _rendered_tracks_from_source_tracks(
     temp_mid.save(file=payload)
     payload.seek(0)
     parsed = pretty_midi.PrettyMIDI(payload)
-
-    rendered: list[RenderedTrack] = []
-    for fallback_index, instrument in enumerate(parsed.instruments):
-        track_name = instrument.name or f"source L{fallback_index + 1}"
-        rendered.append(RenderedTrack(
-            element_id=f"source:{track_name}",
-            track_name=track_name,
-            notes=tuple(
-                RenderedNote(
-                    pitch=int(note.pitch),
-                    velocity=int(note.velocity),
-                    start_s=float(note.start),
-                    end_s=float(note.end),
-                )
-                for note in instrument.notes
-            ),
-        ))
-    return rendered
+    return _rendered_tracks_from_instrument_list(parsed.instruments)
 
 
 def _clone_source_tracks(src: mido.MidiFile) -> list[mido.MidiTrack]:

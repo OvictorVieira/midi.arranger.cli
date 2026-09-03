@@ -403,6 +403,94 @@ def test_validate_via_plan_path(tmp_path: Path):
     assert env["ok"] is True
 
 
+def _build_edit_only_boundary_source(tmp_path: Path) -> Path:
+    """Mesmo fixture de `tests.test_render._build_edit_only_boundary_source`
+    (issue #24 finding 1, PR #106): MIDI so com uma track 'Bass', 8
+    compassos a 120bpm, mesmo padrao ritmico/pitch/registro dos dois lados
+    da fronteira (bar 4) — so a velocity muda (40 -> 100)."""
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    bass = pretty_midi.Instrument(program=32, name="Bass")
+    bar_len = 2.0
+    beat_len = bar_len / 4
+    for bar in range(8):
+        velocity = 40 if bar < 4 else 100
+        for beat in range(4):
+            start = bar * bar_len + beat * beat_len
+            bass.notes.append(pretty_midi.Note(
+                velocity=velocity, pitch=36, start=start, end=start + beat_len,
+            ))
+    pm.instruments.append(bass)
+    dest = tmp_path / "edit_only_source.mid"
+    pm.write(str(dest))
+    return dest
+
+
+def _edit_only_plan(midi: str) -> dict:
+    """Plano so com `plan.edits` (sem `plan.elements`), duas secoes
+    adjacentes com fronteira em bar 4 — mesmo formato de
+    `tests.test_render.test_edit_only_plan_boundary_sees_source_and_edit_tracks`,
+    reescrito como dict para passar pela fachada `tools.contract`."""
+    return {
+        "version": 1, "seed": 1,
+        "source_midi": {"path": midi, "sha256": _sha256(midi)},
+        "route": "cinematica_emocional",
+        "sections": [
+            {
+                "label": "MAIN", "kind": "verse", "start_bar": 0, "end_bar": 4,
+                "source": "marker", "protagonist": "texture",
+                "energy": {"densidade": 4, "impacto": 4, "largura": 4,
+                           "altura": 4, "instabilidade": 3},
+            },
+            {
+                "label": "NEXT", "kind": "chorus", "start_bar": 4, "end_bar": 8,
+                "source": "marker", "protagonist": "texture",
+                "energy": {"densidade": 8, "impacto": 8, "largura": 8,
+                           "altura": 8, "instabilidade": 5},
+            },
+        ],
+        "elements": [],
+        "edits": [{"track": "Bass", "profile": "bass", "intensity": 0.0}],
+    }
+
+
+def test_validate_facade_sees_source_and_edit_tracks_on_edit_only_render(tmp_path: Path):
+    """Regressao do Codex finding #1 (issue #24, PR #106): a fachada
+    `tools.validate` (separada de `render()`, reaudita um MIDI JA
+    renderizado) precisa reconstruir as tracks de origem/edicao tambem —
+    antes da correcao, `_rendered_tracks_from_midi` so devolvia tracks
+    casadas a `plan.elements[]`, entao um plano so de `plan.edits` (sem
+    elemento gerado nenhum) sempre tinha `rendered_tracks` vazio e a
+    fronteira de transicao era pulada em silencio, mesmo com
+    `render()` (que ja tem a correcao irma) reportando o warning."""
+    src = _build_edit_only_boundary_source(tmp_path)
+    plan = _edit_only_plan(str(src))
+    out = tmp_path / "out.mid"
+    render_env = call("render", {
+        "midi_path": str(src), "plan": plan, "output_path": str(out),
+    })
+    assert render_env["ok"] is True
+    rendered_weak = [
+        i for i in render_env["data"]["transition_issues"]
+        if i["kind"] == "weak_transition"
+    ]
+    assert len(rendered_weak) == 1
+
+    env = call("validate", {
+        "midi_path": str(src), "rendered_path": str(out), "plan": plan,
+    })
+    assert env["ok"] is True
+    weak = [
+        i for i in env["data"]["transition_issues"] if i["kind"] == "weak_transition"
+    ]
+    assert len(weak) == 1, (
+        "sem a correcao do finding #1, a fachada tools.validate nao "
+        "reconstruia as tracks de origem/edicao e a fronteira era pulada"
+    )
+    assert weak[0]["from_section"] == "MAIN"
+    assert weak[0]["to_section"] == "NEXT"
+
+
 # --- plugins.scan --------------------------------------------------------
 
 def test_plugins_scan_returns_stock_and_marks_from_cache_false(tmp_path: Path):

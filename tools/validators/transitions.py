@@ -41,8 +41,11 @@ seria satisfazer as duas dimensoes de AC-14 com uma unica troca de
 articulacao de percussao, sem mudanca musical real nenhuma. Por isso
 `registro`, `largura` e `harmonia` EXCLUEM notas de tracks de bateria
 (`_drum_element_ids`: `element_id` de `plan.elements[]` cujo `role` mapeia
-pra familia `drums`, e `element_id` sintetico `source:<track>` de
-`plan.edits[]` com `profile == "drums"`). `densidade`, `subdivisao`,
+pra familia `drums`, `element_id` sintetico `source:<track>` de
+`plan.edits[]` com `profile == "drums"`, e — para uma track de origem NAO
+declarada em `plan.edits`, que nao tem `profile` nenhum pra casar —
+`RenderedTrack.is_drum`, preservado de `pretty_midi.Instrument.is_drum` /
+canal 10 GM pelo chamador). `densidade`, `subdivisao`,
 `textura`, `perspectiva_espacial` e `protagonista` continuam contando
 TODAS as notas, inclusive bateria — sao dimensoes ritmicas/texturais, nao
 de pitch, e uma virada de bateria de verdade tem que continuar contando
@@ -447,18 +450,29 @@ def _changed(dimension: str, before: _Metrics, after: _Metrics) -> bool | None:
     raise AssertionError(f"unknown dimension {dimension!r}")  # pragma: no cover
 
 
-def _drum_element_ids(plan: ArrangementPlan) -> frozenset[str]:
-    """`element_id` (real, de `plan.elements`, ou sintetico `source:<track>`
-    de uma track de `plan.edits`) cuja familia de `style` e `drums` — usado
-    para excluir notas de bateria das dimensoes derivadas de pitch
-    (`registro`, `largura`, `harmonia`). Mesma logica de
-    `tools.render._style_family_for_role`/`_style_family_for_edit`,
-    reimplementada aqui em vez de importada: `tools.render` importa este
-    modulo (`validate_transitions`), entao o caminho inverso criaria
-    import circular. `source:<track>` casa com o `element_id` sintetico
-    que `tools.render` atribui as `RenderedTrack` reconstruidas a partir
-    das tracks de origem/edicao (ver docstring do modulo, secao
-    "Fronteiras vem de tracks de origem tambem")."""
+def _drum_element_ids(
+    plan: ArrangementPlan, tracks: Iterable[RenderedTrack],
+) -> frozenset[str]:
+    """`element_id` de qualquer track de bateria — usado para excluir notas
+    de bateria das dimensoes derivadas de pitch (`registro`, `largura`,
+    `harmonia`). Duas fontes, unidas:
+
+    1. `plan.elements`/`plan.edits`: `element_id` real cuja familia de
+       `style` e `drums`, ou `element_id` sintetico `source:<track>` de uma
+       track de `plan.edits` com `profile == "drums"`. Mesma logica de
+       `tools.render._style_family_for_role`/`_style_family_for_edit`,
+       reimplementada aqui em vez de importada: `tools.render` importa este
+       modulo (`validate_transitions`), entao o caminho inverso criaria
+       import circular.
+    2. `RenderedTrack.is_drum` (issue #24 finding 3): uma track de origem
+       NAO declarada em `plan.edits` — o caso comum, "track nao declarada
+       para edicao sai nota a nota identica" (AGENTS.md) — nao tem
+       `PlanEdit` nenhum pra casar por `profile` na fonte 1, mas ainda e
+       bateria de verdade (canal 10 GM / `pretty_midi.Instrument.is_drum`,
+       preservado pelo chamador ao construir a `RenderedTrack` sintetica
+       `source:<track>` — ver `tools.render._rendered_tracks_from_instrument_list`).
+       Sem isso, uma troca hi-hat->ride numa track de bateria intocada
+       voltaria a contar como mudanca de registro/harmonia sozinha."""
     ids: set[str] = set()
     for element in plan.elements:
         family = (
@@ -471,6 +485,9 @@ def _drum_element_ids(plan: ArrangementPlan) -> frozenset[str]:
     for edit in plan.edits:
         if edit.profile == "drums":
             ids.add(f"source:{edit.track}")
+    for track in tracks:
+        if track.is_drum:
+            ids.add(track.element_id)
     return frozenset(ids)
 
 
@@ -527,7 +544,7 @@ def validate_transitions(
     tracks = list(rendered_tracks)
     bars_by_index = _bar_lookup(analysis)
     ordered_sections = sorted(plan.sections, key=lambda s: s.start_bar)
-    drum_element_ids = _drum_element_ids(plan)
+    drum_element_ids = _drum_element_ids(plan, tracks)
 
     transitions_by_pair: dict[tuple[str, str], Transition] = {}
     transitions_by_at_bar: dict[int, Transition] = {}

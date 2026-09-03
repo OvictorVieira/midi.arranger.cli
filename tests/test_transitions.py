@@ -455,16 +455,32 @@ def _hihat_ride_swap_tracks(*, extra_ghost_notes: bool = False) -> list[Rendered
 def test_drum_ids_include_generated_drum_elements_and_drum_edits():
     plan = _drum_swap_plan()
     plan.edits = [PlanEdit(track="Kit", profile="drums", intensity=0.0)]
-    ids = _drum_element_ids(plan)
+    ids = _drum_element_ids(plan, [])
     assert ids == {"drum_a", "source:Kit"}
 
 
 def test_drum_ids_exclude_non_drum_elements_and_edits():
     plan = _drum_swap_plan()
     plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.0)]
-    ids = _drum_element_ids(plan)
+    ids = _drum_element_ids(plan, [])
     assert "pad_a" not in ids
     assert "source:Bass" not in ids
+
+
+def test_drum_ids_include_untouched_source_track_via_is_drum_flag():
+    """Codex finding #3 (issue #24, PR #106): uma track de origem NAO
+    declarada em `plan.edits` (o caso comum — 'track nao declarada para
+    edicao sai nota a nota identica', AGENTS.md) nao tem `PlanEdit` nenhum
+    pra casar por `profile`, entao a fonte 1 (`plan.elements`/`plan.edits`)
+    sozinha nunca a inclui. `RenderedTrack.is_drum` (canal 10 GM /
+    `pretty_midi.Instrument.is_drum`, preservado pelo chamador ao
+    reconstruir a track sintetica `source:<nome>`) e a segunda fonte."""
+    plan = _drum_swap_plan()
+    untouched_drum_track = RenderedTrack(
+        element_id="source:Kit", track_name="Kit", is_drum=True,
+    )
+    ids = _drum_element_ids(plan, [untouched_drum_track])
+    assert "source:Kit" in ids
 
 
 def test_hihat_to_ride_swap_alone_is_not_a_register_or_harmony_change():
@@ -496,6 +512,34 @@ def test_drum_notes_excluded_from_registro_and_harmonia_metrics():
     assert metrics_b.registro is None
     assert metrics_b.largura is None
     assert metrics_b.harmonia is None
+
+
+def test_untouched_source_drum_track_hihat_to_ride_swap_is_not_pitch_change():
+    """Codex finding #3 (issue #24, PR #106), fim a fim via
+    `validate_transitions`: uma track de bateria de ORIGEM NAO declarada em
+    `plan.edits` (a track sintetica `source:Kit`, is_drum=True, sem
+    `PlanEdit` nem `Element` nenhum casando por role/profile) faz a MESMA
+    troca hi-hat(42)->ride(51) que `test_hihat_to_ride_swap_alone_is_not_a_
+    register_or_harmony_change` cobre para uma track de ELEMENTO declarada.
+    Sem a segunda fonte de `_drum_element_ids` (o `RenderedTrack.is_drum`),
+    esta track cairia como pitched e a troca de peca sozinha satisfaria
+    registro/largura/harmonia — reabrindo o bug que a correcao anterior so
+    fechou pra tracks de elemento/edit."""
+    plan = _drum_swap_plan()
+    plan.elements = [e for e in plan.elements if e.id != "drum_a"]  # so pad_a
+    analysis = _analysis()
+    tracks = _hihat_ride_swap_tracks()
+    untouched_drum = RenderedTrack(
+        element_id="source:Kit", track_name="Kit", is_drum=True,
+        notes=next(t for t in tracks if t.element_id == "drum_a").notes,
+    )
+    pad_track = next(t for t in tracks if t.element_id == "pad_a")
+    issues = validate_transitions([untouched_drum, pad_track], plan, analysis)
+    weak = [i for i in issues if i.kind == "weak_transition"]
+    assert len(weak) == 1
+    assert "registro" in weak[0].dimensions
+    assert "harmonia" in weak[0].dimensions
+    assert "largura" in weak[0].dimensions
 
 
 def test_genuine_drum_density_change_still_counts_despite_pitch_swap():

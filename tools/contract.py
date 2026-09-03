@@ -1919,6 +1919,22 @@ def _rendered_tracks_from_midi(
     Casa por nome canonico usando `name_for_element`. Devolve tambem a lista
     de elementos cujas tracks nao foram encontradas — sinal de que o arquivo
     nao corresponde ao plano.
+
+    Alem das tracks de `plan.elements[]`, tambem reconstroi as tracks de
+    ORIGEM/EDICAO como `RenderedTrack` sintetica `source:<nome>` (issue #24
+    finding 1): esta fachada audita um MIDI JA renderizado, entao — ao
+    contrario de `tools.render.render()`, que conhece em memoria quantas
+    tracks clonou do source antes de anexar elementos — ela nao tem como
+    distinguir "track de origem/edicao" de "track de elemento" a nao ser
+    por eliminacao: todo instrumento do MIDI de saida cujo nome NAO casa
+    com nenhum `tname` de elemento e, por construcao (AGENTS.md: toda track
+    de saida e ou elemento gerado ou track de origem/editada), uma track de
+    origem/edicao. Sem isso, `validate_transitions` recebia so as tracks de
+    elemento e pulava toda fronteira num plano so de `plan.edits` (mesmo
+    achado que motivou `tools.render._rendered_tracks_from_source_tracks`
+    no round anterior) — reusa o mesmo helper
+    (`render_mod._rendered_tracks_from_instrument_list`) para nao duplicar
+    a conversao `pretty_midi.Instrument` -> `RenderedTrack`.
     """
     try:
         pm = pretty_midi.PrettyMIDI(midi_path)
@@ -1936,6 +1952,7 @@ def _rendered_tracks_from_midi(
 
     rendered: list[RenderedTrack] = []
     missing: list[str] = []
+    consumed: set[int] = set()
     for el in plan_obj.elements:
         inst_meta = el.instrument or {}
         plugin = str(inst_meta.get("plugin", "")).strip()
@@ -1964,9 +1981,13 @@ def _rendered_tracks_from_midi(
                 rendered.append(RenderedTrack(
                     element_id=el.id, track_name=tname, notes=notes,
                 ))
+                consumed.add(id(inst))
                 found_any = True
         if not found_any:
             missing.append(el.id)
+
+    source_instruments = [inst for inst in pm.instruments if id(inst) not in consumed]
+    rendered.extend(render_mod._rendered_tracks_from_instrument_list(source_instruments))
     return rendered, missing
 
 

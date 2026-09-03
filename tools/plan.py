@@ -1446,6 +1446,25 @@ def validate(
                     f"{base}.dimensions_changed[{j}]",
                     f"must be str, got {type(dim).__name__}",
                 )
+        # BLOQUEIO: `transitions[].elements` e lido por
+        # `tools.render._element_matches_only` com `element.id in
+        # t.elements` — plano em memoria (fora da fachada JSON Schema, que
+        # ja bloqueia isso) pode trazer `elements=None` (quebra o `in` com
+        # `TypeError`) ou uma string bare como `"pad_main"` (`from_dict`
+        # converte pra lista de caracteres, e o `in` casa silenciosamente
+        # caractere por caractere em vez do ID inteiro). Falha aqui, cedo,
+        # em vez de crashar ou misfiltrar tarde dentro do filtro `only`.
+        if not isinstance(t.elements, list):
+            raise PlanValidationError(
+                f"{base}.elements",
+                f"must be list, got {type(t.elements).__name__}",
+            )
+        for j, elem_id in enumerate(t.elements):
+            if not isinstance(elem_id, str) or not elem_id.strip():
+                raise PlanValidationError(
+                    f"{base}.elements[{j}]",
+                    f"must be non-empty str, got {elem_id!r}",
+                )
 
     # BLOQUEIO: fronteira de escopo da sessao (issue #96).
     _validate_session_scope(plan)
