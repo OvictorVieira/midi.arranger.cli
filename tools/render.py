@@ -27,6 +27,7 @@ Determinismo:
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -85,6 +86,7 @@ from .plan import (
     PlanValidationError,
     _canonicalize_authorized_name,
     _load_brief_authorized_techniques,
+    _load_brief_excluded_families,
     _reject_style_techniques_without_brief,
     load,
     load_brief_instrument_tuning,
@@ -236,6 +238,55 @@ def _reject_unauthorized_style_techniques(
                 )
 
 
+def _reject_excluded_family_elements(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> None:
+    """Barreira do render: recusa criar familia vetada em `brief.excluded_families`.
+
+    Dupla defesa em relacao a `plan.validate` (issue #17) — mesmo
+    `ArrangementPlan` construido em memoria, sem passar por `plan.load`,
+    nao pode gerar (`plan.elements`) conteudo de uma familia que o brief
+    veta, mesmo que a IA tenha julgado (via `rationale`) que ela esta
+    faltando no MIDI de origem. `plan.edits` fica fora do veto — edita
+    track que ja existe, nunca cria familia nova. Sem `plan.brief_ref` nao
+    ha veto declarado, entao nada e recusado aqui (mesmo default de
+    `plan.validate`)."""
+    if plan.brief_ref is None:
+        return
+    # `role` so tem familia quando e string reconhecida — plano malformado
+    # (ex.: `role` nao-string vindo de `ArrangementPlan` construido em
+    # memoria sem passar por `plan.load`) nao pode estourar `TypeError`
+    # aqui: essa barreira roda ANTES de `validate_plan`, e e o proprio
+    # `validate_plan` quem tem que reportar o tipo invalido como
+    # `PlanValidationError` (achado do Codex na PR #105). Elemento
+    # malformado so nao entra no calculo de familias vetadas.
+    families_used = {
+        _style_family_for_role(e.role)
+        for e in plan.elements
+        if isinstance(e.role, str)
+    }
+    families_used.discard(None)
+    if not families_used:
+        return
+
+    try:
+        excluded = _load_brief_excluded_families(plan, plan_dir)
+    except PlanValidationError as exc:
+        raise RenderError(f"{exc.path}: {exc.message}") from None
+
+    for i, e in enumerate(plan.elements):
+        if not isinstance(e.role, str):
+            continue
+        family = _style_family_for_role(e.role)
+        if family is not None and family in excluded:
+            raise RenderError(
+                f"elements[{i}].role: role {e.role!r} belongs to family "
+                f"{family!r}, which brief.excluded_families vetoes — a IA "
+                f"nao pode criar essa familia mesmo julgando que falta "
+                f"(rationale: {e.rationale!r})"
+            )
+
+
 # --- dataclasses do relatorio ----------------------------------------------
 
 @dataclass
@@ -385,6 +436,107 @@ def _style_confidence_warnings(plan: ArrangementPlan) -> list[str]:
                 f"for family {family!r}; using {style.reference!r}"
             )
     return warnings
+
+
+# Nome convencional do brief ao lado do plano (docs/arquitetura.md, skills/
+# midi-brief/SKILL.md): `run` sempre escreve os dois na raiz do projeto.
+_CONVENTIONAL_BRIEF_FILENAME = "arrangement-brief.json"
+
+
+def _conventional_brief_excluded_families(candidate: Path) -> list[str]:
+    """Le `excluded_families` do brief convencional, best-effort.
+
+    Sem `plan.brief_ref` nao ha `sha256` pra verificar integridade — a
+    leitura aqui e so pra decidir aviso vs erro em
+    `_reject_missing_brief_ref_with_excluded_families`, entao e
+    deliberadamente tolerante: JSON invalido, `excluded_families` ausente
+    ou de tipo errado nao pode estourar aqui (isso e responsabilidade de
+    `brief.validate`/`plan.validate` quando `brief_ref` de fato aponta pro
+    arquivo); tratamos como "nenhuma familia vetada conhecida" e o aviso
+    nao-bloqueante (`W_BRIEF_NOT_REFERENCED`) continua sendo o sinal.
+    """
+    try:
+        raw = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    families = raw.get("excluded_families")
+    if not isinstance(families, list):
+        return []
+    return [f for f in families if isinstance(f, str) and f in STYLE_FAMILIES]
+
+
+def _reject_missing_brief_ref_with_excluded_families(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> None:
+    """Barreira do render: veto de brief convencional nao pode ser ignorado.
+
+    Issue #105 (P1 do Codex, segunda rodada): um `W_BRIEF_NOT_REFERENCED`
+    sozinho e so um aviso — nao impede o harness (nao-deterministico, ver
+    AGENTS.md "A fronteira que nao se cruza") de ignorar a instrucao do
+    prompt e gerar a familia vetada mesmo assim. Quando existe
+    `arrangement-brief.json` na convencao ao lado do plano, `plan.brief_ref`
+    nao aponta pra ele, E esse brief realmente declara
+    `excluded_families` nao-vazio, o veto e CONSEQUENTE — o brief tem
+    intencao explicita e o plano nunca a carregou. Isso vira `RenderError`
+    e nao apenas aviso, porque so a tool (deterministica) pode garantir o
+    veto; a IA do harness pode simplesmente ignorar um aviso.
+
+    Brief inexistente, `brief_ref` ja apontando pro brief, ou brief
+    convencional com `excluded_families` vazio/ausente continuam SEM
+    bloquear — sao os mesmos fluxos legitimos que `W_BRIEF_NOT_REFERENCED`
+    ja preservava (edit-only, sessao sem brief, brief que nunca declarou
+    veto nenhum).
+    """
+    if plan.brief_ref is not None or plan_dir is None:
+        return
+    candidate = plan_dir / _CONVENTIONAL_BRIEF_FILENAME
+    if not candidate.is_file():
+        return
+    excluded = _conventional_brief_excluded_families(candidate)
+    if not excluded:
+        return
+    raise RenderError(
+        f"plan.brief_ref: existe {candidate} vetando as familias "
+        f"{sorted(excluded)!r} (brief.excluded_families), mas plan.brief_ref "
+        "nao aponta pra ele — o veto nunca seria carregado. Defina "
+        "plan.brief_ref (path + sha256 via tools.brief_ref.brief_sha256()) "
+        "antes de renderizar."
+    )
+
+
+def _brief_not_referenced_warning(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> str | None:
+    """Detecta brief presente na convencao que o plano nao referencia.
+
+    Issue #105 (P1 do Codex no PR do #17): `excluded_families` e um veto
+    OPT-IN — so tem efeito quando `plan.brief_ref` aponta pro brief. Um
+    plano sem `brief_ref` nunca falha por causa disso (edit-only, ou
+    sessao legitimamente sem brief, continuam funcionando), mas se existe
+    `arrangement-brief.json` bem ao lado do plano e ninguem referenciou,
+    o gap fica mudo hoje: familia vetada pode ser criada sem que o veto
+    jamais seja carregado. Isso vira aviso (nunca erro) para o gap ficar
+    visivel no relatorio em vez de silencioso.
+
+    Quando esse brief convencional realmente declara `excluded_families`
+    nao-vazio, o gap deixa de ser so um aviso: veja
+    `_reject_missing_brief_ref_with_excluded_families`, chamada antes
+    dessa funcao em `render()`, que estoura `RenderError` nesse caso.
+    """
+    if plan.brief_ref is not None or plan_dir is None:
+        return None
+    candidate = plan_dir / _CONVENTIONAL_BRIEF_FILENAME
+    if not candidate.is_file():
+        return None
+    return (
+        f"W_BRIEF_NOT_REFERENCED: existe {candidate} mas plan.brief_ref "
+        "nao aponta pra ele; sem brief_ref, excluded_families do brief nao "
+        "tem efeito nenhum sobre este plano (veto e opt-in). Se este plano "
+        "deveria respeitar o brief, defina plan.brief_ref (path + sha256 "
+        "via tools.brief_ref.brief_sha256())."
+    )
 
 
 def _style_family_for_role(role: str) -> str | None:
@@ -1726,11 +1878,14 @@ def render(
 
     Raises:
       RenderError: source inexistente, output apontaria para o source,
-        elemento pad sem instrument.plugin/preset, OU tecnica de
+        elemento pad sem instrument.plugin/preset, tecnica de
         `style.<familia>.techniques[]` fora de
-        `brief.style.<familia>.authorized_techniques` (a barreira do
-        render roda antes de `validate_plan`, entao violacao de
-        autorizacao vira `RenderError`, nao `PlanValidationError`).
+        `brief.style.<familia>.authorized_techniques`, `plan.elements[]`
+        gerando familia vetada em `brief.excluded_families` (issue #17), OU
+        `plan.brief_ref` ausente enquanto o `arrangement-brief.json`
+        convencional declara `excluded_families` nao-vazio (issue #105,
+        segunda rodada) — as tres barreiras rodam antes de `validate_plan`,
+        entao violacao vira `RenderError`, nao `PlanValidationError`.
       PlanValidationError: quando `plan` e invalido, vindo de caminho ou
         construido em memoria.
 
@@ -1752,6 +1907,24 @@ def render(
         plan = load(plan_path)
     plan_dir = resolved_plan_dir
     _reject_unauthorized_style_techniques(plan, plan_dir)
+    _reject_excluded_family_elements(plan, plan_dir)
+    # Achado do Codex na PR #105, terceira rodada: a barreira nova de
+    # brief-nao-referenciado nao inspeciona nenhum campo do plano (so
+    # `plan.brief_ref`, `plan_dir` e o arquivo de brief), entao nao tinha
+    # o mesmo risco de TypeError das outras duas barreiras acima — mas
+    # ainda assim disparava RenderError incondicionalmente, mesmo quando
+    # o PROPRIO plano e invalido por outro motivo (ex.: `Element.role`
+    # nao-string) e deveria falhar como `PlanValidationError` primeiro.
+    # Confirma a validade estrutural aqui (chamada extra e barata —
+    # `validate_plan` e read-only) antes de rodar a barreira nova;
+    # plano invalido cai direto na `validate_plan(plan, plan_dir)` de
+    # baixo, que levanta o `PlanValidationError` de verdade.
+    try:
+        validate_plan(plan, plan_dir)
+    except PlanValidationError:
+        pass
+    else:
+        _reject_missing_brief_ref_with_excluded_families(plan, plan_dir)
     validate_plan(plan, plan_dir)
     plan = normalize_style_defaults(plan)
 
@@ -1765,6 +1938,9 @@ def render(
 
     source_hash = sha256_of_file(src)
     warnings: list[str] = _style_confidence_warnings(plan)
+    brief_gap_warning = _brief_not_referenced_warning(plan, plan_dir)
+    if brief_gap_warning is not None:
+        warnings.append(brief_gap_warning)
     if plan.source_midi.sha256 and plan.source_midi.sha256 != source_hash:
         warnings.append(
             f"source_midi.sha256 mismatch (plan={plan.source_midi.sha256[:12]}..., "

@@ -245,6 +245,43 @@ def test_brief_unknown_field_at_root_is_rejected():
     assert env["error"]["path"] == "surpresa"
 
 
+# --- issue #17 — veto de criacao de familia (excluded_families) -----------
+
+
+def test_brief_excluded_families_absent_is_valid():
+    """Brief antigo sem `excluded_families` continua valido — o campo e
+    opcional e a ausencia significa nenhum veto."""
+    brief = _valid_brief()
+    assert "excluded_families" not in brief
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is True, env
+
+
+def test_brief_excluded_families_accepts_known_families():
+    brief = _valid_brief()
+    brief["excluded_families"] = ["guitar", "bass"]
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is True, env
+
+
+def test_brief_excluded_families_rejects_unknown_family():
+    brief = _valid_brief()
+    brief["excluded_families"] = ["vocal"]
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_INVALID"
+    assert env["error"]["path"] == "excluded_families[0]"
+
+
+def test_brief_excluded_families_rejects_duplicates():
+    brief = _valid_brief()
+    brief["excluded_families"] = ["guitar", "guitar"]
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_EXCLUDED_FAMILIES_DUPLICATE"
+    assert env["error"]["path"] == "excluded_families"
+
+
 def test_brief_confidence_out_of_vocabulary_fails():
     brief = _valid_brief()
     brief["style"]["drums"]["confidence"] = "bastante"

@@ -19,6 +19,7 @@ from tools.plan import (
     FamilyStyle,
     PlanEdit,
     PlanSection,
+    PlanValidationError,
     SourceMidi,
     StyleTechnique,
     dump,
@@ -380,6 +381,131 @@ def test_render_does_not_warn_for_high_or_medium_style_confidence(
     report = render(plan, tmp_path / "out.mid")
 
     assert not any("confidence" in w for w in report.warnings)
+
+
+def test_render_warns_when_conventional_brief_exists_but_is_not_referenced(tmp_path):
+    """Codex P1 (issue #17 PR #105): `excluded_families` so tem efeito quando
+    `plan.brief_ref` aponta pro brief. Um plano sem `brief_ref` nunca falha
+    por isso, mas se `arrangement-brief.json` existe bem ao lado do plano
+    (a convencao de `run`, docs/arquitetura.md) e ninguem referenciou, o
+    gap agora fica visivel como aviso em vez de mudo."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}}), encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    warning = next(w for w in report.warnings if "W_BRIEF_NOT_REFERENCED" in w)
+    assert "arrangement-brief.json" in warning
+    assert "brief_ref" in warning
+
+
+def test_render_does_not_warn_when_no_brief_file_exists_at_all(tmp_path):
+    """Sessao legitimamente sem brief (edit-only, ou nenhuma pesquisa feita)
+    nunca deve disparar o aviso — so dispara quando o brief REALMENTE
+    existe na convencao e foi ignorado."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    assert not (tmp_path / "arrangement-brief.json").exists()
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    assert not any("W_BRIEF_NOT_REFERENCED" in w for w in report.warnings)
+
+
+def test_render_does_not_warn_when_brief_ref_already_points_at_the_brief(tmp_path):
+    """Plano que ja referencia o brief corretamente nao repete o aviso,
+    mesmo com o arquivo presente na convencao."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": {}}), encoding="utf-8")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    assert not any("W_BRIEF_NOT_REFERENCED" in w for w in report.warnings)
+
+
+def test_render_rejects_missing_brief_ref_when_conventional_brief_has_excluded_families(
+    tmp_path,
+):
+    """Codex P1 (segunda rodada, PR #105): um aviso nao basta — o harness
+    (nao-deterministico) pode ignorar a instrucao do prompt e gerar a
+    familia vetada mesmo assim. Quando o brief convencional REALMENTE
+    declara `excluded_families` nao-vazio e `plan.brief_ref` nunca foi
+    setado, o gap e consequente e vira erro estrutural, nao so aviso."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}, "excluded_families": ["guitar"]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    with pytest.raises(RenderError, match="excluded_families"):
+        render(plan, out, plan_dir=tmp_path)
+
+    assert not out.exists()
+
+
+def test_render_only_warns_when_conventional_brief_excluded_families_is_empty(
+    tmp_path,
+):
+    """Regressao: brief convencional presente mas sem veto nenhum
+    (`excluded_families` ausente/vazio) nao pode virar erro — nada esta
+    sendo de fato ignorado, entao o aviso nao-bloqueante continua sendo
+    suficiente (mesmo comportamento da rodada anterior)."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}, "excluded_families": []}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    warning = next(w for w in report.warnings if "W_BRIEF_NOT_REFERENCED" in w)
+    assert "arrangement-brief.json" in warning
+
+
+def test_render_reports_plan_validation_error_before_missing_brief_ref_barrier(
+    tmp_path,
+):
+    """Codex P2 (terceira rodada, PR #105): a barreira nova de
+    brief-nao-referenciado nao pode disparar RenderError incondicionalmente
+    quando o PROPRIO plano ja e invalido por outro motivo — plano com
+    `Element.role` malformado (nao-string) tem que continuar saindo como
+    `PlanValidationError`, mesmo quando o brief convencional tambem declara
+    `excluded_families` nao-vazio e `brief_ref` esta ausente."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    plan.elements[0].role = ["bass"]  # type: ignore[assignment]
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}, "excluded_families": ["guitar"]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    with pytest.raises(PlanValidationError):
+        render(plan, out, plan_dir=tmp_path)
+
+    assert not out.exists()
 
 
 def test_render_applies_style_techniques_to_generated_tracks(

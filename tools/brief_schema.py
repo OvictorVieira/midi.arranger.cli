@@ -69,6 +69,17 @@ REQUISITO_FAMILIES = (
 
 STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
 
+# --- issue #17 — veto de criacao de familia ausente ------------------------
+#
+# `excluded_families` e o veto explicito e estruturado do usuario contra a
+# criacao de uma familia inteira, mesmo que a IA julgue (via `plan.elements`)
+# que ela esta faltando no MIDI de origem. Mesmo vocabulario fechado de
+# `STYLE_FAMILIES` — nunca texto livre parseado de `restricoes` (que
+# continua sendo prosa documental, nao maquinario). Campo OPCIONAL: brief
+# antigo sem `excluded_families` continua valido e nao veta nada (ausencia
+# de veto e o default seguro so por que nao muda comportamento ja entregue
+# de criacao de bateria/baixo do zero).
+
 # --- issue #96 — sessao de trabalho ---------------------------------------
 #
 # `session` e a fronteira de trabalho do brief: identifica UMA rodada
@@ -279,6 +290,10 @@ def brief_schema() -> dict[str, Any]:
             },
             "antirreferencias": {
                 "type": "array", "items": {"type": "string", "minLength": 1},
+            },
+            "excluded_families": {
+                "type": "array",
+                "items": {"enum": list(STYLE_FAMILIES)},
             },
         },
         "required": [
@@ -688,6 +703,28 @@ def _validate_session(brief: dict[str, Any]) -> None:
             ) from None
 
 
+def _validate_excluded_families(brief: dict[str, Any]) -> None:
+    """`excluded_families` sem duplicatas (issue #17).
+
+    JSON Schema ja garante vocabulario fechado (`STYLE_FAMILIES`) e tipo;
+    aqui so resta a mesma checagem semantica que `session.families_in_scope`
+    ja faz — familia declarada mais de uma vez e sinal de brief mal
+    escrito, nao um veto "mais forte". Chave ausente e valida (brief
+    antigo continua carregando)."""
+    families = brief.get("excluded_families")
+    if not isinstance(families, list):
+        return
+    if len(families) != len(set(families)):
+        raise ToolError(
+            "E_BRIEF_EXCLUDED_FAMILIES_DUPLICATE",
+            (
+                f"excluded_families tem duplicatas ({families!r}); "
+                "declare cada familia no maximo uma vez"
+            ),
+            path="excluded_families",
+        )
+
+
 def validate_brief(brief: Any) -> None:
     """Valida `brief` contra o schema e as regras semanticas.
 
@@ -713,6 +750,8 @@ def validate_brief(brief: Any) -> None:
       ordem estritamente ascendente (grave->agudo).
     - `E_BRIEF_INSTRUMENT_MISSING_BASS_FIELD`: baixo com `known == true`
       sem `playing_style` ou `notation`.
+    - `E_BRIEF_EXCLUDED_FAMILIES_DUPLICATE`: `excluded_families` repete a
+      mesma familia mais de uma vez.
     """
     try:
         validate_input(brief, brief_schema())
@@ -741,6 +780,7 @@ def validate_brief(brief: Any) -> None:
 
     _validate_instruments(brief)
     _validate_session(brief)
+    _validate_excluded_families(brief)
 
 
 # --- tool -----------------------------------------------------------------

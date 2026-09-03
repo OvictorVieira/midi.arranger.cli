@@ -225,6 +225,19 @@ def test_referenced_tools_are_registered():
         # create/mixed, ausente da origem) tambem precisa da pergunta de
         # afinacao, senao a linha nova nasce sem piso fisico declarado.
         "sendo GERADA do zero nesta sessao",
+        # Achado do Codex na PR #105 (issue #17) — veto de familia inteira
+        # ("nao quero guitarra gerada") tem que virar excluded_families
+        # estruturado, senao fica so em restricoes livre e nunca bloqueia
+        # a criacao de verdade.
+        "excluded_families",
+        "nao quero guitarra gerada",
+        # Achado do Codex na PR #105 (segunda rodada) — modo rapido nao
+        # pergunta a pergunta 5, mas nao pode descartar um veto de familia
+        # que o usuario ja deu no proprio pedido inicial ("vai logo, mas
+        # nao crie guitarra"); so cai pra `[]` quando o pedido nao tinha
+        # veto nenhum.
+        "nao descarta um veto",
+        "nao crie guitarra",
     ],
 )
 def test_body_carries_required_clauses(clause):

@@ -42,6 +42,18 @@ sem melodias, riffs, viradas, levadas reconheciveis, voicings assinados ou seque
 Perfil pesquisado vive no `arrangement_plan` daquela musica, com fontes, momento da pesquisa,
 confianca e suposicoes. Ele nunca vira arquivo em `knowledge/`.
 
+## `brief_ref` no plano
+
+Assim que `arrangement-brief.json` existir na raiz do projeto (ele ja existe quando `run` comeca,
+escrito pela entrevista de brief), toda escrita ou correcao de `arrangement_plan` DEVE preencher
+`plan.brief_ref` com `path` (caminho do brief) e `sha256` (calculado com
+`tools.brief_ref.brief_sha256()` sobre os bytes exatos do arquivo). Sem `brief_ref`,
+`brief.excluded_families` nunca e carregado e o veto de familia fica sem efeito -- `plan.validate`
+so aplica o veto quando `brief_ref` aponta pro brief. `plan.skeleton` NAO preenche `brief_ref`
+sozinho; e responsabilidade sua adicionar isso ao editar o plano gerado por ele. Se
+`arrangement-brief.json` nao existir (sessao sem brief), deixe `brief_ref` de fora -- nao invente
+path para arquivo inexistente.
+
 Contrato de `style` no plano:
 - Use apenas as familias `bass`, `drums`, `guitar` e `keys`.
 - Cada familia declarada precisa ter `reference`, `researched_at`, `sources`, `confidence`,
