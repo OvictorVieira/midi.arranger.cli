@@ -17,7 +17,6 @@ Cobrimos:
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 import pytest
@@ -27,11 +26,8 @@ from tools.influence import (
     INFLUENCE_DIMENSIONS,
     INFLUENCE_INTENSITIES,
     INFLUENCE_SCHEMA_VERSION,
-    InfluenceFinding,
-    InfluenceProfile,
-    InfluenceSource,
-    InfluenceValidationError,
     STYLE_FAMILIES,
+    InfluenceValidationError,
     from_dict,
     to_dict,
     validate,
