@@ -1093,8 +1093,10 @@ def validate(
     # Sem essa amarra a autoria da anotacao vira decorativa — mesma categoria
     # do `rationale` vazio ja rejeitado acima.
     element_ids_seen: set[str] = set()
+    elements_by_id: dict[str, Element] = {}
     for i, e in enumerate(plan.elements):
         element_ids_seen.add(e.id)
+        elements_by_id[e.id] = e
         if e.source_annotation is None:
             continue
         base = f"elements[{i}].source_annotation"
@@ -1136,6 +1138,34 @@ def validate(
                 raise PlanValidationError(
                     f"{base}.element_id",
                     f"element_id {annot.element_id!r} not declared in plan.elements",
+                )
+            target = elements_by_id[annot.element_id]
+            sa = target.source_annotation
+            if sa is None:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    (
+                        f"element {annot.element_id!r} has no source_annotation — "
+                        "an actioned annotation must reference an element that "
+                        "was actually built from it, for the audit trail to hold"
+                    ),
+                )
+            mismatched = (
+                sa.text != annot.text
+                or sa.tick != annot.tick
+                or sa.bar != annot.bar
+                or sa.track != annot.track
+                or sa.event_type != annot.event_type
+            )
+            if mismatched:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    (
+                        f"element {annot.element_id!r}.source_annotation "
+                        f"{_source_annotation_to_dict(sa)!r} does not match this "
+                        f"annotation {_plan_annotation_to_dict(annot)!r} — actioned "
+                        "annotation must point at the element it actually produced"
+                    ),
                 )
         else:
             if annot.element_id is not None:

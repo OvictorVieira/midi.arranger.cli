@@ -570,6 +570,66 @@ def test_plan_annotations_survive_dict_round_trip():
     assert from_dict(to_dict(plan)) == plan
 
 
+def test_plan_annotation_actioned_element_must_have_matching_source_annotation():
+    """AC: apontar `element_id` de um elemento SEM `source_annotation` nao pode
+    passar como `actioned` — sem isso o audit trail fica decorativo (achado
+    do Codex na PR #103)."""
+    plan = _minimal_plan_with_element(Element(
+        id="pad_hook",
+        role="pad",
+        sections=["INTRO"],
+        register=[48, 72],
+        layers=1,
+        sync_role="sustain_through",
+        articulation="sustained",
+        harmony="follow_chords",
+        rationale="pad default",  # sem source_annotation nenhum
+    ))
+    plan.annotations = [
+        PlanAnnotation(
+            text="anotacao nao relacionada", tick=999, bar=5, track="Guitar",
+            event_type="marker", status="actioned", element_id="pad_hook",
+        ),
+    ]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "annotations[0].element_id"
+    assert "no source_annotation" in exc.value.message
+
+
+def test_plan_annotation_actioned_element_source_annotation_must_match_fields():
+    """AC: `element_id` de `actioned` tem que apontar para o elemento que a
+    anotacao REALMENTE produziu — `source_annotation` do elemento e o texto/
+    tick/bar/track/event_type da `PlanAnnotation` precisam bater; marcar uma
+    anotacao qualquer como `actioned` e apontar para um elemento nao
+    relacionado nao pode passar."""
+    plan = _minimal_plan_with_element(Element(
+        id="pad_hook",
+        role="pad",
+        sections=["INTRO"],
+        register=[48, 72],
+        layers=1,
+        sync_role="sustain_through",
+        articulation="sustained",
+        harmony="follow_chords",
+        rationale="'filtro abrindo' — pad crescente",
+        source_annotation=SourceAnnotation(
+            text="filtro abrindo", tick=100, bar=1,
+            track="Piano", event_type="text",
+        ),
+    ))
+    plan.annotations = [
+        PlanAnnotation(
+            text="entra guitarra pesada aqui", tick=500, bar=10, track="Guitar",
+            event_type="marker", status="actioned", element_id="pad_hook",
+        ),
+    ]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "annotations[0].element_id"
+    assert "does not match" in exc.value.message
+
+
 def test_plan_annotation_event_type_rejects_value_outside_closed_enum():
     """AC: `event_type` fora de `ANNOTATION_EVENT_TYPES` (`marker`/`text`/
     `cue_marker`) e erro de validacao mesmo em plano construido em memoria ou
