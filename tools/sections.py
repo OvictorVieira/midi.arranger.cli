@@ -29,33 +29,157 @@ CANONICAL_KINDS = (
 )
 
 
-# Ordem importa: 'pre-chorus' precisa casar antes de 'chorus'.
-_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("pre",       (r"pre[-\s_]?chorus", r"pre[-\s_]?refr[aã]o", r"^pre$", r"^prechorus$")),
+# Ordem importa: grupos mais especificos (ex. 'pre-chorus', 'pre-drop')
+# precisam casar antes dos grupos genericos que sua substring tocaria
+# ('chorus', 'breakdown') — por isso 'pre' vem primeiro na tupla.
+#
+# Vocabulario de cue de producao, em ingles e portugues — nao especifico de
+# uma musica, mesma convencao usada em DAW/tab/sessao de estudio comum. Duas
+# camadas, checadas em passadas separadas (ver `normalize_kind`):
+#
+# - CANONICAL: o proprio nome da secao ou tradução/sinonimo direto e
+#   inequivoco dela ('verse'/'verso'/'estrofe', 'chorus'/'refrão'/'refrain',
+#   'bridge'/'ponte', 'breakdown'/'quebra', 'outro'/'ending'/'final'/'coda'/
+#   'tag', compostos documentados como 'pre-chorus'/'pre-drop'). Sempre
+#   vence quando presente no rotulo, mesmo se um modificador de outra
+#   familia tambem casar ali (achados do Codex na PR: 'CHORUS DROP' precisa
+#   continuar 'chorus', nao virar 'breakdown' so porque 'drop' tambem esta
+#   na string; 'CODA SOLO'/'TAG HOLD'/'ENDING BUILD' precisam continuar
+#   'outro', nao virar 'bridge'/'interlude'/'pre' so porque o modificador de
+#   outra familia veio depois).
+# - MODIFIER: cue de producao secundario que descreve o PAPEL do trecho, nao
+#   o nome dele, e so decide o kind quando nenhum canonical casou em lugar
+#   nenhum do rotulo:
+#   - 'pre': 'build'/'build-up' (subida de energia) e 'riser' (efeito de
+#     subida tipico de producao eletronica/hibrida) tem a mesma funcao
+#     formal de tensao crescente antes do proximo trecho.
+#   - 'interlude': 'hold' (pausa/fermata), 'transicao'/'transition',
+#     'turnaround' e 'vamp' (groove repetido segurando o lugar) sao
+#     transicao/textura suspensa, nao conteudo principal.
+#   - 'breakdown': 'drop' aqui segue o sentido de metal/metalcore
+#     (breakdown pesado), nao o sentido de EDM/pop (que seria mais proximo
+#     de 'chorus') — a persona default deste projeto e produtor de metal
+#     moderno, entao esse e o sentido mais provavel quando o genero nao for
+#     informado de outra forma.
+#   - 'bridge': 'solo' (desvio instrumental) cumpre a mesma funcao formal
+#     de contraste dentro da musica, mesmo quando qualificado por
+#     instrumento ('GUITAR SOLO').
+#   - 'chorus': 'hook'/'gancho' (parte mais cantavel) e o cue mais comum de
+#     producao para o refrao, mesmo quando qualificado por instrumento ou
+#     voz ('VOCAL HOOK').
+#
+# Os padroes ancorados em `\bpalavra\b` (sem `^`) casam a palavra inteira em
+# qualquer posicao do rotulo — inclusive apos um qualificador ('GUITAR SOLO',
+# 'VOCAL HOOK') — sem casar prefixo de palavra composta ('Hooked' continua
+# fora, porque 'hook' + 'ed' nao tem fronteira de palavra entre 'k' e 'e').
+_CANONICAL_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pre",       (r"pr[eé][-\s_]?chorus", r"pr[eé][-\s_]?refr[aã]o", r"\bpr[eé]\b",
+                    r"\bpr[eé]chorus\b", r"pr[eé][-\s_]?drop", r"\bpr[eé]drop\b")),
     ("interlude", (r"interlude", r"interl[uú]dio")),
-    ("breakdown", (r"breakdown", r"break")),
+    ("breakdown", (r"breakdown", r"quebra")),
     ("bridge",    (r"bridge", r"ponte")),
-    ("chorus",    (r"chorus", r"refr[aã]o")),
-    ("verse",     (r"verse", r"verso")),
-    ("intro",     (r"intro",)),
-    ("outro",     (r"outro", r"ending", r"final")),
+    ("chorus",    (r"chorus", r"refr[aã]o", r"refrain")),
+    ("verse",     (r"verse", r"verso", r"estrofe")),
+    ("intro",     (r"intro", r"introdu[cç][aã]o")),
+    ("outro",     (r"outro", r"\bending\b", r"\bfinale?\b", r"\bcoda\b", r"\btag\b")),
 )
+
+_MODIFIER_KIND_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pre",       (r"build[-\s_]?up", r"\bbuild\b", r"riser")),
+    ("interlude", (r"\bhold\b", r"transi[cç][aã]o", r"transition", r"turnaround", r"\bvamp\b")),
+    ("breakdown", (r"\bbreak\b", r"\bdrop\b")),
+    ("bridge",    (r"\bsolo\b",)),
+    ("chorus",    (r"\bhook\b", r"\bgancho\b")),
+    ("verse",     ()),
+    ("intro",     ()),
+    ("outro",     ()),
+)
+
+
+def _search_kind_patterns(
+    s: str, kind_patterns: tuple[tuple[str, tuple[str, ...]], ...]
+) -> str | None:
+    for kind, patterns in kind_patterns:
+        for p in patterns:
+            if re.search(p, s):
+                return kind
+    return None
 
 
 def normalize_kind(label: str) -> str | None:
     """Mapeia rotulo livre para o vocabulario canonico do spec.
+
+    Duas passadas: nome/sinonimo direto da secao (`_CANONICAL_KIND_PATTERNS`)
+    sempre vence quando presente; so cai para cue de producao secundario
+    (`_MODIFIER_KIND_PATTERNS`) quando nenhum canonical casou em lugar
+    nenhum do rotulo — assim um rotulo como 'CHORUS DROP' fica 'chorus', nao
+    'breakdown', mesmo com o modificador de outra familia tambem presente.
+
+    Excecao a essa precedencia: rotulo qualificado por DESTINO ('BUILD TO
+    CHORUS', 'RISER INTO CHORUS', 'TRANSITION TO VERSE', 'BUILD PARA O
+    REFRAO'/'BUILD PRO REFRAO' em portugues, 'pro'/'pra' sao contracao
+    coloquial de 'para o'/'para a') descreve o trecho ATUAL (o cue a
+    esquerda de 'to'/'into'/'para'/'pro'/'pra'), nao o destino nomeado
+    depois — 'BUILD TO CHORUS' e o build-up que antecede o refrao, nao o
+    refrao em si. Por isso o rotulo e testado primeiro truncado nesses
+    marcadores de destino. Mas so USA esse resultado quando o fragmento a
+    esquerda classifica sozinho ('BUILD' classifica); se nao classificar
+    ('FADE TO OUTRO', 'COUNT IN TO INTRO', 'SWELL INTO CHORUS' —
+    'fade'/'count in'/'swell' nao sao cue conhecido), cai de volta pro
+    rotulo inteiro, senao o unico nome de secao presente (o destino)
+    seria descartado a toa.
+
+    O fragmento a esquerda tambem e truncado em 'from'/'do'/'da'/'de'/
+    'dos'/'das' (clausula de ORIGEM, 'TRANSITION FROM VERSE TO CHORUS',
+    'TRANSICAO DA ESTROFE PARA O REFRAO') antes de classificar — senao o
+    nome da secao de ORIGEM (canonico, ex. 'verse'/'estrofe') venceria o
+    cue real do trecho atual pela mesma precedencia canonical-primeiro
+    que protege 'CHORUS DROP'. Essa truncagem de origem SO roda quando ha
+    um marcador de destino de verdade no rotulo (senao nao existe fragmento
+    "a esquerda de to/into/para/pro/pra" nenhum pra proteger) — sem isso,
+    'TAG DA PONTE' truncaria pra 'tag' antes de classificar e perderia
+    'ponte' (bridge), que a precedencia canonical-primeiro deveria vencer
+    sobre 'tag' (outro) no rotulo inteiro.
 
     Retorna None quando o rotulo nao casa com nenhuma familia conhecida —
     quem chama decide se levanta erro ou trata como generico.
     """
     if not label:
         return None
-    s = label.strip().lower()
-    for kind, patterns in _KIND_PATTERNS:
-        for p in patterns:
-            if re.search(p, s):
-                return kind
-    return None
+    # `_` e caractere de palavra pra `\b` (ao contrario de espaco/hifen), entao
+    # "GUITAR_SOLO"/"DROP_1" nao teriam fronteira nenhuma antes de "solo"/
+    # "drop" — normaliza pra espaco ANTES do match. Os padroes que ja aceitam
+    # `_` como separador explicito (`pre[-\s_]?chorus` etc.) continuam
+    # casando, porque o `\s` deles cobre o espaco resultante.
+    s = re.sub(r"_+", " ", label.strip().lower())
+
+    def _match(text: str) -> str | None:
+        return _search_kind_patterns(
+            text, _CANONICAL_KIND_PATTERNS
+        ) or _search_kind_patterns(text, _MODIFIER_KIND_PATTERNS)
+
+    leading = re.split(
+        r"\bto\b|\binto\b|\bpara\b|\bpro\b|\bpra\b", s, maxsplit=1,
+    )[0].strip()
+    has_destination_clause = leading != s
+    # Descarta a clausula de origem ('FROM X'/'DO X'/'DA X'/'DE X') do
+    # fragmento a esquerda ANTES de classificar — mantem o fragmento
+    # original se a remocao esvaziar tudo (nada a ganhar em cair pra
+    # string vazia). So faz sentido dentro de um rotulo com destino: sem
+    # 'to'/'into'/'para'/'pro'/'pra', `leading` ja E o rotulo inteiro, e
+    # truncar por preposicao de origem cortaria conteudo real do unico cue
+    # presente (ex. 'TAG DA PONTE') em vez de isolar um trecho ATUAL.
+    if has_destination_clause:
+        leading_without_source = re.split(
+            r"\bfrom\b|\bdo\b|\bda\b|\bdos\b|\bdas\b|\bde\b", leading, maxsplit=1,
+        )[0].strip()
+        if leading_without_source:
+            leading = leading_without_source
+    if leading and leading != s:
+        leading_kind = _match(leading)
+        if leading_kind is not None:
+            return leading_kind
+    return _match(s)
 
 
 @dataclass

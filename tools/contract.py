@@ -48,6 +48,7 @@ from .plan import (
     SCHEMA_VERSION,
     SECTION_KINDS,
     SECTION_SOURCES,
+    SESSION_INTENTS,
     STYLE_CONFIDENCE_LEVELS,
     STYLE_FAMILIES,
     ArrangementPlan,
@@ -222,6 +223,28 @@ def _plan_schema() -> dict[str, Any]:
                 "required": ["path", "sha256"],
                 "additionalProperties": False,
             },
+            "session": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "intent": {"enum": list(SESSION_INTENTS)},
+                    "families_in_scope": {
+                        "type": "array",
+                        "items": {"enum": list(STYLE_FAMILIES)},
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "pattern": (
+                            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+                            r"(\.\d+)?Z$"
+                        ),
+                    },
+                },
+                "required": [
+                    "id", "intent", "families_in_scope", "created_at",
+                ],
+                "additionalProperties": False,
+            },
             "route": {"enum": list(ROUTES)},
             "assumptions": {"type": "array", "items": {"type": "string"}},
             "style": {
@@ -305,6 +328,27 @@ def _plan_schema() -> dict[str, Any]:
                         },
                         "rationale": {"type": "string", "minLength": 1},
                         "is_protagonist": {"type": "boolean"},
+                        "source_annotation": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string", "minLength": 1},
+                                        "tick": {"type": "integer", "minimum": 0},
+                                        "bar": {"type": "integer", "minimum": 0},
+                                        "track": {"type": "string", "minLength": 1},
+                                        "event_type": {
+                                            "enum": ["marker", "text", "cue_marker"],
+                                        },
+                                    },
+                                    "required": [
+                                        "text", "tick", "bar", "track", "event_type",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                            ],
+                        },
                     },
                     "required": [
                         "id", "role", "sections", "register", "layers",
@@ -356,8 +400,29 @@ def _plan_schema() -> dict[str, Any]:
                             "required": ["plugin", "preset"],
                             "additionalProperties": False,
                         },
+                        "tool": {"type": ["string", "null"], "minLength": 1},
                     },
                     "required": ["track", "profile", "intensity"],
+                },
+            },
+            "annotations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "minLength": 1},
+                        "tick": {"type": "integer", "minimum": 0},
+                        "bar": {"type": "integer", "minimum": 0},
+                        "track": {"type": "string", "minLength": 1},
+                        "event_type": {"enum": ["marker", "text", "cue_marker"]},
+                        "status": {"enum": ["actioned", "declined", "conflict"]},
+                        "element_id": {"type": ["string", "null"]},
+                        "reason": {"type": ["string", "null"]},
+                    },
+                    "required": [
+                        "text", "tick", "bar", "track", "event_type", "status",
+                    ],
+                    "additionalProperties": False,
                 },
             },
         },
@@ -480,6 +545,38 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "register_occupancy": register_occupancy,
         })
 
+    annotations_out: list[dict[str, Any]] = [
+        {
+            "text": ann.text,
+            "tick": int(ann.tick),
+            "bar": int(ann.bar),
+            "time_s": float(ann.time_s),
+            "track": ann.track,
+            "event_type": ann.event_type,
+            "section_label": ann.section_label,
+            "end_tick": int(ann.end_tick),
+            "end_bar": int(ann.end_bar),
+            "end_time_s": float(ann.end_time_s),
+            "scope_end_source": ann.scope_end_source,
+        }
+        for ann in a.annotations
+    ]
+    discarded_out: list[dict[str, Any]] = [
+        {
+            "text": d.text,
+            "tick": int(d.tick),
+            "track": d.track,
+            "event_type": d.event_type,
+            "reason": d.reason,
+        }
+        for d in a.discarded_annotations
+    ]
+    # Agrega contagem por razao — o relatorio precisa dizer "quantas por qual
+    # padrao" sem obrigar o consumidor a re-agregar.
+    discarded_summary: dict[str, int] = {}
+    for d in a.discarded_annotations:
+        discarded_summary[d.reason] = discarded_summary.get(d.reason, 0) + 1
+
     tracks_out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for i, inst in enumerate(pm.instruments):
@@ -525,6 +622,9 @@ def _analyze_impl(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
             "snare_positions_s": [float(x) for x in a.snare_positions],
             "guitar_unison_positions_s": [float(x) for x in a.guitar_unison_positions],
         },
+        "annotations": annotations_out,
+        "discarded_annotations": discarded_out,
+        "discarded_annotations_summary": discarded_summary,
         "channel_distribution": [
             {
                 "track_index": int(td.track_index),
@@ -732,6 +832,52 @@ ANALYZE_TOOL = Tool(
                 ],
                 "additionalProperties": False,
             },
+            "annotations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "minLength": 1},
+                        "tick": {"type": "integer", "minimum": 0},
+                        "bar": {"type": "integer", "minimum": 0},
+                        "time_s": {"type": "number"},
+                        "track": {"type": "string"},
+                        "event_type": {"enum": ["marker", "text", "cue_marker"]},
+                        "section_label": {"type": ["string", "null"]},
+                        "end_tick": {"type": "integer", "minimum": 0},
+                        "end_bar": {"type": "integer", "minimum": 0},
+                        "end_time_s": {"type": "number"},
+                        "scope_end_source": {
+                            "enum": ["next_annotation", "section_end", "file_end"],
+                        },
+                    },
+                    "required": [
+                        "text", "tick", "bar", "time_s", "track", "event_type",
+                        "section_label", "end_tick", "end_bar", "end_time_s",
+                        "scope_end_source",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+            "discarded_annotations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "tick": {"type": "integer", "minimum": 0},
+                        "track": {"type": "string"},
+                        "event_type": {"enum": ["marker", "text", "cue_marker"]},
+                        "reason": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["text", "tick", "track", "event_type", "reason"],
+                    "additionalProperties": False,
+                },
+            },
+            "discarded_annotations_summary": {
+                "type": "object",
+                "additionalProperties": {"type": "integer", "minimum": 1},
+            },
             "channel_distribution": {
                 "type": "array",
                 "items": {
@@ -886,6 +1032,8 @@ ANALYZE_TOOL = Tool(
         "required": [
             "midi_path", "sha256", "tempo", "time_signature", "key_root",
             "key_name", "sections", "bars", "tracks", "rhythmic_anchors",
+            "annotations", "discarded_annotations",
+            "discarded_annotations_summary",
             "channel_distribution", "tuning_inference",
         ],
     },

@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import mido
 
+from . import errors as _errors
 from .index import Technique, TechniqueIndex, build_index
 from .notes import _collect_notes
 from .physical import TechniquePhysicalError, validate_physical_plausibility
@@ -52,8 +53,14 @@ class TechniqueContractError(ValueError):
     """Violacao do contrato runtime de uma tecnica aplicavel."""
 
 
-class TechniqueRecipeError(ValueError):
-    """Falha ao resolver receita MIDI documentada para uma tecnica."""
+# `TechniqueRecipeError` mora em `tools/techniques/errors.py`, nao aqui, e
+# `engine.py` NUNCA importa o nome solto (nem re-exporta) — ver o docstring
+# daquele modulo para o motivo: qualquer aplicador registrado neste modulo
+# que precise da excecao so fica de fato autocontido se "TechniqueRecipeError"
+# nunca virar uma global do proprio `engine.py`. Codigo deste modulo que
+# precisar dela usa `_errors.TechniqueRecipeError` (qualificado); quem
+# importa a excecao de fora usa `tools.techniques.errors` ou
+# `tools.techniques` (re-exportada la, nao aqui).
 
 
 @dataclass(frozen=True)
@@ -312,7 +319,7 @@ def _resolve_recipe(
     idx = index if index is not None else build_index()
     technique = idx.get(canonical)
     if technique is None:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {canonical!r} nao existe no indice dos manuais"
         )
     return _recipe_for_tool(technique, tool_target)
@@ -350,12 +357,12 @@ def _recipe_for_tool(
         )
 
     if tool_target:
-        raise TechniqueRecipeError(
+        raise _errors.TechniqueRecipeError(
             f"tecnica {technique.canonical!r} nao tem receita para "
             f"tool={tool_target!r} nem fallback generic; disponiveis: "
             f"{sorted(technique.tools.keys())!r}"
         )
-    raise TechniqueRecipeError(
+    raise _errors.TechniqueRecipeError(
         f"tecnica {technique.canonical!r} nao tem receita generic; declare "
         f"uma ferramenta-alvo com receita disponivel: {sorted(technique.tools.keys())!r}"
     )
@@ -2572,7 +2579,12 @@ def _apply_bass_ghost_notes(
     return mid
 
 
-@register_technique("bass.palm_mute", "humanize")
+@register_technique(
+    "bass.palm_mute",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
 def _apply_bass_palm_mute(
     mid: mido.MidiFile,
     *,
@@ -2590,6 +2602,9 @@ def _apply_bass_palm_mute(
         faixa mais baixa (< P25) da propria origem, mesmo abafada.
       - Encurta pelo `gate_pct` do manual sobre a duracao original — nao inventa
         numero.
+      - Receita MODO BASS emite CC9 antes de cada nota escolhida e CC9=0 no
+        fim dela. O usuario configura MUTING=CC9 na pagina CONTROL; sem isso
+        o MIDI continua correto, mas o plugin nao associa a automacao.
       - Determinismo por seed atraves de `context.rng()`.
     """
 
@@ -2597,31 +2612,16 @@ def _apply_bass_palm_mute(
 
     from ._param_range import load_range_resolver
 
-    technique, _range = load_range_resolver(context)
+    # Tecnica DESLIGADA (density ausente ou <= 0) e no-op antes de consultar
+    # os ranges do manual.
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
 
-    # O manual e explicito: "no MODO BASS mute NAO e um estilo separado: e
-    # uma quantidade continua aplicada por cima do estilo ativo... NAO
-    # EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario
-    # atribuiu, ou a tecnica nao sai." A receita `modo_bass` carrega
-    # `cc: null` de proposito.
-    #
-    # Sem esta guarda, pedir `tool=modo_bass` sem declarar o CC caia no
-    # comportamento generic (so encurta duracao e ajusta velocity) SEM
-    # avisar — o usuario acharia que ganhou o palm mute continuo do plugin
-    # e recebeu outra coisa. FALHA ALTA em vez de fallback silencioso.
-    #
-    # A emissao real da curva de CC continua fora do escopo desta correcao:
-    # o manual pede "desenhe uma curva", nao um valor unico, e a FORMA dessa
-    # curva nao tem fonte — inventa-la aqui repetiria o erro que motivou a
-    # issue #53. Rastreado separadamente.
-    if context.tool == "modo_bass" and context.recipe.get("cc") is None:
-        cc_param = context.parameters.get("cc")
-        if not isinstance(cc_param, int) or isinstance(cc_param, bool) or not (0 <= cc_param <= 127):
-            raise ValueError(
-                f"tecnica {context.canonical!r} com tool='modo_bass' precisa "
-                "de style.bass.parameters.cc (0-127) declarado no plano — o "
-                "MODO BASS nao tem CC de fabrica para palm mute"
-            )
+    technique, _range = load_range_resolver(context)
 
     velocity_range = _range("velocity") or (60.0, 100.0)
     velocity_lo = max(1, int(velocity_range[0]))
@@ -2631,12 +2631,25 @@ def _apply_bass_palm_mute(
     gate_lo = max(1.0, float(gate_range[0]))
     gate_hi = max(gate_lo, float(gate_range[1]))
 
-    density_raw = context.parameters.get("density")
-    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
-        return mid
-    density = float(density_raw)
-    if density <= 0.0:
-        return mid
+    muting_cc: int | None = None
+    muting_lo = muting_hi = 0
+    if context.tool == "modo_bass":
+        # Import local de modulo DIFERENTE do proprio (`errors.py`, nao
+        # `engine.py`): `engine.py` nunca importa TechniqueRecipeError solto
+        # no proprio escopo, entao isto e dependencia de verdade em outro
+        # modulo, nao evasao de `inspect.getclosurevars` (ver comentario
+        # acima de `TechniqueContractError` em engine.py).
+        from .errors import TechniqueRecipeError
+
+        cc_value = context.recipe.get("cc")
+        if not isinstance(cc_value, int) or isinstance(cc_value, bool):
+            raise TechniqueRecipeError(
+                f"tecnica {context.canonical!r}: receita modo_bass sem CC de muting"
+            )
+        amount_range = _range("amount") or (18.0, 35.0)
+        muting_cc = cc_value
+        muting_lo = max(1, min(127, int(amount_range[0])))
+        muting_hi = max(muting_lo, min(127, int(amount_range[1])))
 
     if mid.ticks_per_beat <= 0:
         return mid
@@ -2644,6 +2657,7 @@ def _apply_bass_palm_mute(
     selection_rng = context.rng("selection")
     velocity_rng = context.rng("velocity")
     gate_rng = context.rng("gate")
+    muting_rng = context.rng("muting")
 
     def collect_pairs(track):
         return list(_iter_note_pairs(track))
@@ -2666,6 +2680,7 @@ def _apply_bass_palm_mute(
 
         new_velocity_by_msg: dict[int, int] = {}
         new_end_tick_by_msg: dict[int, int] = {}
+        control_events: list[tuple[int, int, mido.Message]] = []
         for pair_index, pair in enumerate(pairs):
             if pair_index not in selected:
                 continue
@@ -2678,6 +2693,29 @@ def _apply_bass_palm_mute(
                 note_on_index,
                 note_off_index,
             ) = pair
+            if muting_cc is not None:
+                # No MODO o proprio CC9 produz o abafamento. Nao encurtamos
+                # nem recalculamos velocity por cima dele: alem de somar um
+                # segundo efeito sem necessidade, isso mudaria o alvo na
+                # reaplicacao e impediria o dedup central dos mesmos CCs.
+                amount = muting_rng.randint(muting_lo, muting_hi)
+                control_events.append((
+                    start_tick,
+                    -2,
+                    _mido.Message(
+                        "control_change", channel=_channel,
+                        control=muting_cc, value=amount,
+                    ),
+                ))
+                control_events.append((
+                    end_tick,
+                    -3,
+                    _mido.Message(
+                        "control_change", channel=_channel,
+                        control=muting_cc, value=0,
+                    ),
+                ))
+                continue
             duration = max(1, end_tick - start_tick)
             gate_pct = gate_rng.uniform(gate_lo, gate_hi)
             new_duration = max(1, int(round(duration * gate_pct / 100.0)))
@@ -2713,6 +2751,25 @@ def _apply_bass_palm_mute(
             previous_tick = absolute_tick
         track[:] = rebuilt
 
+        if control_events:
+            absolute_events: list[tuple[int, int, int, mido.Message]] = []
+            tick = 0
+            for order, msg in enumerate(track):
+                tick += msg.time
+                absolute_events.append((tick, 0, order, msg))
+            offset = len(absolute_events)
+            absolute_events.extend(
+                (event_tick, bias, offset + order, msg)
+                for order, (event_tick, bias, msg) in enumerate(control_events)
+            )
+            absolute_events.sort(key=lambda item: (item[0], item[1], item[2]))
+            rebuilt = _mido.MidiTrack()
+            previous_tick = 0
+            for event_tick, _bias, _order, msg in absolute_events:
+                rebuilt.append(msg.copy(time=event_tick - previous_tick))
+                previous_tick = event_tick
+            track[:] = rebuilt
+
     return mid
 
 
@@ -2744,6 +2801,12 @@ def _apply_bass_attack_style(
         estrutural via `_keyswitch_pitches_from_recipe`.
       - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
         dedup do dispatch descarta a duplicata.
+      - `density` explicita <= 0 DESLIGA a tecnica inteira (achado do Codex
+        na PR #93): sem essa checagem, `tool="modo_bass"` inseria o
+        keyswitch mesmo com `density=0.0` declarado no plano, porque nada
+        aqui olhava `density`. Ausencia de `density` continua aplicando
+        normalmente quando `style` esta declarado — comportamento anterior
+        preservado, so o "0.0 explicito" ganhou sentido de desligar.
     """
 
     import mido as _mido
@@ -2755,6 +2818,14 @@ def _apply_bass_attack_style(
     from ._track_rebuild import (
         sort_and_flush as _sort_and_flush,
     )
+
+    density_raw = context.parameters.get("density")
+    if (
+        isinstance(density_raw, (int, float))
+        and not isinstance(density_raw, bool)
+        and density_raw <= 0.0
+    ):
+        return mid
 
     technique, _range = load_range_resolver(context)
     recipe = context.recipe
@@ -3262,6 +3333,270 @@ def _apply_bass_let_ring(
                 ),
             ))
         insert_events(track, events)
+
+    return mid
+
+
+# Mapeamento posicao->keyswitch para as configuracoes de baixo realistas
+# (4/5/6 cordas). O manual (secao 5.9, `bass.string_selection`) declara os
+# seis keyswitches nomeados por CORDA (C/A/B/D/E/G), mas nao diz
+# explicitamente em que ordem eles correspondem a um baixo de N cordas —
+# isso e derivado aqui da convencao real de afinacao de baixo (4 cordas:
+# E-A-D-G; 5 cordas: B-E-A-D-G; 6 cordas: B-E-A-D-G-C, grave para agudo),
+# NAO da pitch real da afinacao declarada (que pode estar em drop): o
+# keyswitch endereca a CORDA FISICA do instrumento modelado pelo plugin,
+# nao o nome da nota que ela soa quando destafinada. Documentado aqui como
+# inferencia explicita porque o manual (`verified: false` neste bloco) nao
+# confirma isso por medicao — se a numeracao de corda do MODO BASS do
+# usuario divergir dessa convencao padrao, o resultado sai errado e precisa
+# de correcao manual.
+@register_technique("bass.string_selection", "technique")
+def _apply_bass_string_selection(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Forca a corda em que cada nota estrutural do baixo soa, via keyswitch.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le os seis `keyswitch_corda_*` do bloco `parameters` geral do manual
+        (nao variam por ferramenta — `tools.modo_bass` so tem nota
+        qualitativa sobre LATCH). Gate por `context.tool == "modo_bass"`:
+        qualquer outra ferramenta (`generic` incluido) e NO-OP, documentado
+        no proprio manual ("declare que a intencao de corda nao pode ser
+        honrada nesta ferramenta").
+      - Afinacao vem de `context.parameters["tuning"]` (mesmo canal que
+        `tools/techniques/physical.py` ja le); sem declaracao, cai no
+        default fisico de 4 cordas (`_BASS_DEFAULT_TUNING`), mesma
+        convencao que o resto do motor usa.
+      - Corda de cada nota estrutural: a MAIS GRAVE que alcanca aquele pitch
+        dentro de `max_fret` (default 24) — regra do manual: "em drop
+        tuning o riff mora na corda mais grave", escolha por TIMBRE, nunca
+        por economia de mao.
+      - Notas estruturais consecutivas na MESMA corda viram um run so; o
+        keyswitch e emitido UMA VEZ por run e mantido pressionado (par
+        note_on/note_off) ate o inicio do proximo run — o manual documenta
+        que o LATCH do MODO BASS vem DESLIGADO de fabrica (keyswitch
+        momentaneo, vale so enquanto segurado), entao segurar a nota e
+        obrigatorio, nao um evento pontual.
+      - Keyswitch nao colide com nota musical: os seis pitches (0-19) ficam
+        muito abaixo do piso de qualquer afinacao real de baixo e saem do
+        contrato estrutural via `_keyswitch_pitches_from_recipe`
+        (tools/techniques/physical.py), o mesmo mecanismo generico que ja
+        protege `bass.attack_style` — por isso os seis valores vem SEMPRE do
+        manual (`manual_value`), nunca de override em `context.parameters`:
+        um valor arbitrario ali divergiria do que a excecao fisica generica
+        reconhece via `context.recipe`, e um numero abaixo do piso de
+        afinacao seria rejeitado como se fosse nota impossivel.
+      - Idempotente: recalcula o mesmo conjunto de runs a cada chamada
+        (filtrando pitches de keyswitch do material estrutural) e deixa o
+        dedup central por assinatura exata (track/canal/pitch/inicio/fim)
+        descartar a repeticao — nao pula a track inteira so por ja ter
+        ALGUM keyswitch (isso deixaria de forcar corda no resto da track se
+        so um trecho tivesse keyswitch previo).
+      - `density` explicita <= 0 DESLIGA a tecnica inteira, mesmo padrao de
+        `bass.attack_style` (achado do Codex na PR #94): `_run_style_pipeline`
+        ja pula o despacho nesse caso quando a chamada vem do render, mas
+        quem chama `apply_technique`/`apply_technique_with_warnings`
+        diretamente (testes, uso futuro fora do pipeline) precisa da mesma
+        garantia aqui dentro — density=0.0 nunca pode inserir keyswitch.
+        Ausencia de `density` continua aplicando normalmente.
+    """
+
+    import mido as _mido
+
+    from ._track_rebuild import (
+        collect_absolute as _collect_absolute,
+    )
+    from ._track_rebuild import (
+        sort_and_flush as _sort_and_flush,
+    )
+    from .physical import _BASS_DEFAULT_TUNING
+
+    density_raw = context.parameters.get("density")
+    if (
+        isinstance(density_raw, (int, float))
+        and not isinstance(density_raw, bool)
+        and density_raw <= 0.0
+    ):
+        return mid
+
+    # Ao contrario de `bass.attack_style`, os seis `keyswitch_corda_*` vivem
+    # no bloco `parameters` GERAL do manual (numero e o mesmo pitch fisico
+    # de teclado do plugin, nao varia por ferramenta) — `tools.modo_bass`
+    # so carrega uma nota qualitativa sobre LATCH. `tools.generic` e quem
+    # diz que a intencao de corda nao pode ser honrada nessa ferramenta;
+    # por isso o gate certo e `context.tool`, nao `context.recipe`.
+    if context.tool != "modo_bass":
+        return mid
+
+    from ._helpers import iter_note_dicts, manual_value, technique_from_manual
+
+    # `TechniqueRecipeError` mora em `tools/techniques/errors.py`, um modulo
+    # DIFERENTE de `engine.py` (onde este aplicador esta definido) — e
+    # `engine.py` nunca importa o nome solto no proprio escopo de modulo
+    # (ver comentario acima de `TechniqueContractError`). Por isso este
+    # import local e uma dependencia de verdade num modulo externo, mesmo
+    # padrao ja usado para `iter_note_dicts` acima, em vez de uma captura
+    # disfarcada do global do proprio modulo.
+    from .errors import TechniqueRecipeError
+
+    technique = technique_from_manual(context)
+    tuning_raw = context.parameters.get("tuning")
+    tuning = tuple(tuning_raw) if tuning_raw else _BASS_DEFAULT_TUNING
+
+    string_order_by_count: dict[int, tuple[str, ...]] = {
+        4: ("keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
+        5: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G"),
+        6: ("keyswitch_corda_B", "keyswitch_corda_E", "keyswitch_corda_A", "keyswitch_corda_D", "keyswitch_corda_G", "keyswitch_corda_C"),
+    }
+    string_order = string_order_by_count.get(len(tuning))
+    if string_order is None:
+        return mid
+
+    keyswitch_by_string: list[int] = []
+    for key in string_order:
+        value = manual_value(context, technique, key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return mid
+        keyswitch_by_string.append(value)
+    keyswitch_pitches = set(keyswitch_by_string)
+
+    def _positive_number(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value > 0 else None
+
+    max_fret_raw = context.parameters.get("max_fret")
+    if max_fret_raw is None:
+        max_fret = 24
+    else:
+        max_fret_value = _positive_number(max_fret_raw)
+        if max_fret_value is None and (
+            isinstance(max_fret_raw, (list, tuple)) and len(max_fret_raw) == 2
+        ):
+            lo = _positive_number(max_fret_raw[0])
+            hi = _positive_number(max_fret_raw[1])
+            # `style.parameters` aceita par [min, max] pra qualquer
+            # parametro; max_fret e um limite fisico unico (nao uma faixa
+            # pra sortear), por isso resolve pro PONTO MEDIO — mesma
+            # convencao de `_midrange` em `bass.attack_style` pra
+            # transformar range em valor estrutural unico e deterministico.
+            if lo is not None and hi is not None:
+                max_fret_value = (lo + hi) / 2
+        if max_fret_value is None:
+            # Declarado mas invalido (0, negativo, tipo errado, par
+            # invalido): rejeita explicitamente em vez de cair no default
+            # 24 em silencio — um limite fisico declarado errado nao pode
+            # virar "nao declarado" (achado do Codex na PR).
+            raise TechniqueRecipeError(
+                f"tecnica {context.canonical!r}: style.bass.parameters."
+                f"max_fret declarado invalido (precisa ser numero positivo "
+                f"ou par [min, max] positivo), got {max_fret_raw!r}"
+            )
+        max_fret = int(round(max_fret_value))
+
+    for track in mid.tracks:
+        # So exclui pitch de KEYSWITCH por valor exato — nao por
+        # `pitch >= floor`. Um filtro por piso deixaria passar em silencio
+        # uma nota estrutural genuina ABAIXO da afinacao declarada (achado
+        # do Codex na PR #94): o loop de atribuicao logo abaixo e quem
+        # precisa ver essa nota, pra falhar explicito em vez dela nunca
+        # chegar la.
+        structural = sorted(
+            (
+                (note["start"], note["end"], note["channel"], note["pitch"])
+                for note in iter_note_dicts(track)
+                if note["pitch"] not in keyswitch_pitches
+            ),
+            key=lambda item: item[0],
+        )
+        if not structural:
+            continue
+
+        assignments: list[tuple[int, int, int, int]] = []
+        for start, end, channel, pitch in structural:
+            string_index = None
+            for idx, open_pitch in enumerate(tuning):
+                if open_pitch <= pitch <= open_pitch + max_fret:
+                    string_index = idx
+                    break
+            if string_index is None:
+                # Nota estrutural fora do alcance de TODAS as cordas da
+                # afinacao declarada dentro de `max_fret`: falha explicita
+                # em vez de descartar em silencio as atribuicoes ja
+                # calculadas pras OUTRAS notas da track (achado do Codex na
+                # PR #94) — antes disso, uma unica nota impossivel de tocar
+                # apagava a tecnica da track inteira sem aviso nenhum.
+                raise TechniqueRecipeError(
+                    f"tecnica {context.canonical!r}: nota estrutural pitch "
+                    f"{pitch} (canal {channel}, tick {start}) esta fora do "
+                    f"alcance de qualquer corda da afinacao {tuning!r} "
+                    f"dentro de max_fret={max_fret}"
+                )
+            assignments.append((start, end, channel, string_index))
+
+        # Agrupa por canal ANTES de formar run — runs sao independentes por
+        # canal (o keyswitch e por canal). Formar run numa lista global
+        # ordenada por tick faria uma nota de OUTRO canal, intercalada no
+        # meio de duas notas do mesmo canal na mesma corda, quebrar o run
+        # em dois — soltando e reacionando o mesmo keyswitch sem
+        # necessidade (o note_on do proximo run pode ate ordenar antes do
+        # note_off do anterior no mesmo tick, corrompendo o pareamento).
+        by_channel: dict[int, list[tuple[int, int, int]]] = {}
+        for start, end, channel, string_index in assignments:
+            by_channel.setdefault(channel, []).append((start, end, string_index))
+
+        runs_by_channel: dict[int, list[tuple[int, int, int]]] = {}
+        for channel, channel_assignments in by_channel.items():
+            channel_runs: list[tuple[int, int, int]] = []
+            run_start, run_end, run_string = channel_assignments[0]
+            for start, end, string_index in channel_assignments[1:]:
+                if string_index == run_string:
+                    run_end = max(run_end, end)
+                elif start < run_end:
+                    # Notas sobrepostas no MESMO canal pedindo cordas
+                    # diferentes: o keyswitch e estado unico por canal, entao
+                    # nao existe forma de manter as duas cordas "ligadas" ao
+                    # mesmo tempo — soltar uma delas cedo corromperia a nota
+                    # estrutural que ainda esta soando. Falha explicita em
+                    # vez de emitir keyswitch conflitante em silencio.
+                    raise TechniqueRecipeError(
+                        f"tecnica {context.canonical!r}: notas sobrepostas no "
+                        f"canal {channel} pedem cordas diferentes (corda "
+                        f"{run_string} ate tick {run_end}, corda {string_index} "
+                        f"comecando tick {start}) — impossivel manter os dois "
+                        "keyswitches simultaneos num canal so; declare essas "
+                        "notas em canais separados"
+                    )
+                else:
+                    channel_runs.append((run_start, run_end, run_string))
+                    run_start, run_end, run_string = start, end, string_index
+            channel_runs.append((run_start, run_end, run_string))
+            runs_by_channel[channel] = channel_runs
+
+        absolute = _collect_absolute(track)
+        order = len(absolute)
+        for channel, channel_runs in runs_by_channel.items():
+            for position, (r_start, r_end, string_index) in enumerate(channel_runs):
+                ks_pitch = keyswitch_by_string[string_index]
+                on_tick = max(0, r_start - 1)
+                if position + 1 < len(channel_runs):
+                    off_tick = max(on_tick + 1, channel_runs[position + 1][0] - 1)
+                else:
+                    off_tick = max(on_tick + 1, r_end)
+                absolute.append((
+                    on_tick, -2, order,
+                    _mido.Message("note_on", channel=channel, note=ks_pitch, velocity=127),
+                ))
+                order += 1
+                absolute.append((
+                    off_tick, -1, order,
+                    _mido.Message("note_off", channel=channel, note=ks_pitch, velocity=0),
+                ))
+                order += 1
+
+        _sort_and_flush(absolute, track)
 
     return mid
 
@@ -3868,7 +4203,6 @@ __all__ = [
     "TechniqueContext",
     "TechniqueLevel",
     "TechniquePhysicalError",
-    "TechniqueRecipeError",
     "TechniqueRegistrationError",
     "TechniqueRegistry",
     "UnknownTechniqueError",
