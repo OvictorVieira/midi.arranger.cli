@@ -2783,7 +2783,7 @@ def _apply_bass_attack_style(
     *,
     context: TechniqueContext,
 ) -> mido.MidiFile:
-    """Estilo de ataque do baixo — dedo, palheta ou slap com keyswitch.
+    """Estilo de ataque do baixo — dedo, palheta ou slap com ou sem keyswitch.
 
     Regras que fazem esta tecnica NAO virar `_identity_apply`:
       - Le `keyswitch_dedo` (13), `keyswitch_palheta` (15), `keyswitch_slap` (18)
@@ -2799,14 +2799,33 @@ def _apply_bass_attack_style(
       - Keyswitch nao colide com nota musical: pitches 1, 3, 13, 15, 18 sao
         muito abaixo do floor do baixo (~28) e ficam fora do contrato
         estrutural via `_keyswitch_pitches_from_recipe`.
-      - Idempotente: mesma seed insere keyswitches nas mesmas posicoes e o
-        dedup do dispatch descarta a duplicata.
+      - Idempotente (caminho com keyswitch): mesma seed insere keyswitches
+        nas mesmas posicoes e o dedup do dispatch descarta a duplicata.
       - `density` explicita <= 0 DESLIGA a tecnica inteira (achado do Codex
         na PR #93): sem essa checagem, `tool="modo_bass"` inseria o
         keyswitch mesmo com `density=0.0` declarado no plano, porque nada
         aqui olhava `density`. Ausencia de `density` continua aplicando
         normalmente quando `style` esta declarado — comportamento anterior
         preservado, so o "0.0 explicito" ganhou sentido de desligar.
+
+    Caminho GENERIC (sem keyswitch — issue #57):
+      - `style=palheta/picked` alterna downstroke/upstroke por DELTA RELATIVO
+        direto na velocity das notas estruturais, mesma formula e mesmos
+        numeros sourced do manual (`picked_downstroke_velocity`,
+        `picked_upstroke_velocity`) do caminho MODO BASS — preserva a
+        invariante de pressao (nao inverte a intencao de dinamica da
+        origem) porque o deslocamento e sempre relativo ao valor escrito
+        pelo usuario, nunca um alvo absoluto.
+      - Idempotente por MARCADOR (`meta text` dedicado por track, gravado so
+        depois da alternancia): sem keyswitch nao ha pitch reservado para
+        servir de assinatura "ja processado" como no caminho com keyswitch;
+        um delta relativo sem marcador dobraria a cada reaplicacao. Ver
+        comentario no ramo `elif`/generic mais abaixo para o desenho
+        completo.
+      - `style=dedo/fingered` e `style=slap` continuam NO-OP no generic: o
+        manual (secao 5.7) nao declara faixa sourced de index/middle picking
+        nem reproduz a heuristica de registro/corda que o plugin usa para
+        escolher entre thumb e pop — sem fonte, sem numero inventado.
     """
 
     import mido as _mido
@@ -2845,13 +2864,21 @@ def _apply_bass_attack_style(
         return mid
 
     style_ks = recipe.get(style_key) if recipe else None
-    if not isinstance(style_ks, int) or isinstance(style_ks, bool):
-        # Receita generic nao tem keyswitch — no-op.
+    has_keyswitch = isinstance(style_ks, int) and not isinstance(style_ks, bool)
+    is_picked = style in {"palheta", "picked"}
+
+    if not has_keyswitch and not is_picked:
+        # Receita generic nao tem keyswitch. Para dedo/fingered o manual
+        # (secao 5.7) nao declara faixa sourced de velocity/timing para
+        # index/middle picking; para slap, a escolha entre thumb e pop e do
+        # PLUGIN, pelo registro e pela corda — replicar essa decisao sem
+        # fonte seria numero inventado, a mesma categoria ja rejeitada em
+        # `_identity_apply`. Os dois ficam NO-OP no generic ate haver fonte
+        # (issue #57) — documentado, nao bug.
         return mid
 
     forcar_primeiro = recipe.get("keyswitch_forcar_primeiro") if recipe else None
     forcar_segundo = recipe.get("keyswitch_forcar_segundo") if recipe else None
-    is_picked = style in {"palheta", "picked"}
 
     # Pitches declarados como keyswitch na receita ficam fora do material
     # estrutural: evitam que uma reaplicacao trate keyswitch previamente
@@ -2896,79 +2923,127 @@ def _apply_bass_attack_style(
 
         channel = structural[0][1].channel
 
-        # IDEMPOTENCIA: o keyswitch de estilo e a assinatura do que ja foi
-        # aplicado. Se ele ja esta na track, a alternancia tambem ja esta —
-        # reaplicar deslocaria a velocity de novo e a linha afundaria a cada
-        # render. A checagem tem que vir ANTES de qualquer escrita.
-        already_applied = any(
-            not msg.is_meta
-            and msg.type == "note_on"
-            and msg.velocity > 0
-            and msg.note == style_ks
-            for msg in track
-        )
-        if already_applied:
+        if has_keyswitch:
+            # IDEMPOTENCIA (caminho MODO BASS): o keyswitch de estilo e a
+            # assinatura do que ja foi aplicado. Se ele ja esta na track, a
+            # alternancia tambem ja esta — reaplicar deslocaria a velocity de
+            # novo e a linha afundaria a cada render. A checagem tem que vir
+            # ANTES de qualquer escrita.
+            already_applied = any(
+                not msg.is_meta
+                and msg.type == "note_on"
+                and msg.velocity > 0
+                and msg.note == style_ks
+                for msg in track
+            )
+            if already_applied:
+                continue
+
+            # Coleta absoluta de todas as mensagens da track — vamos reconstruir.
+            absolute = _collect_absolute(track)
+            order = len(absolute)
+
+            # Keyswitch de estilo, uma vez por track, antes da primeira nota.
+            first_tick = structural[0][0]
+            style_tick = max(0, first_tick - 1)
+            absolute.append((
+                style_tick, -2, order,
+                _mido.Message("note_on", channel=channel, note=style_ks, velocity=127),
+            ))
+            order += 1
+            absolute.append((
+                style_tick, -1, order,
+                _mido.Message("note_off", channel=channel, note=style_ks, velocity=0),
+            ))
+            order += 1
+
+            if is_picked:
+                # Alternancia deterministica por posicao: even=down, odd=up.
+                #
+                # O DELTA e relativo a velocity da ORIGEM, nunca valor absoluto.
+                # Sobrescrever com o alvo do manual destruia a dinamica escrita
+                # pelo usuario: uma nota em 127 saia em 85 (upstroke), abaixo do
+                # piso da propria origem. E o mesmo defeito que tirou
+                # `drums.accent_hierarchy` do motor — tecnica nao pode inverter a
+                # intencao da origem. Os numeros do manual definem a DIFERENCA
+                # entre golpe para baixo e para cima; e essa diferenca que
+                # caracteriza a alternancia, nao o valor absoluto.
+                half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
+                for idx, (_start, msg) in enumerate(structural):
+                    shift = half_delta if idx % 2 == 0 else -half_delta
+                    msg.velocity = max(1, min(127, msg.velocity + shift))
+
+                if isinstance(forcar_primeiro, int) and isinstance(forcar_segundo, int) \
+                        and not isinstance(forcar_primeiro, bool) \
+                        and not isinstance(forcar_segundo, bool):
+                    for idx, (start_tick, msg) in enumerate(structural):
+                        is_upstroke = idx % 2 == 1
+                        ks_pitch = forcar_segundo if is_upstroke else forcar_primeiro
+                        delay = atraso_ticks if is_upstroke else 0
+                        ks_tick = max(0, start_tick - 1 - delay)
+                        absolute.append((
+                            ks_tick, -2, order,
+                            _mido.Message(
+                                "note_on", channel=msg.channel, note=ks_pitch,
+                                velocity=127,
+                            ),
+                        ))
+                        order += 1
+                        absolute.append((
+                            ks_tick, -1, order,
+                            _mido.Message(
+                                "note_off", channel=msg.channel, note=ks_pitch,
+                                velocity=0,
+                            ),
+                        ))
+                        order += 1
+
+            _sort_and_flush(absolute, track)
             continue
 
-        # Coleta absoluta de todas as mensagens da track — vamos reconstruir.
+        # CAMINHO GENERIC (sem keyswitch) — so alcancavel com is_picked=True,
+        # porque dedo/slap sem keyswitch ja saiu da funcao mais acima.
+        #
+        # DESENHO DO MARCADOR DE IDEMPOTENCIA (issue #57): sem keyswitch nao
+        # ha pitch reservado para servir de assinatura "ja processado", como
+        # o caminho MODO BASS usa acima. Um delta relativo aplicado direto na
+        # velocity SEM marcador nao e idempotente por si so: reaplicar sobre
+        # a propria saida dobraria o deslocamento a cada render (a mesma nota
+        # ganharia +half_delta duas vezes). A solucao espelha o padrao do
+        # keyswitch — grava uma ASSINATURA OBSERVAVEL na track antes de
+        # qualquer escrita, e reaplicacao futura le essa assinatura para
+        # pular a track inteira — so que aqui a assinatura e um evento
+        # `meta text` dedicado, em vez de nota, porque nao ha pitch reservado
+        # para carregar o papel. O literal fica local (nao vira constante de
+        # modulo) de proposito: o registro global desta tecnica precisa
+        # continuar autocontido, sem capturar estado de modulo (o teste
+        # `test_registered_techniques_do_not_capture_global_or_nonlocal_state`
+        # falharia). O marcador nao e nota estrutural (fica fora de
+        # `_StructuralSnapshot` e de `_MidiContentSnapshot`), entao nao conta
+        # contra o contrato `technique` nem contra o dedup central de
+        # ornamentos — a checagem e feita aqui, autocontida, no mesmo estilo
+        # do `already_applied` do caminho com keyswitch.
+        marker_text = f"midi-arranger:bass.attack_style:generic:{style}"
+        already_applied_generic = any(
+            msg.is_meta and msg.type == "text" and msg.text == marker_text
+            for msg in track
+        )
+        if already_applied_generic:
+            continue
+
+        # Mesma alternancia relativa do caminho MODO BASS (nunca absoluta) —
+        # preserva a invariante de pressao: nota que a origem escreveu alta
+        # nao pode virar baixa so por causa do downstroke/upstroke.
+        half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
+        for idx, (_start, msg) in enumerate(structural):
+            shift = half_delta if idx % 2 == 0 else -half_delta
+            msg.velocity = max(1, min(127, msg.velocity + shift))
+
         absolute = _collect_absolute(track)
-        order = len(absolute)
-
-        # Keyswitch de estilo, uma vez por track, antes da primeira nota.
-        first_tick = structural[0][0]
-        style_tick = max(0, first_tick - 1)
         absolute.append((
-            style_tick, -2, order,
-            _mido.Message("note_on", channel=channel, note=style_ks, velocity=127),
+            0, 0, len(absolute),
+            _mido.MetaMessage("text", text=marker_text, time=0),
         ))
-        order += 1
-        absolute.append((
-            style_tick, -1, order,
-            _mido.Message("note_off", channel=channel, note=style_ks, velocity=0),
-        ))
-        order += 1
-
-        if is_picked:
-            # Alternancia deterministica por posicao: even=down, odd=up.
-            #
-            # O DELTA e relativo a velocity da ORIGEM, nunca valor absoluto.
-            # Sobrescrever com o alvo do manual destruia a dinamica escrita
-            # pelo usuario: uma nota em 127 saia em 85 (upstroke), abaixo do
-            # piso da propria origem. E o mesmo defeito que tirou
-            # `drums.accent_hierarchy` do motor — tecnica nao pode inverter a
-            # intencao da origem. Os numeros do manual definem a DIFERENCA
-            # entre golpe para baixo e para cima; e essa diferenca que
-            # caracteriza a alternancia, nao o valor absoluto.
-            half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
-            for idx, (_start, msg) in enumerate(structural):
-                shift = half_delta if idx % 2 == 0 else -half_delta
-                msg.velocity = max(1, min(127, msg.velocity + shift))
-
-            if isinstance(forcar_primeiro, int) and isinstance(forcar_segundo, int) \
-                    and not isinstance(forcar_primeiro, bool) \
-                    and not isinstance(forcar_segundo, bool):
-                for idx, (start_tick, msg) in enumerate(structural):
-                    is_upstroke = idx % 2 == 1
-                    ks_pitch = forcar_segundo if is_upstroke else forcar_primeiro
-                    delay = atraso_ticks if is_upstroke else 0
-                    ks_tick = max(0, start_tick - 1 - delay)
-                    absolute.append((
-                        ks_tick, -2, order,
-                        _mido.Message(
-                            "note_on", channel=msg.channel, note=ks_pitch,
-                            velocity=127,
-                        ),
-                    ))
-                    order += 1
-                    absolute.append((
-                        ks_tick, -1, order,
-                        _mido.Message(
-                            "note_off", channel=msg.channel, note=ks_pitch,
-                            velocity=0,
-                        ),
-                    ))
-                    order += 1
-
         _sort_and_flush(absolute, track)
 
     return mid

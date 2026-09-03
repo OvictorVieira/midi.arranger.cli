@@ -224,6 +224,109 @@ def test_reapplying_is_idempotent():
     assert _serialize(twice) == once_bytes
 
 
+def test_generic_picked_alternates_downstroke_upstroke_by_relative_delta():
+    # Sem keyswitch (tool=generic): picked ainda diferencia downstroke/upstroke,
+    # mas so por delta relativo direto na velocity — sem nota de keyswitch.
+    source = _make_midi([80, 80, 80, 80, 80, 80])
+    before = _structural_note_ons(source)
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    # Nenhum keyswitch inserido: sem receita para eles no generic.
+    for _t, msg in _iter_notes(out):
+        assert msg.note not in {1, 3, 13, 15, 18}
+
+    after = _structural_note_ons(out)
+    assert len(after) == len(before)
+    downs = [v for i, (_t, _c, _p, v) in enumerate(after) if i % 2 == 0]
+    ups = [v for i, (_t, _c, _p, v) in enumerate(after) if i % 2 == 1]
+    assert len(set(downs)) == 1
+    assert len(set(ups)) == 1
+    assert downs[0] > ups[0], "downstroke deveria bater mais forte que upstroke"
+    # Delta e relativo: origem em 80 vira 80+half_delta / 80-half_delta.
+    assert downs[0] > 80 > ups[0]
+
+
+def test_generic_picked_does_not_alter_note_count_pitch_or_position():
+    source = _make_midi([70, 75, 80, 85, 90])
+    before = [(t, m.channel, m.note) for t, m in _iter_notes(source)
+              if m.type == "note_on" and m.velocity > 0]
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=3, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    after = [(t, m.channel, m.note) for t, m in _iter_notes(out)
+             if m.type == "note_on" and m.velocity > 0]
+    assert after == before
+
+
+def test_generic_picked_preserves_pressure_invariant_never_inverts_origin():
+    # Nota que a origem escreveu no topo da faixa nao pode virar a mais fraca
+    # da linha so por cair numa posicao de upstroke.
+    source = _make_midi([40, 127, 40, 127])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    after = _structural_note_ons(out)
+    velocities = [v for _t, _c, _p, v in after]
+    # Ordem relativa preservada: as notas originalmente mais fortes (127)
+    # continuam mais fortes que as originalmente mais fracas (40).
+    assert velocities[1] > velocities[0]
+    assert velocities[3] > velocities[2]
+    assert velocities[1] > velocities[2]
+    assert velocities[3] > velocities[0]
+
+
+def test_generic_picked_reapplication_is_byte_identical():
+    source = _make_midi([80, 90, 100, 110, 120])
+    once = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+    once_bytes = _serialize(once)
+
+    twice = apply_technique(
+        "bass.attack_style", once, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    assert _serialize(twice) == once_bytes
+    # A segunda aplicacao nao deve ter dobrado o deslocamento de velocity.
+    assert _structural_note_ons(twice) == _structural_note_ons(once)
+
+
+def test_generic_fingered_style_remains_no_op():
+    source = _make_midi([80, 90, 100, 110])
+    original_bytes = _serialize(source)
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "fingered"},
+    )
+
+    assert _serialize(out) == original_bytes
+
+
+def test_generic_slap_style_remains_no_op():
+    source = _make_midi([80, 90, 100, 110])
+    original_bytes = _serialize(source)
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "slap"},
+    )
+
+    assert _serialize(out) == original_bytes
+
+
 def _serialize(mid: mido.MidiFile) -> bytes:
     from io import BytesIO
 
