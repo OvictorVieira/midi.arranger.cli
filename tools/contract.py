@@ -25,6 +25,7 @@ import pretty_midi
 from . import analyze as analyze_mod
 from . import plan as plan_mod
 from . import plugins as plugins_mod
+from . import presets as presets_mod
 from . import render as render_mod
 from . import sections as sections_mod
 from . import techniques as techniques_mod
@@ -73,24 +74,28 @@ SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 # --- helpers de IO ---------------------------------------------------------
 
-def _resolve_midi(path_str: str) -> Path:
+def _resolve_midi(path_str: str, *, field: str = "midi_path") -> Path:
     """Valida existencia/permissao/formato do MIDI e devolve o Path resolvido.
 
     Erros viram `ToolError` com codigo dedicado. Nunca stack trace.
     `midi_path` vazio nao chega aqui: input_schema exige minLength=1.
+    `field` identifica, no `ToolError.path`, qual campo do payload originou
+    o caminho invalido — default `midi_path` preserva o comportamento
+    existente; chamadores de outros campos de caminho (ex.: `reference_corpus`)
+    passam o proprio nome.
     """
     path = Path(path_str).expanduser()
     if not path.exists():
         raise ToolError(
             "E_MIDI_NOT_FOUND",
             f"arquivo MIDI nao encontrado: {path_str}",
-            path="midi_path",
+            path=field,
         )
     if not path.is_file():
         raise ToolError(
             "E_MIDI_NOT_FILE",
             f"caminho nao e arquivo: {path_str}",
-            path="midi_path",
+            path=field,
         )
     try:
         with open(path, "rb") as f:
@@ -99,21 +104,30 @@ def _resolve_midi(path_str: str) -> Path:
         raise ToolError(
             "E_MIDI_PERMISSION",
             f"sem permissao para ler {path_str}",
-            path="midi_path",
+            path=field,
         ) from None
     except OSError as exc:
         raise ToolError(
             "E_MIDI_IO",
             f"erro lendo MIDI {path_str}: {exc}",
-            path="midi_path",
+            path=field,
         ) from None
     if head != b"MThd":
         raise ToolError(
             "E_MIDI_INVALID",
             f"arquivo nao e MIDI valido (header != 'MThd'): {path_str}",
-            path="midi_path",
+            path=field,
         )
     return path
+
+
+def _resolve_reference_corpus(payload: dict[str, Any]) -> list[Path]:
+    """Resolve `reference_corpus` (lista opcional de paths de MIDI de
+    referencia) com a mesma validacao de `midi_path`. Ausente ou vazio
+    devolve lista vazia — o chamador decide se isso vira `None` para
+    `render_mod.render` (checagem anti-copia pulada, retrocompativel)."""
+    raw = payload.get("reference_corpus") or []
+    return [_resolve_midi(item, field="reference_corpus") for item in raw]
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -1414,6 +1428,20 @@ def _persona_issue_to_dict(i) -> dict[str, Any]:
     }
 
 
+def _anticopy_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "anticopy",
+        "severity": i.severity,
+        "element_id": i.element_id,
+        "track": i.track,
+        "bar": int(i.bar),
+        "n": int(i.n),
+        "source": i.source,
+        "source_track": i.source_track,
+        "message": i.message,
+    }
+
+
 def _collision_report_to_dict(rep) -> dict[str, Any]:
     return {
         "relocations": [
@@ -1507,11 +1535,33 @@ _PERSONA_ISSUE_SCHEMA = {
     ],
 }
 
+_ANTICOPY_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "anticopy"},
+        "severity": {"type": "string"},
+        "element_id": {"type": "string"},
+        "track": {"type": "string"},
+        "bar": {"type": "integer"},
+        "n": {"type": "integer"},
+        "source": {"type": "string"},
+        "source_track": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "element_id", "track", "bar", "n",
+        "source", "source_track", "message",
+    ],
+}
+
 def _issues_schema_block() -> dict[str, Any]:
     """Reaproveita o bloco `harmony_issues/placement_issues/... + collision`.
 
     Compartilhado entre render e validate — ambos devolvem o mesmo core de
-    relatorio dos validadores.
+    relatorio dos validadores. `anticopy_issues` NAO entra aqui: so `render`
+    recebe `reference_corpus` e roda a checagem anti-copia (`validate`
+    audita um MIDI ja renderizado sem corpus de referencia); ver
+    `RENDER_TOOL.output_schema` para o bloco proprio de `render`.
     """
     return {
         "collision": _COLLISION_SCHEMA,
@@ -1591,10 +1641,16 @@ RENDER_DESCRIPTION = (
     "originais saem NOTA A NOTA IDENTICAS (nada declarado para edit fica "
     "byte-identico no arquivo de saida). Roda todos os validadores (colisao, "
     "harmonia, placement, artifice, persona) e devolve o relatorio LEGIVEL "
-    "POR MAQUINA — severidade por item — para o agente fechar o loop. Nunca "
-    "sobrescreve o MIDI de origem: se `output_path` colidir com `midi_path`, "
-    "erro. Mesmo plano + mesmo source + mesma seed produz arquivo byte-identico. "
-    "Use apos plan.validate estar limpo — nao gaste ciclo renderizando plano invalido."
+    "POR MAQUINA — severidade por item — para o agente fechar o loop. Passe "
+    "`reference_corpus` (paths para MIDI de referencia) para tambem rodar o "
+    "validador anti-copia (AC-16): janelas de eventos da saida sao comparadas "
+    "contra o corpus, invariante a transposicao e mudanca de andamento, e "
+    "qualquer casamento vira `anticopy_issues` com severidade `error`. Sem "
+    "`reference_corpus`, a checagem e pulada e `anticopy_issues` volta vazio "
+    "(retrocompativel). Nunca sobrescreve o MIDI de origem: se `output_path` "
+    "colidir com `midi_path`, erro. Mesmo plano + mesmo source + mesma seed "
+    "produz arquivo byte-identico. Use apos plan.validate estar limpo — nao "
+    "gaste ciclo renderizando plano invalido."
 )
 
 
@@ -1619,6 +1675,7 @@ def _render_impl(
 
     strict_persona = bool(payload.get("strict_persona", False))
     output_path = payload.get("output_path")
+    reference_corpus = _resolve_reference_corpus(payload)
 
     try:
         report = render_mod.render(
@@ -1627,6 +1684,7 @@ def _render_impl(
             source_path=str(src),
             strict_persona=strict_persona,
             plan_dir=_plan_dir_from_payload(payload),
+            reference_corpus=[str(p) for p in reference_corpus] or None,
         )
     except plan_mod.PlanValidationError as exc:
         raise ToolError(
@@ -1680,6 +1738,7 @@ def _render_impl(
         "placement_issues": [_placement_issue_to_dict(i) for i in report.placement_issues],
         "artifice_issues": [_artifice_issue_to_dict(i) for i in report.artifice_issues],
         "persona_issues": [_persona_issue_to_dict(i) for i in report.persona_issues],
+        "anticopy_issues": [_anticopy_issue_to_dict(i) for i in report.anticopy_issues],
         "edits": [
             {
                 "track": ed.track,
@@ -1748,6 +1807,10 @@ RENDER_TOOL = Tool(
             "output_path": {"type": ["string", "null"]},
             "seed": {"type": "integer", "minimum": 0},
             "strict_persona": {"type": "boolean"},
+            "reference_corpus": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
         },
         "required": ["midi_path"],
     },
@@ -1759,11 +1822,12 @@ RENDER_TOOL = Tool(
             "seed": {"type": "integer"},
             "elements": {"type": "array", "items": _ELEMENT_REPORT_SCHEMA},
             **_issues_schema_block(),
+            "anticopy_issues": {"type": "array", "items": _ANTICOPY_ISSUE_SCHEMA},
             "edits": {"type": "array", "items": _EDIT_REPORT_SCHEMA},
         },
         "required": [
             "output_path", "source_sha256", "seed", "elements",
-            *_ISSUES_REQUIRED, "edits",
+            *_ISSUES_REQUIRED, "anticopy_issues", "edits",
         ],
     },
     func=_render_impl,
@@ -2034,16 +2098,231 @@ PLUGINS_SCAN_TOOL = Tool(
 )
 
 
+# --- presets.scan -----------------------------------------------------------
+
+PRESETS_SCAN_DESCRIPTION = (
+    "Inventaria os presets/patches instalados no computador do usuario via "
+    "DESCOBERTA AUTOMATICA + sweep generico. Primeiro resolve ponteiros locais "
+    "de libraries (ex.: symlink `Spectrasonics/STEAM` para volume externo); "
+    "depois varre locais canonicos (macOS): `~/Library/Audio/Presets`, "
+    "`/Library/Audio/Presets`, `~/Music/Audio Music Apps/Plug-In Settings`, "
+    "`~/Library/Application Support/<Vendor>`, `~/Documents/<Vendor>`, "
+    "`/Users/Shared/<Vendor>`. Roda em qualquer Mac — nao depende de "
+    "hardcoding do filesystem do autor. Vendors dentro de Application Support / "
+    "Documents / Shared sao filtrados por whitelist (Native Instruments, "
+    "Spectrasonics, Toontrack, XLN Audio, Neural DSP, IK Multimedia, FabFilter, "
+    "Waves, iZotope, reFX, u-he, Xfer, Arturia, UVI, etc.). Extensoes de "
+    "preset sao whitelisted (aupreset/pst/exs/acp/fxp/fxb/vstpreset/nki/h2p/"
+    "serumpreset/vital/ffp/adkit/at4p/at5p/prt_a/prt_b/prt_c/nxp/...); sample "
+    "de audio (.wav/.aif/.mp3) e ignorado. O fluxo normal NAO pede ao usuario "
+    "para configurar paths nem variaveis de ambiente. `extra_roots` e os envs "
+    "legados existem apenas como escape hatch de diagnostico para o harness. "
+    "A resposta lista `searched_roots`, `discovered_roots` com proveniencia e "
+    "`unresolved_roots` (por exemplo, volume externo desmontado). Preset achado "
+    "sai com verified=true e e o "
+    "UNICO tipo de sugestao que pode ir para `instrument.preset` como nome "
+    "exato. Ausencia de preset real para o plugin desejado NUNCA autoriza "
+    "inventar um nome plausivel — sugira so a categoria do instrumento (ex.: "
+    "\"Synth Piano — escolha o preset na sua biblioteca\") com verified=false. "
+    "Libraries em DB binario proprietario (ex.: Toontrack Superior Drummer 3, "
+    "EZdrummer) aparecem em `opaque_libraries` com motivo — o harness deve "
+    "avisar o usuario que existem presets, mas jamais inventar nome a partir "
+    "delas. Nao modifica o sistema; nao acessa rede; so roda em sessao local "
+    "com acesso ao disco do usuario."
+)
+
+
+def _presets_scan_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _root(key: str) -> Path | None:
+        value = payload.get(key)
+        return Path(value).expanduser() if value else None
+
+    addictive_input = payload.get("addictive")
+    addictive = (
+        tuple(Path(p).expanduser() for p in addictive_input)
+        if addictive_input
+        else None
+    )
+    extra_input = payload.get("extra_roots") or []
+    extra_roots = tuple(Path(p).expanduser() for p in extra_input)
+    disable_defaults = bool(payload.get("disable_defaults", False))
+
+    roots = presets_mod.PresetRoots(
+        omnisphere=_root("omnisphere"),
+        logic=_root("logic"),
+        kontakt=_root("kontakt"),
+        serum=_root("serum"),
+        vital=_root("vital"),
+        addictive=addictive,
+        extra_roots=extra_roots,
+        disable_defaults=disable_defaults,
+    )
+    grouped, opaque = presets_mod.scan_all_with_opaque(roots)
+    searched_roots, discovered_roots, unresolved_roots = presets_mod.discover_roots(roots)
+
+    data = {
+        "supported_plugins": list(grouped.keys()),
+        "presets": [
+            {
+                "name": p.name,
+                "plugin": p.plugin,
+                "vendor": p.vendor,
+                "format": p.format,
+                "path": p.path,
+                "verified": p.verified,
+            }
+            for plugin_presets in grouped.values()
+            for p in plugin_presets
+        ],
+        "opaque_libraries": [
+            {
+                "plugin": op.plugin,
+                "vendor": op.vendor,
+                "root": op.root,
+                "reason": op.reason,
+            }
+            for op in opaque
+        ],
+        "searched_roots": [str(root) for root in searched_roots],
+        "discovered_roots": [
+            {
+                "path": item.path,
+                "source": item.source,
+                "method": item.method,
+            }
+            for item in discovered_roots
+        ],
+        "unresolved_roots": [
+            {
+                "source": item.source,
+                "target": item.target,
+                "reason": item.reason,
+            }
+            for item in unresolved_roots
+        ],
+    }
+    return data, []
+
+
+PRESETS_SCAN_TOOL = Tool(
+    name="presets.scan",
+    description=PRESETS_SCAN_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "omnisphere": {"type": ["string", "null"]},
+            "logic": {"type": ["string", "null"]},
+            "kontakt": {"type": ["string", "null"]},
+            "serum": {"type": ["string", "null"]},
+            "vital": {"type": ["string", "null"]},
+            "addictive": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+            "extra_roots": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "array", "items": {"type": "string"}},
+                ],
+            },
+            "disable_defaults": {"type": "boolean"},
+        },
+        "required": [],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "supported_plugins": {"type": "array", "items": {"type": "string"}},
+            "presets": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "plugin": {"type": "string"},
+                        "vendor": {"type": ["string", "null"]},
+                        "format": {"type": "string"},
+                        "path": {"type": ["string", "null"]},
+                        "verified": {"type": "boolean"},
+                    },
+                    "required": ["name", "plugin", "format", "path", "verified"],
+                },
+            },
+            "opaque_libraries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "plugin": {"type": "string"},
+                        "vendor": {"type": "string"},
+                        "root": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["plugin", "vendor", "root", "reason"],
+                },
+            },
+            "searched_roots": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "discovered_roots": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "source": {"type": "string"},
+                        "method": {"type": "string"},
+                    },
+                    "required": ["path", "source", "method"],
+                },
+            },
+            "unresolved_roots": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["source", "target", "reason"],
+                },
+            },
+        },
+        "required": [
+            "supported_plugins", "presets", "opaque_libraries",
+            "searched_roots", "discovered_roots", "unresolved_roots",
+        ],
+    },
+    func=_presets_scan_impl,
+)
+
+
 # --- techniques.list / techniques.describe -------------------------------
 
 TECHNIQUES_LIST_DESCRIPTION = (
     "Lista as tecnicas catalogadas no indice (derivado dos manuais em "
-    "knowledge/tecnicas). Use antes de sugerir tecnica no plano — ESTE E O "
-    "VOCABULARIO FECHADO, o que impede o modelo de inventar tecnica que "
-    "ninguem sabe executar. Filtros: `family` (drums, bass, keys, guitar) e "
-    "`tool` (superior_drummer, addictive_drums, logic_sampler, ...) — quando "
-    "`tool` esta presente, a saida inclui a receita para essa ferramenta e "
-    "esconde tecnicas que nao tem receita ali. Sem filtro, devolve tudo."
+    "knowledge/tecnicas) E indica o que o motor consegue executar hoje. Use "
+    "antes de sugerir tecnica no plano ou de perguntar ao usuario o que "
+    "autorizar — ESTE E O VOCABULARIO FECHADO. Cada entrada carrega: "
+    "`canonical`, `family`, `summary` musical seguro, `implemented` (True "
+    "quando ha aplicador real registrado em tools/techniques/engine.py, "
+    "False para tecnica apenas documentada como capacidade futura), `level` "
+    "(`humanize` ou `technique`; null quando nao implementada), "
+    "`tools_available` (ferramentas com receita no manual) e a lista de "
+    "`parameters` semanticos aceitos. Filtros: `family` (drums, bass, keys, "
+    "guitar), `tool` (superior_drummer, addictive_drums, logic_sampler, ...) "
+    "— quando `tool` esta presente, a saida inclui a `recipe` para essa "
+    "ferramenta e esconde tecnicas que nao tem receita ali — e "
+    "`implemented_only` (default False): quando True, esconde tecnicas "
+    "documentadas mas sem aplicador. A skill de brief usa "
+    "`implemented_only=True` porque so pode oferecer ao usuario o que o "
+    "motor consegue aplicar."
 )
 
 TECHNIQUES_DESCRIBE_DESCRIPTION = (
@@ -2057,13 +2336,34 @@ TECHNIQUES_DESCRIBE_DESCRIPTION = (
 )
 
 
-def _technique_summary_dict(t: techniques_mod.Technique) -> dict[str, Any]:
+def _engine_level_index() -> dict[str, str]:
+    """Mapa canonical -> nivel do motor, derivado do registro real.
+
+    Nunca lista paralela hardcoded. `registered_techniques()` e a UNICA fonte
+    de verdade do que o motor executa; qualquer tecnica ausente aqui e
+    documentada-mas-nao-implementada por definicao (`implemented=False`,
+    `level=None`).
+    """
+
+    return {
+        technique.canonical: technique.level
+        for technique in techniques_mod.registered_techniques()
+    }
+
+
+def _technique_summary_dict(
+    t: techniques_mod.Technique,
+    engine_levels: dict[str, str],
+) -> dict[str, Any]:
+    level = engine_levels.get(t.canonical)
     return {
         "canonical": t.canonical,
         "name": t.name,
         "family": t.family,
         "summary": t.summary,
         "verified": t.verified,
+        "implemented": t.canonical in engine_levels,
+        "level": level,
         "parameters": [p.to_dict() for p in t.parameters],
         "tools_available": sorted(t.tools.keys()),
     }
@@ -2082,6 +2382,8 @@ def _techniques_list_impl(
 
     family = payload.get("family")
     tool_target = payload.get("tool")
+    implemented_only = bool(payload.get("implemented_only", False))
+    engine_levels = _engine_level_index()
 
     techniques = idx.by_family(family)
     if tool_target:
@@ -2089,10 +2391,14 @@ def _techniques_list_impl(
             t for t in techniques
             if tool_target in t.tools or "generic" in t.tools
         )
+    if implemented_only:
+        techniques = tuple(
+            t for t in techniques if t.canonical in engine_levels
+        )
 
     out = []
     for t in techniques:
-        entry = _technique_summary_dict(t)
+        entry = _technique_summary_dict(t, engine_levels)
         if tool_target:
             entry["recipe"] = t.tools.get(tool_target) or t.tools.get("generic", {})
         out.append(entry)
@@ -2102,7 +2408,8 @@ def _techniques_list_impl(
         warnings.append({
             "code": "W_TECHNIQUES_EMPTY",
             "message": (
-                f"nenhuma tecnica retornada para family={family!r} tool={tool_target!r}. "
+                f"nenhuma tecnica retornada para family={family!r} "
+                f"tool={tool_target!r} implemented_only={implemented_only!r}. "
                 f"Familias disponiveis: {sorted({t.family for t in idx.techniques})!r}"
             ),
             "path": "",
@@ -2234,12 +2541,15 @@ _TECHNIQUE_SUMMARY_SCHEMA = {
         "family": {"type": "string"},
         "summary": {"type": "string"},
         "verified": {"type": "boolean"},
+        "implemented": {"type": "boolean"},
+        "level": {"type": ["string", "null"]},
         "parameters": {"type": "array", "items": _TECHNIQUE_PARAMETER_SCHEMA},
         "tools_available": {"type": "array", "items": {"type": "string"}},
         "recipe": {"type": "object", "additionalProperties": True},
     },
     "required": [
         "canonical", "name", "family", "summary", "verified",
+        "implemented", "level",
         "parameters", "tools_available",
     ],
 }
@@ -2252,6 +2562,7 @@ TECHNIQUES_LIST_TOOL = Tool(
         "properties": {
             "family": {"type": ["string", "null"]},
             "tool": {"type": ["string", "null"]},
+            "implemented_only": {"type": "boolean"},
         },
         "required": [],
     },
@@ -2310,7 +2621,7 @@ def bootstrap() -> None:
     from .registry import get as _get
     for tool in (
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
-        RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL,
+        RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL, PRESETS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
         BRIEF_VALIDATE_TOOL,
     ):

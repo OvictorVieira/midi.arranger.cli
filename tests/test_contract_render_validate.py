@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+import pretty_midi
 import pytest
 
 from tools import contract as _contract  # noqa: F401
@@ -34,6 +35,33 @@ def _synthetic_fixture() -> str:
     `tests/conftest.py::_build_synthetic_contract_midi`."""
     from tests.conftest import _build_synthetic_contract_midi
     return _build_synthetic_contract_midi()
+
+
+def _bass_plan(midi: str) -> dict:
+    """Plano minimo com 1 elemento `bass` gerado do zero (issue #20). Ao
+    contrario do `pad` de `_pad_plan` (sustain_through, 1 evento por
+    secao), o baixo emite uma nota por batida/ancora de kick — material
+    suficiente para exercitar a janela de N=6 eventos do anti-copia
+    (AC-16, `tools/validators/anticopy.py`)."""
+    env = call("plan.skeleton", {"midi_path": midi, "seed": 7})
+    plan = env["data"]["plan"]
+    plan["elements"] = [{
+        "id": "bass_test",
+        "role": "bass",
+        "sections": [plan["sections"][0]["label"]],
+        "register": [28, 52],
+        "layers": 1,
+        "sync_role": "kick_support",
+        "articulation": "tight",
+        "harmony": "follow_chords",
+        "pattern": None, "degrees": None, "dynamics": None,
+        "instrument": {
+            "plugin": "Trilian", "preset": "Fingered Bass", "verified": True,
+        },
+        "rationale": "Baixo de teste para o anti-copia.",
+        "is_protagonist": False,
+    }]
+    return plan
 
 
 def _pad_plan(midi: str) -> dict:
@@ -69,7 +97,7 @@ def _sha256(path: str) -> str:
 
 # --- descricoes -----------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["render", "validate", "plugins.scan"])
+@pytest.mark.parametrize("name", ["render", "validate", "plugins.scan", "presets.scan"])
 def test_render_family_has_prompt_description(name: str):
     tool = get(name)
     assert tool is not None
@@ -191,6 +219,102 @@ def test_render_unknown_field_returns_ok_false():
     assert env["error"]["code"] == "E_INPUT_SCHEMA"
 
 
+# --- anti-copia (AC-16) via reference_corpus -------------------------------
+#
+# Achado de review da PR #100: `tools/validators/anticopy.py` foi ligado a
+# `tools.render.render()` (parametro `reference_corpus`, campo
+# `RenderReport.anticopy_issues`) mas a fachada `tools/contract.py` nunca
+# repassava isso — ninguem que usa a tool `render` de verdade (CLI/skill/
+# harness) via `tools.contract` acionava ou via a checagem. Os testes abaixo
+# provam o fluxo PONTA A PONTA passando por `tools.registry.call("render",
+# ...)`, nao chamando `tools.render.render()` direto.
+
+def test_render_without_reference_corpus_skips_anticopy_check(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _bass_plan(midi)
+    out = tmp_path / "out.mid"
+    env = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out),
+    })
+    assert env["ok"] is True, env.get("error")
+    assert env["data"]["anticopy_issues"] == []
+
+
+def test_render_reference_corpus_flags_deliberate_copy(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _bass_plan(midi)
+
+    # 1) Renderiza uma vez sem corpus para conhecer a linha de baixo REAL que
+    #    o motor gera (determinismo: mesmo plano/seed/source sempre repete).
+    out1 = tmp_path / "out1.mid"
+    env1 = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out1),
+    })
+    assert env1["ok"] is True, env1.get("error")
+
+    bass_track = next(
+        inst for inst in pretty_midi.PrettyMIDI(str(out1)).instruments
+        if inst.name.startswith("bass_test")
+    )
+    window = sorted(bass_track.notes, key=lambda n: n.start)[:6]
+    assert len(window) == 6, "fixture nao gerou eventos suficientes para N=6"
+
+    # 2) Constroi um "corpus de referencia" com uma copia DELIBERADA dessa
+    #    janela, transposta uma quinta acima — AC-16 e invariante a
+    #    transposicao (ver docstring de tools/validators/anticopy.py), entao
+    #    isso ainda tem que ser flagueado como copia.
+    TRANSPOSITION = 7
+    corpus_pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    corpus_track = pretty_midi.Instrument(program=32, name="Stolen Riff")
+    for note in window:
+        corpus_track.notes.append(pretty_midi.Note(
+            velocity=int(note.velocity),
+            pitch=int(note.pitch) + TRANSPOSITION,
+            start=float(note.start),
+            end=float(note.end),
+        ))
+    corpus_pm.instruments.append(corpus_track)
+    corpus_path = tmp_path / "reference.mid"
+    corpus_pm.write(str(corpus_path))
+
+    # 3) Rerenderiza o MESMO plano com o corpus declarado.
+    out2 = tmp_path / "out2.mid"
+    env2 = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out2),
+        "reference_corpus": [str(corpus_path)],
+    })
+    assert env2["ok"] is True, env2.get("error")
+
+    issues = env2["data"]["anticopy_issues"]
+    assert issues, "corpus com copia deliberada (transposta) deveria acionar anticopy_issues"
+    issue = issues[0]
+    assert issue["validator"] == "anticopy"
+    assert issue["severity"] == "error"
+    assert issue["element_id"] == "bass_test"
+    assert issue["source"] == str(corpus_path)
+    assert issue["source_track"] == "Stolen Riff"
+    assert isinstance(issue["bar"], int)
+    assert isinstance(issue["n"], int)
+    assert issue["message"]
+
+    # Saida ainda e escrita (anti-copia e `error` mas nao aborta o render —
+    # o CLI decide o exit code a partir do relatorio).
+    assert out2.exists()
+
+
+def test_render_reference_corpus_missing_file_returns_error(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _bass_plan(midi)
+    env = call("render", {
+        "midi_path": midi, "plan": plan,
+        "output_path": str(tmp_path / "out.mid"),
+        "reference_corpus": ["/no/such/reference.mid"],
+    })
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_MIDI_NOT_FOUND"
+    assert env["error"]["path"] == "reference_corpus"
+
+
 # --- validate -------------------------------------------------------------
 
 def test_validate_runs_on_rendered_file_without_rerendering(tmp_path: Path):
@@ -281,3 +405,104 @@ def test_plugins_scan_no_args_is_valid():
     assert env["ok"] is True
     assert env["data"]["from_cache"] is False
     assert isinstance(env["data"]["plugins"], list)
+
+
+# --- presets.scan ----------------------------------------------------------
+
+def test_presets_scan_no_args_is_valid():
+    env = call("presets.scan", {})
+    assert env["ok"] is True
+    assert isinstance(env["data"]["presets"], list)
+    assert "Nexus" in env["data"]["supported_plugins"]
+
+
+def test_presets_scan_finds_real_files_on_disk_as_verified(tmp_path: Path):
+    omni = tmp_path / "omnisphere"
+    (omni / "Pads").mkdir(parents=True)
+    (omni / "Pads" / "Desert Wind.prt_a").write_text("binary", encoding="utf-8")
+    serum = tmp_path / "serum"
+    serum.mkdir()
+
+    env = call("presets.scan", {
+        "omnisphere": str(omni), "serum": str(serum),
+    })
+    assert env["ok"] is True
+    presets_by_name = {p["name"]: p for p in env["data"]["presets"]}
+    assert presets_by_name["Desert Wind"]["plugin"] == "Omnisphere"
+    assert presets_by_name["Desert Wind"]["verified"] is True
+
+
+def test_presets_scan_missing_dirs_return_no_presets_without_error(tmp_path: Path):
+    # `disable_defaults=True` desliga o sweep dos `DEFAULT_ROOTS` (que varrem
+    # o Mac real). So processa os overrides passados; dirs inexistentes viram
+    # lista vazia, sem erro.
+    env = call("presets.scan", {
+        "omnisphere": str(tmp_path / "ghost"),
+        "kontakt": str(tmp_path / "ghost2"),
+        "disable_defaults": True,
+    })
+    assert env["ok"] is True
+    assert env["data"]["presets"] == []
+
+
+def test_presets_scan_reports_opaque_libraries(tmp_path: Path):
+    # Toontrack Superior3 aparece em `opaque_libraries` com motivo, nunca em
+    # `presets` — DB binario proprietario nao vira nome de preset.
+    root = tmp_path / "app-support"
+    (root / "Toontrack" / "Superior3").mkdir(parents=True)
+    (root / "Toontrack" / "Superior3" / "SoundDB").write_bytes(b"\x00\x01")
+    env = call("presets.scan", {
+        "extra_roots": [str(root)],
+        "disable_defaults": True,
+    })
+    assert env["ok"] is True
+    assert env["data"]["presets"] == []
+    opaque = env["data"]["opaque_libraries"]
+    assert any(op["plugin"] == "Superior Drummer 3" for op in opaque)
+
+
+def test_presets_scan_sweeps_extra_roots(tmp_path: Path):
+    # Sweep generico acha .fxp do Nexus, .ffp do FabFilter em roots customizados.
+    root = tmp_path / "presets"
+    (root / "reFX" / "NEXUS library" / "Presets" / "Pack").mkdir(parents=True)
+    (root / "reFX" / "NEXUS library" / "Presets" / "Pack" / "Wack.fxp").write_bytes(b"\x00")
+    (root / "FabFilter" / "Pro-Q 3").mkdir(parents=True)
+    (root / "FabFilter" / "Pro-Q 3" / "Boost.ffp").write_bytes(b"\x00")
+    env = call("presets.scan", {
+        "extra_roots": [str(root)],
+        "disable_defaults": True,
+    })
+    assert env["ok"] is True
+    by_plugin: dict[str, list[str]] = {}
+    for p in env["data"]["presets"]:
+        by_plugin.setdefault(p["plugin"], []).append(p["name"])
+    assert by_plugin["Nexus"] == ["Wack"]
+    assert by_plugin["Pro-Q 3"] == ["Boost"]
+
+
+def test_presets_scan_reports_automatically_discovered_library_root(tmp_path: Path):
+    app_support = tmp_path / "Library" / "Application Support"
+    steam = tmp_path / "External" / "STEAM"
+    patch = steam / "Omnisphere" / "Settings Library" / "Patches" / "Air.prt_a"
+    patch.parent.mkdir(parents=True)
+    patch.write_bytes(b"preset")
+    pointer = app_support / "Spectrasonics" / "STEAM"
+    pointer.parent.mkdir(parents=True)
+    pointer.symlink_to(steam, target_is_directory=True)
+
+    env = call("presets.scan", {
+        "extra_roots": [str(app_support)],
+        "disable_defaults": True,
+    })
+
+    assert env["ok"] is True
+    assert any(
+        p["plugin"] == "Omnisphere" and p["name"] == "Air"
+        for p in env["data"]["presets"]
+    )
+    assert env["data"]["discovered_roots"] == [{
+        "path": str(steam),
+        "source": str(pointer),
+        "method": "symlink",
+    }]
+    assert env["data"]["unresolved_roots"] == []

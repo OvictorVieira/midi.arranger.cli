@@ -119,6 +119,32 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   aplicadas e, quando declarada, `suggested_plugin`/`suggested_preset`/`suggested_verified`. O
   formato é `midi-arranger v1|chave=valor|...`, ASCII puro, com `|` proibido nos valores. Track de
   origem não declarada em `plan.edits` NÃO recebe carimbo — sai byte-idêntica.
+- `instrument.preset`/`suggested_instrument.preset` nunca é nome de preset inventado, mesmo marcado
+  `verified: false` — mesma regra que já rejeitou `_identity_apply` e a atribuição falsa a
+  `cmuse.org`: chute marcado como chute continua sendo chute apresentado como fato. `presets.scan`
+  (`tools/presets.py`, só roda em sessão local com acesso ao filesystem do usuário) faz **sweep
+  genérico** de locais canônicos macOS (`~/Library/Audio/Presets`, `/Library/Audio/Presets`,
+  `~/Music/Audio Music Apps/Plug-In Settings`, `~/Library/Application Support/<Vendor>`,
+  `~/Documents/<Vendor>`, `/Users/Shared/<Vendor>`), com whitelist de vendors conhecidos e
+  whitelist de extensões de preset — funciona em qualquer Mac, não hardcoded no filesystem do
+  autor. Antes do sweep, resolve automaticamente ponteiros locais de library (por exemplo, symlink
+  `~/Library/Application Support/Spectrasonics/STEAM` para volume externo) e relata
+  `searched_roots`, `discovered_roots` e `unresolved_roots`. O fluxo normal nunca pede que o usuário
+  configure path/env; `extra_roots`, `MIDI_ARRANGER_PRESET_ROOTS` e `SPECTRASONICS_STEAM_ROOT` são
+  apenas escape hatches de diagnóstico/compatibilidade. O harness compara `plugins.scan` com o
+  inventário, inspeciona configs/symlinks/aliases locais de forma read-only quando faltar library e
+  repete `presets.scan` com `extra_roots`; só pede ação ao usuário quando o recurso está realmente
+  inacessível (volume desmontado/permissão). Preset achado lá é o único que pode virar nome exato
+  com `verified: true`. Sem preset
+  real, a sugestão cai para a categoria do instrumento (ex.: "Synth Piano — escolha o preset na
+  sua biblioteca"), nunca um nome plausível inventado. Libraries em DB binário proprietário
+  (Toontrack Superior3, EZdrummer, EZbass) aparecem em `opaque_libraries` com motivo — o harness
+  deve avisar que existe conteúdo, mas jamais inventar nome de preset a partir delas. `._*`
+  (AppleDouble) e diretórios de sample/cache/log são ignorados na varredura.
+  DBs da Spectrasonics não entram nessa categoria opaca: começam com manifesto `FileSystem` legível;
+  leia apenas esse manifesto para obter nomes reais e pare antes do payload concatenado. Ao varrer
+  STEAM, limite a descida a `<Produto>/Settings Library/{Patches,Multis}` — nunca atravesse
+  `Soundsources`, samples ou wavetables.
 - NUNCA acrescentar exclusão a `tests/test_palette_integration.py::test_all_target_roles_are_covered`
   para o teste passar. A única exclusão permitida é `choir` (compartilha gerador com strings). Role
   que não gera de verdade sai de `_ROLE_RENDERERS`, não vira exceção do teste.

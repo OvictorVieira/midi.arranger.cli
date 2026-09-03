@@ -364,9 +364,11 @@ vai virar brief antes de o brief virar arquivo.**
 `style.<familia>.techniques[].name` **so vale se existir no manual local**
 em `knowledge/tecnicas/`. Use duas tools:
 
-- `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
-  techniques.list --input -` para ver o vocabulario disponivel para a
-  familia.
+- `echo '{"family": "<familia>", "implemented_only": true}' | python3 -m
+  tools.cli tool techniques.list --input -` para ver o vocabulario que o
+  motor consegue executar hoje — a lista que voce pode oferecer ao usuario
+  para autorizar. Tecnica com `implemented=false` e capacidade futura e
+  `brief.validate` recusa em `authorized_techniques`.
 - `echo '{"name": "<tecnica>"}' | python3 -m tools.cli tool
   techniques.describe --input -` para ler a receita completa da tecnica — o que e
   musicalmente, como se traduz em parametro MIDI (nota, keyswitch, CC,
@@ -388,9 +390,9 @@ as familias em `families_in_scope`**; familia fora do escopo nao recebe
 apresentacao de tecnicas nem `authorized_techniques`:
 
 1. Para cada familia com estilo/referencia declarado, rode
-   `echo '{"family": "<familia>"}' | python3 -m tools.cli tool
-   techniques.list --input -` e, para as tecnicas que a pesquisa sugeriu, rode
-   `techniques.describe` para ter o resumo em maos.
+   `echo '{"family": "<familia>", "implemented_only": true}' | python3 -m
+   tools.cli tool techniques.list --input -` e, para as tecnicas que a
+   pesquisa sugeriu, rode `techniques.describe` para ter o resumo em maos.
 2. **Apresente ao usuario, familia por familia**, a lista das tecnicas
    disponiveis com uma linha de resumo cada. Destaque as que a pesquisa
    sugeriu (em `suggested_techniques`) com a razao curta da sugestao.
@@ -427,6 +429,18 @@ sobre o musico X vive **so no `arrangement-brief.json` desta musica**. Nao
 grave em `knowledge/`. Nao crie arquivo em `personas/`. Nao proponha
 "vou salvar isso para reusar depois". Cada musica pesquisa de novo — o
 perfil aqui e servico do arranjo desta faixa, nao base do proximo.
+
+## Descoberta de plugins e libraries
+
+A escolha de plugin/preset acontece na fase `run`, nao entra no brief. Nao
+pergunte ao usuario onde ficam STEAM, Kontakt libraries, bancos do Nexus ou
+qualquer outra pasta de preset, e nao instrua a configurar env var. Os drivers
+do `run` chamam `plugins.scan` + `presets.scan`; a tool resolve roots canonicos
+e ponteiros locais automaticamente. Se um plugin instalado ficar sem library,
+o agente do `run` inspeciona configs, symlinks e aliases locais de forma
+read-only e repete a tool com `extra_roots`. Intervencao do usuario so cabe
+quando o destino existe como referencia mas esta inacessivel, como volume
+externo desmontado ou permissao negada.
 
 ## Modo rapido
 

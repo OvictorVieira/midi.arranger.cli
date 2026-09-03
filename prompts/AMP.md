@@ -142,6 +142,7 @@ Tools disponiveis:
   a decisao musical e sua.
 - `plan.validate`: use sempre antes de `render`. Nao pule validacao para economizar iteracao.
 - `plugins.scan`: use antes de sugerir plugin ou preset. Nao use para justificar decisao musical.
+- `presets.scan`: use JUNTO com `plugins.scan` antes de sugerir preset. Rode primeiro sem overrides: a tool descobre roots canonicos e ponteiros locais de libraries automaticamente. Compare plugins instalados com presets e `opaque_libraries`; para plugin instalado sem resultado, leia `searched_roots`, `discovered_roots` e `unresolved_roots`, inspecione de forma read-only symlinks/aliases e configuracoes locais do plugin e repita com os caminhos encontrados em `extra_roots`. Nao peca ao usuario para definir env var nem path; so solicite acao quando a propria maquina bloquear acesso (volume desmontado/permissao). Preset achado no disco e o unico que pode virar nome exato (`verified: true`); sem preset real, sugira so a categoria do instrumento, nunca um nome inventado.
 - `render`: use depois de plano valido para gerar o MIDI e obter o relatorio dos validadores. Nao
   use se o `output_path` apontar para o MIDI de origem.
 - `techniques.describe`: use antes de escrever a receita de execucao de uma tecnica no plano. Nao
