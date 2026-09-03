@@ -1908,7 +1908,23 @@ def render(
     plan_dir = resolved_plan_dir
     _reject_unauthorized_style_techniques(plan, plan_dir)
     _reject_excluded_family_elements(plan, plan_dir)
-    _reject_missing_brief_ref_with_excluded_families(plan, plan_dir)
+    # Achado do Codex na PR #105, terceira rodada: a barreira nova de
+    # brief-nao-referenciado nao inspeciona nenhum campo do plano (so
+    # `plan.brief_ref`, `plan_dir` e o arquivo de brief), entao nao tinha
+    # o mesmo risco de TypeError das outras duas barreiras acima — mas
+    # ainda assim disparava RenderError incondicionalmente, mesmo quando
+    # o PROPRIO plano e invalido por outro motivo (ex.: `Element.role`
+    # nao-string) e deveria falhar como `PlanValidationError` primeiro.
+    # Confirma a validade estrutural aqui (chamada extra e barata —
+    # `validate_plan` e read-only) antes de rodar a barreira nova;
+    # plano invalido cai direto na `validate_plan(plan, plan_dir)` de
+    # baixo, que levanta o `PlanValidationError` de verdade.
+    try:
+        validate_plan(plan, plan_dir)
+    except PlanValidationError:
+        pass
+    else:
+        _reject_missing_brief_ref_with_excluded_families(plan, plan_dir)
     validate_plan(plan, plan_dir)
     plan = normalize_style_defaults(plan)
 

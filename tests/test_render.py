@@ -19,6 +19,7 @@ from tools.plan import (
     FamilyStyle,
     PlanEdit,
     PlanSection,
+    PlanValidationError,
     SourceMidi,
     StyleTechnique,
     dump,
@@ -480,6 +481,31 @@ def test_render_only_warns_when_conventional_brief_excluded_families_is_empty(
     assert out.exists()
     warning = next(w for w in report.warnings if "W_BRIEF_NOT_REFERENCED" in w)
     assert "arrangement-brief.json" in warning
+
+
+def test_render_reports_plan_validation_error_before_missing_brief_ref_barrier(
+    tmp_path,
+):
+    """Codex P2 (terceira rodada, PR #105): a barreira nova de
+    brief-nao-referenciado nao pode disparar RenderError incondicionalmente
+    quando o PROPRIO plano ja e invalido por outro motivo — plano com
+    `Element.role` malformado (nao-string) tem que continuar saindo como
+    `PlanValidationError`, mesmo quando o brief convencional tambem declara
+    `excluded_families` nao-vazio e `brief_ref` esta ausente."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    plan.elements[0].role = ["bass"]  # type: ignore[assignment]
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}, "excluded_families": ["guitar"]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    with pytest.raises(PlanValidationError):
+        render(plan, out, plan_dir=tmp_path)
+
+    assert not out.exists()
 
 
 def test_render_applies_style_techniques_to_generated_tracks(
