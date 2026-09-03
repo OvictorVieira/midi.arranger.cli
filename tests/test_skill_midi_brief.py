@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tools import brief_schema as _brief_schema
 from tools import contract as _contract  # noqa: F401  # registra as tools
 from tools.registry import get as get_tool
 
@@ -260,3 +261,60 @@ def test_body_does_not_leak_musical_content_example():
         f"SKILL.md tem {len(note_names)} nomes de nota — parece conteudo musical: "
         f"{note_names[:6]}"
     )
+
+
+def test_session_intent_vocabulary_matches_brief_schema():
+    """Issue #97/#99 (esta skill) foi escrita em paralelo com a issue
+    #96/#98, que define o schema real de `session` em
+    `tools/brief_schema.py`. Sem esta checagem, o vocabulario que a
+    entrevista ensina o agente a usar podia divergir silenciosamente do
+    vocabulario que `brief_schema.py` de fato aceita — cada lado citando
+    os mesmos cinco nomes por coincidencia, nao por contrato."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    intent_re = re.compile(r"`(edit|create|layer|transition|mixed)`")
+    cited_intents = set(intent_re.findall(body))
+    assert cited_intents == set(_brief_schema.SESSION_INTENTS), (
+        f"intent citado na SKILL.md ({sorted(cited_intents)}) diverge do "
+        "vocabulario real em brief_schema.SESSION_INTENTS "
+        f"({sorted(_brief_schema.SESSION_INTENTS)})"
+    )
+
+
+def test_session_families_vocabulary_matches_brief_schema():
+    """Mesma garantia da checagem acima, para `families_in_scope`: os
+    nomes de familia citados entre crases na pergunta 0(b) tem que ser
+    exatamente `brief_schema.STYLE_FAMILIES` — nem a mais (familia que o
+    schema recusa), nem a menos (familia que o schema aceita e a skill
+    nunca oferece)."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    families_re = re.compile(r"`(bass|drums|guitar|keys)`")
+    cited_families = set(families_re.findall(body))
+    assert cited_families == set(_brief_schema.STYLE_FAMILIES), (
+        f"familias citadas na SKILL.md ({sorted(cited_families)}) divergem "
+        "do vocabulario real em brief_schema.STYLE_FAMILIES "
+        f"({sorted(_brief_schema.STYLE_FAMILIES)})"
+    )
+
+
+def test_session_created_at_command_matches_brief_schema_pattern():
+    """O comando `date -u` que a SKILL.md manda rodar para `created_at`
+    precisa produzir uma string que bate com o padrao ISO-8601 UTC que
+    `tools/brief_schema.py` valida (`_SESSION_CREATED_AT_PATTERN`)."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    strftime_formats = re.findall(r"date -u \+([^\s`)]+)", body)
+    assert strftime_formats, "SKILL.md nao cita o comando 'date -u +...'"
+
+    from datetime import UTC, datetime
+
+    for fmt in strftime_formats:
+        sample = datetime.now(UTC).strftime(fmt)
+        assert _brief_schema._SESSION_CREATED_AT_RE.match(sample), (
+            f"'date -u +{fmt}' produz {sample!r}, que nao bate com o "
+            "padrao ISO-8601 UTC validado em brief_schema.py"
+        )
