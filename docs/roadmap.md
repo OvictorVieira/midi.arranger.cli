@@ -50,7 +50,7 @@ A fundação já separa o harness não determinístico das tools determinística
 Capacidades presentes na `main`:
 
 - analyze, brief.validate, plan.skeleton, plan.validate, render, validate,
-  techniques.list, techniques.describe e plugins.scan;
+  techniques.list, techniques.describe, plugins.scan e presets.scan;
 - 18 técnicas executáveis: 8 de bateria, 6 de baixo e 4 de teclas;
 - 15 roles renderizáveis, incluindo criação de bateria e baixo, elementos harmônicos e parte do
   eletrônico rítmico;

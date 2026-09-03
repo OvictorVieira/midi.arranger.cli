@@ -422,6 +422,45 @@ original, **não** têm bloco de técnica próprio em `knowledge/tecnicas/tecnic
 (só aparecem discutidos em prosa na §7.4). São pesquisa futura, não bug desta
 rodada — inventar bloco de técnica novo em cima deles é escopo novo.
 
+### Preset real em vez de nome inventado
+
+`plan.validate` exige `instrument.plugin`/`instrument.preset` não vazios (`tools/plan.py`), mas não
+exige que o preset exista de verdade — o valor é texto livre carimbado na track (§ abaixo). Isso
+abre espaço para o harness inventar um nome plausível e marcar `verified: false`: tecnicamente
+honesto, mas inútil na prática — o usuário procura o preset na própria biblioteca e não acha nada
+com aquele nome.
+
+A regra é a mesma que já rejeitou `_identity_apply` e a atribuição falsa a `cmuse.org`: **nunca
+apresentar chute como fato, mesmo marcado como chute**. Concretamente:
+
+- `presets.scan` (`tools/presets.py`) primeiro descobre automaticamente roots de libraries a partir
+  dos locais canônicos e de ponteiros locais (por exemplo, o symlink `Spectrasonics/STEAM` deixado
+  pelo instalador para uma library em volume externo), depois varre os presets reais. A resposta
+  expõe `searched_roots`, `discovered_roots` com proveniência e `unresolved_roots` para volume
+  desmontado/permissão. Hoje só macOS; caminhos Windows ficam para depois. Só roda numa sessão local
+  com acesso ao filesystem do usuário, nunca em sessão remota/sandbox.
+- O usuário não configura path nem variável de ambiente no fluxo normal. Depois de rodar
+  `plugins.scan` e `presets.scan` sem overrides, o agente compara os inventários. Plugin instalado
+  sem preset encontrado aciona diagnóstico read-only: o agente inspeciona configs, symlinks e aliases
+  locais e repete `presets.scan` passando o root descoberto em `extra_roots`. Só pede intervenção ao
+  usuário quando a máquina comprova que o destino está inacessível. Overrides/envs são escape hatch
+  de diagnóstico e retrocompatibilidade, não requisito de instalação.
+- Na Spectrasonics, os `.db` de factory começam com um manifesto `FileSystem` que lista nomes reais
+  e offsets antes do payload concatenado. A tool lê somente esse manifesto e para em
+  `</FileSystem>`; isso permite verificar nomes de Omnisphere/Trilian/Keyscape sem interpretar o
+  payload. A busca na STEAM fica restrita a `<Produto>/Settings Library/{Patches,Multis}`, nunca
+  atravessa `Soundsources`, samples ou wavetables. Isso é diferente das DBs Toontrack realmente
+  opacas, que continuam aparecendo somente em `opaque_libraries`.
+- Preset encontrado no disco é o **único** tipo de sugestão que pode virar nome exato em
+  `instrument.preset`, com `verified: true` de verdade.
+- Sem preset real para o plugin desejado (base binária fechada, library realmente ausente ou
+  inacessível), a sugestão cai para a
+  **categoria** do instrumento (ex.: "Synth Piano — escolha o preset na sua biblioteca"), nunca um
+  nome de preset inventado — mesmo com `verified: false`.
+- `plugins.scan` continua respondendo só pelo inventário de plugins (formato, fabricante, papel
+  sugerido); `presets.scan` é a tool separada para o inventário de presets. Use as duas juntas antes
+  de sugerir instrumento.
+
 ### Carimbo de plugin/preset em toda track tocada pelo arranjador
 
 Toda track de saída que o arranjador criou ou editou carrega, além do nome
@@ -534,7 +573,8 @@ saber mas não invalida. Densidade estranha é aviso. Nota fora do acorde é err
 | `render` | Plano + MIDI → MIDI final, com validadores e relatório |
 | `validate` | Roda validadores sobre um MIDI já renderizado |
 | `learn` | Mede um corpus e devolve um perfil de estilo |
-| `plugins.scan` | Inventário de plugins e presets instalados |
+| `plugins.scan` | Inventário de plugins AU/VST/VST3 instalados, com papel sugerido |
+| `presets.scan` | Inventário de presets/patches reais em disco, por plugin suportado |
 
 ---
 
