@@ -342,7 +342,7 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
     {"name": "upstroke_atraso_ms", "range": [0, 8], "source": "CONVENCAO — leve atraso da mao no golpe para cima; janela escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
-    "generic": {"note": "sem keyswitch: diferencie so por velocity e timing"},
+    "generic": {"note": "sem keyswitch: diferencie so por velocity — upstroke_atraso_ms move so o keyswitch no MODO BASS; sem keyswitch reservado, aplicar o atraso na propria nota mudaria start_tick, que e posicao estrutural intocavel no nivel technique (sem excecao registrada para bass.attack_style)"},
     "modo_bass": {
       "keyswitch_dedo": 13, "keyswitch_palheta": 15, "keyswitch_slap": 18,
       "keyswitch_forcar_primeiro": 1, "keyswitch_forcar_segundo": 3,

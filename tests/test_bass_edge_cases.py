@@ -105,8 +105,22 @@ def test_attack_style_no_op_when_style_is_unknown():
     assert list(result.tracks[0]) == list(mid.tracks[0])
 
 
-def test_attack_style_no_op_when_recipe_has_no_keyswitch():
-    """Receita generic (sem `keyswitch_*`) tambem degenera para no-op."""
+def test_attack_style_fingered_no_op_when_recipe_has_no_keyswitch():
+    """dedo/fingered sem `keyswitch_*` na receita continua no-op (issue #57:
+    sem faixa sourced de index/middle picking, generic nao inventa numero)."""
+
+    mid = _bass_line([(0, 240, 40, 90)], ticks_per_beat=480)
+    result = apply_technique(
+        "bass.attack_style", mid, seed=1,
+        parameters={"style": "dedo"},
+        tool="generic",
+    )
+    assert list(result.tracks[0]) == list(mid.tracks[0])
+
+
+def test_attack_style_picked_differentiates_velocity_when_recipe_has_no_keyswitch():
+    """Receita generic (sem `keyswitch_*`) ainda diferencia picked por delta
+    relativo de velocity — issue #57, fallback generic sourced no manual."""
 
     mid = _bass_line([(0, 240, 40, 90)], ticks_per_beat=480)
     result = apply_technique(
@@ -114,7 +128,11 @@ def test_attack_style_no_op_when_recipe_has_no_keyswitch():
         parameters={"style": "picked"},
         tool="generic",
     )
-    assert list(result.tracks[0]) == list(mid.tracks[0])
+    original_on = mid.tracks[0][1]
+    result_on = result.tracks[0][1]
+    assert result_on.note == original_on.note
+    assert result_on.time == original_on.time
+    assert result_on.velocity != original_on.velocity
 
 
 def test_hammer_pull_skips_pair_when_gap_is_too_wide():
