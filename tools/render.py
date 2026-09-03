@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -130,6 +130,8 @@ from .validators.persona import PersonaIssue, validate_persona
 from .validators.persona import format_issues as format_persona_issues
 from .validators.placement import PlacementIssue, validate_placement
 from .validators.placement import format_issues as format_placement_issues
+from .validators.transitions import TransitionIssue, validate_transitions
+from .validators.transitions import format_issues as format_transition_issues
 
 # --- constantes -------------------------------------------------------------
 
@@ -190,6 +192,87 @@ STAMP_PREFIX = "midi-arranger v1"
 
 class RenderError(Exception):
     """Falha de render que nao pode ser silenciada."""
+
+
+# --- filtro --only (issue #24, parte 2) -------------------------------------
+
+ONLY_CATEGORIES: tuple[str, ...] = ("transitions", "harmonic", "rhythmic", "electronic")
+"""Vocabulario FECHADO do filtro `only` de `render()`. `transitions` e
+especial: seleciona os elementos citados em `plan.transitions[].elements`
+("os elementos de fronteira"), independente de `role`. As outras tres
+espelham os nomes dos modulos de `tools.palette` (harmonic/rhythmic/
+electronic) — a mesma familia que a paleta ja usa para organizar os
+roles, reaproveitada aqui em vez de inventar uma segunda taxonomia.
+Bateria e baixo (`tools.palette.drums`/`tools.palette.bass`) nao entram em
+nenhuma das tres categorias nomeadas pela issue — `only` filtra PRA essas
+categorias, entao pedir `--only harmonic` legitimamente deixa bateria e
+baixo de fora."""
+
+_HARMONIC_FAMILY_ROLES: frozenset[str] = frozenset({
+    "pad", *KEYBOARD_ROLES, *STRINGS_ROLES, *DRONE_ROLES,
+})
+_RHYTHMIC_FAMILY_ROLES: frozenset[str] = frozenset({
+    *RHYTHMIC_ROLES, *MOTOR_ROLES, *SHADOW_ROLES,
+})
+_ELECTRONIC_FAMILY_ROLES: frozenset[str] = frozenset({
+    *HAT_ELEC_ROLES, *SUB_ROLES, *SUB_DROP_ROLES,
+})
+
+
+def _normalize_only(only: str | Iterable[str] | None) -> frozenset[str] | None:
+    """Normaliza `only` (string unica, string separada por virgula, ou
+    lista de strings) para um conjunto de categorias. `None`/vazio
+    significa "sem filtro" (comportamento atual, todos os elementos
+    renderizam). Categoria fora de `ONLY_CATEGORIES` e `RenderError`
+    explicito — nunca ignora em silencio uma categoria digitada errado."""
+    if only is None:
+        return None
+    raw_parts = only.split(",") if isinstance(only, str) else list(only)
+    parts = [p.strip() for p in raw_parts if p.strip()]
+    if not parts:
+        return None
+    invalid = sorted({p for p in parts if p not in ONLY_CATEGORIES})
+    if invalid:
+        raise RenderError(
+            f"only: unknown categor{'y' if len(invalid) == 1 else 'ies'} "
+            f"{invalid!r}; valid: {list(ONLY_CATEGORIES)}"
+        )
+    return frozenset(parts)
+
+
+def _element_matches_only(
+    element: Element, plan: ArrangementPlan, categories: frozenset[str],
+) -> bool:
+    if "transitions" in categories:
+        for t in plan.transitions:
+            if element.id in t.elements:
+                return True
+    if "harmonic" in categories and element.role in _HARMONIC_FAMILY_ROLES:
+        return True
+    if "rhythmic" in categories and element.role in _RHYTHMIC_FAMILY_ROLES:
+        return True
+    return "electronic" in categories and element.role in _ELECTRONIC_FAMILY_ROLES
+
+
+def _apply_only_filter(
+    plan: ArrangementPlan, only: str | Iterable[str] | None,
+) -> ArrangementPlan:
+    """Filtra `plan.elements` pelas categorias de `only` (issue #24).
+
+    So mexe em `elements` — `plan.edits` (humanizacao de track do usuario)
+    e `plan.sections`/`plan.transitions` (estrutura da musica) ficam
+    intocados; a "intencao" continua completa, so o subconjunto de
+    elementos GERADOS muda. Roda DEPOIS de `validate_plan` (o plano
+    inteiro, como autorado, precisa ser valido) e ANTES do loop de render
+    — dali em diante todo o pipeline (colisao, elementos, validadores)
+    enxerga so o `plan.elements` filtrado, entao "validadores rodam
+    apenas sobre o que foi gerado" sai de graca da mesma estrutura de
+    dados, sem checagem extra em cada validador."""
+    categories = _normalize_only(only)
+    if categories is None:
+        return plan
+    kept = [e for e in plan.elements if _element_matches_only(e, plan, categories)]
+    return replace(plan, elements=kept)
 
 
 def _reject_unauthorized_style_techniques(
@@ -317,6 +400,7 @@ class RenderReport:
     artifice_issues: list[ArtificeIssue] = field(default_factory=list)
     persona_issues: list[PersonaIssue] = field(default_factory=list)
     anticopy_issues: list[AntiCopyIssue] = field(default_factory=list)
+    transition_issues: list[TransitionIssue] = field(default_factory=list)
     edits: list[EditReport] = field(default_factory=list)
 
 
@@ -1215,6 +1299,73 @@ def _rendered_tracks_from_midi_tracks(
     return rendered
 
 
+def _rendered_tracks_from_instrument_list(
+    instruments: Iterable[pretty_midi.Instrument],
+) -> list[RenderedTrack]:
+    """Converte `pretty_midi.Instrument` de tracks de ORIGEM/EDICAO (ja
+    identificadas como tal pelo chamador — nao ha `Element` do plano pra
+    elas) em `RenderedTrack` sintetica com `element_id` `source:<nome>`.
+
+    Compartilhado entre `_rendered_tracks_from_source_tracks` (fresh render
+    em `render()`, issue #24 finding 1) e a fachada `tools.validate`
+    (`tools.contract._rendered_tracks_from_midi`, issue #24 finding 1 —
+    auditoria de um MIDI JA renderizado, que reconstroi as mesmas tracks de
+    origem/edicao a partir dos instrumentos nao casados a nenhum elemento).
+    `is_drum` preserva `pretty_midi.Instrument.is_drum` (canal 10 GM) por
+    track — inclusive tracks de origem NAO declaradas em `plan.edits`
+    (issue #24 finding 3), que nao tem `PlanEdit`/`Element` nenhum pra
+    casar por `role`/`profile` em
+    `tools.validators.transitions._drum_element_ids`.
+    """
+    rendered: list[RenderedTrack] = []
+    for fallback_index, instrument in enumerate(instruments):
+        track_name = instrument.name or f"source L{fallback_index + 1}"
+        rendered.append(RenderedTrack(
+            element_id=f"source:{track_name}",
+            track_name=track_name,
+            is_drum=bool(instrument.is_drum),
+            notes=tuple(
+                RenderedNote(
+                    pitch=int(note.pitch),
+                    velocity=int(note.velocity),
+                    start_s=float(note.start),
+                    end_s=float(note.end),
+                )
+                for note in instrument.notes
+            ),
+        ))
+    return rendered
+
+
+def _rendered_tracks_from_source_tracks(
+    tracks: list[mido.MidiTrack],
+    *,
+    ticks_per_beat: int,
+    midi_type: int,
+) -> list[RenderedTrack]:
+    """Reconstroi `RenderedTrack` a partir das tracks de ORIGEM (clonadas de
+    `src_mid`, editadas por `plan.edits` ou nao) no MIDI final.
+
+    Existe para `validate_transitions` (issue #24 finding 1): um plano que
+    so mexe no material do usuario via `plan.edits`, sem `plan.elements[]`
+    nenhum, precisa que as duas metades da fronteira tenham dado real pra
+    medir — sem isso, `events_a`/`events_b` ficariam sempre vazios e toda
+    fronteira seria pulada, mesmo com o MIDI de saida bem diferente dos
+    dois lados. `element_id` sintetico `source:<nome da track>` identifica
+    cada track fisica de origem como entidade distinta (nao ha `Element`
+    do plano pra essas tracks) — mesmo esquema que
+    `tools.validators.transitions._drum_element_ids` usa pra casar track de
+    `plan.edits` com `profile == "drums"`.
+    """
+    temp_mid = mido.MidiFile(ticks_per_beat=ticks_per_beat, type=midi_type)
+    temp_mid.tracks.extend(tracks)
+    payload = BytesIO()
+    temp_mid.save(file=payload)
+    payload.seek(0)
+    parsed = pretty_midi.PrettyMIDI(payload)
+    return _rendered_tracks_from_instrument_list(parsed.instruments)
+
+
 def _clone_source_tracks(src: mido.MidiFile) -> list[mido.MidiTrack]:
     """Copia cada track do source em `MidiTrack` novo com mensagens copiadas.
     Preserva ordem e conteudo — as tracks originais saem intactas."""
@@ -1868,6 +2019,7 @@ def render(
     strict_persona: bool = False,
     plan_dir: str | Path | None = None,
     reference_corpus: Iterable[str | Path] | Iterable[ReferenceSequence] | None = None,
+    only: str | Iterable[str] | None = None,
 ) -> RenderReport:
     """Renderiza `plan` sobre o MIDI de origem em um arquivo novo.
 
@@ -1875,6 +2027,13 @@ def render(
       plan: `ArrangementPlan` ja carregado ou caminho para `arrangement-plan.json`.
       output_path: caminho de saida. Default: `~/Desktop/<name>_arranged.mid`.
       source_path: override do caminho de origem. Default: `plan.source_midi.path`.
+      only: filtro de `plan.elements` (issue #24) — string ou lista de
+        strings de `ONLY_CATEGORIES` ("transitions", "harmonic",
+        "rhythmic", "electronic"; aceita string unica separada por
+        virgula, ex. `"transitions,harmonic"`). `None` (default) renderiza
+        todos os elementos, comportamento atual. Elemento fora das
+        categorias pedidas nao gera track nem aparece no relatorio, e os
+        validadores rodam so sobre o que sobrou.
 
     Raises:
       RenderError: source inexistente, output apontaria para o source,
@@ -1927,6 +2086,7 @@ def render(
         _reject_missing_brief_ref_with_excluded_families(plan, plan_dir)
     validate_plan(plan, plan_dir)
     plan = normalize_style_defaults(plan)
+    plan = _apply_only_filter(plan, only)
 
     src = Path(source_path).expanduser() if source_path else _resolve_source_path(plan)
     if not src.exists():
@@ -1962,6 +2122,11 @@ def render(
         type=src_mid.type,
     )
     out_mid.tracks.extend(_clone_source_tracks(src_mid))
+    # Numero de tracks clonadas da origem, capturado ANTES de qualquer track
+    # gerada ser anexada — usado depois (issue #24 finding 1) para fatiar
+    # `out_mid.tracks` de volta em "origem/edicao" vs "elemento gerado" na
+    # hora de montar o insumo do validador de transicao.
+    source_track_count = len(out_mid.tracks)
 
     # Edits opt-in (FR-28): humaniza tracks nomeadas em `plan.edits` in-place
     # nas tracks ja clonadas. Tracks nao nomeadas ficam byte-identicas.
@@ -2090,6 +2255,20 @@ def render(
     anticopy_issues = validate_anticopy(
         rendered_tracks, plan, analysis, corpus=corpus_sequences or None,
     )
+    # AC-14: roda sobre o `plan` (ja filtrado por `only`, se pedido) e o
+    # OUTPUT COMPLETO — `rendered_tracks` (elementos gerados) MAIS as
+    # tracks de origem/edicao (`out_mid.tracks[:source_track_count]`, ja
+    # com `apply_edits`/tecnicas de estilo aplicados in-place) — ver
+    # docstring de `tools.validators.transitions`, secao "Fronteiras vem de
+    # tracks de origem tambem" (issue #24 finding 1).
+    source_rendered_tracks = _rendered_tracks_from_source_tracks(
+        list(out_mid.tracks[:source_track_count]),
+        ticks_per_beat=out_mid.ticks_per_beat,
+        midi_type=out_mid.type,
+    )
+    transition_issues = validate_transitions(
+        rendered_tracks + source_rendered_tracks, plan, analysis,
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_mid.save(str(out_path))
@@ -2106,6 +2285,7 @@ def render(
         artifice_issues=artifice_issues,
         persona_issues=persona_issues,
         anticopy_issues=anticopy_issues,
+        transition_issues=transition_issues,
         edits=edit_reports,
     )
 
@@ -2178,11 +2358,14 @@ def format_render_report(report: RenderReport) -> str:
     lines.append(format_persona_issues(report.persona_issues))
     lines.append("")
     lines.append(format_anticopy_issues(report.anticopy_issues))
+    lines.append("")
+    lines.append(format_transition_issues(report.transition_issues))
     return "\n".join(lines)
 
 
 __all__ = [
     "DEFAULT_OUTPUT_SUFFIX",
+    "ONLY_CATEGORIES",
     "ElementRationale",
     "PAD_CHANNEL",
     "RenderError",

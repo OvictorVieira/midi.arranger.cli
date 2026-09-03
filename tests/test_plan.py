@@ -1270,6 +1270,109 @@ def test_dump_writes_indented_json_that_parses(tmp_path: Path):
 
 # --- rejeicoes: mensagens carregam path exato ------------------------------
 
+def test_rejects_non_string_dimensions_changed_entry():
+    """Codex finding do PR #106: um plano em memoria (ou lido direto via
+    `from_dict`) com item nao-string em `transitions[i].dimensions_changed`
+    tinha que ser aceito por `validate()` e so quebrava depois, dentro de
+    `tools.validators.transitions._normalize_dimension_name` (`AttributeError`
+    em `.strip()`), com o pipeline de render ja rodado. `validate()` agora
+    rejeita isso cedo, com path exato."""
+    plan = _valid_plan()
+    plan.transitions[0].dimensions_changed = ["densidade", 42]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].dimensions_changed[1]"
+    assert "str" in exc.value.message
+
+
+def test_rejects_non_int_at_bar():
+    """Codex finding do PR #106: um plano em memoria (ou via `from_dict`
+    malformado) com `transitions[i].at_bar` fora do tipo int (ex.: `"4"`)
+    tinha que ser aceito por `validate()` e so quebrava depois, dentro de
+    `tools.validators.transitions._window_bounds` (`TypeError` em
+    `at_bar - WINDOW_BARS`), com o pipeline de render ja rodado. `validate()`
+    agora rejeita isso cedo, com path exato — mesmo padrao do teste de
+    `dimensions_changed` acima."""
+    plan = _valid_plan()
+    plan.transitions[0].at_bar = "4"
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].at_bar"
+    assert "int" in exc.value.message
+
+
+def test_rejects_bool_at_bar():
+    """`bool` e subclasse de `int` em Python — mesma convencao do resto do
+    arquivo (`isinstance(x, int) and not isinstance(x, bool)`)."""
+    plan = _valid_plan()
+    plan.transitions[0].at_bar = True
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].at_bar"
+
+
+def test_rejects_blank_from_section():
+    plan = _valid_plan()
+    plan.transitions[0].from_section = "   "
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].from_section"
+
+
+def test_rejects_non_string_to_section():
+    plan = _valid_plan()
+    plan.transitions[0].to_section = None
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].to_section"
+
+
+def test_rejects_none_transition_elements():
+    """Codex finding #2 do PR #106 (issue #24): `render(plan_path,
+    only="transitions")` faz `element.id in transition.elements`
+    (`tools.render._element_matches_only`) sem passar pela fachada JSON
+    Schema, que ja bloqueia isso. Um plano em memoria com
+    `transitions[i].elements=None` quebrava esse teste de pertencimento com
+    `TypeError` la dentro, tarde. `validate()` agora rejeita cedo."""
+    plan = _valid_plan()
+    plan.transitions[0].elements = None
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements"
+    assert "list" in exc.value.message
+
+
+def test_rejects_bare_string_transition_elements():
+    """Mesmo achado do teste acima: `transitions[i].elements="pad_main"`
+    (string bare, nao lista) e silenciosamente convertida por `from_dict`
+    numa lista de caracteres (`from_dict` -> dataclass em memoria itera a
+    string), e o teste `element.id in transition.elements` passa a casar
+    caractere por caractere em vez do ID inteiro — misfiltro silencioso,
+    nao crash. `validate()` rejeita antes disso."""
+    plan = _valid_plan()
+    plan.transitions[0].elements = "pad_main"
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements"
+    assert "list" in exc.value.message
+
+
+def test_rejects_non_string_item_in_transition_elements():
+    plan = _valid_plan()
+    plan.transitions[0].elements = ["pad_main", 42]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements[1]"
+
+
+def test_rejects_blank_item_in_transition_elements():
+    plan = _valid_plan()
+    plan.transitions[0].elements = ["pad_main", "   "]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].elements[1]"
+
+
 def test_rejects_unknown_sync_role_with_element_path():
     """AC: 'rejeita sync_role desconhecido' + path exato aponta o elemento."""
     plan = _valid_plan()

@@ -66,6 +66,7 @@ from .validators import (
     validate_harmony,
     validate_persona,
     validate_placement,
+    validate_transitions,
 )
 
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
@@ -1442,6 +1443,19 @@ def _anticopy_issue_to_dict(i) -> dict[str, Any]:
     }
 
 
+def _transition_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "transitions",
+        "severity": i.severity,
+        "at_bar": int(i.at_bar),
+        "from_section": i.from_section,
+        "to_section": i.to_section,
+        "kind": i.kind,
+        "dimensions": list(i.dimensions),
+        "message": i.message,
+    }
+
+
 def _collision_report_to_dict(rep) -> dict[str, Any]:
     return {
         "relocations": [
@@ -1554,6 +1568,24 @@ _ANTICOPY_ISSUE_SCHEMA = {
     ],
 }
 
+_TRANSITION_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "transitions"},
+        "severity": {"type": "string"},
+        "at_bar": {"type": "integer"},
+        "from_section": {"type": "string"},
+        "to_section": {"type": "string"},
+        "kind": {"type": "string"},
+        "dimensions": {"type": "array", "items": {"type": "string"}},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "at_bar", "from_section", "to_section",
+        "kind", "dimensions", "message",
+    ],
+}
+
 def _issues_schema_block() -> dict[str, Any]:
     """Reaproveita o bloco `harmony_issues/placement_issues/... + collision`.
 
@@ -1562,6 +1594,9 @@ def _issues_schema_block() -> dict[str, Any]:
     recebe `reference_corpus` e roda a checagem anti-copia (`validate`
     audita um MIDI ja renderizado sem corpus de referencia); ver
     `RENDER_TOOL.output_schema` para o bloco proprio de `render`.
+    `transition_issues` (AC-14) entra aqui porque, ao contrario da
+    anti-copia, nao precisa de corpus — so plano + track renderizada,
+    disponivel nos dois fluxos.
     """
     return {
         "collision": _COLLISION_SCHEMA,
@@ -1569,12 +1604,13 @@ def _issues_schema_block() -> dict[str, Any]:
         "placement_issues": {"type": "array", "items": _PLACEMENT_ISSUE_SCHEMA},
         "artifice_issues": {"type": "array", "items": _ARTIFICE_ISSUE_SCHEMA},
         "persona_issues": {"type": "array", "items": _PERSONA_ISSUE_SCHEMA},
+        "transition_issues": {"type": "array", "items": _TRANSITION_ISSUE_SCHEMA},
     }
 
 
 _ISSUES_REQUIRED = (
     "collision", "harmony_issues", "placement_issues",
-    "artifice_issues", "persona_issues",
+    "artifice_issues", "persona_issues", "transition_issues",
 )
 
 
@@ -1640,14 +1676,24 @@ RENDER_DESCRIPTION = (
     "plano vira uma ou mais tracks novas nomeadas por convencao; as tracks "
     "originais saem NOTA A NOTA IDENTICAS (nada declarado para edit fica "
     "byte-identico no arquivo de saida). Roda todos os validadores (colisao, "
-    "harmonia, placement, artifice, persona) e devolve o relatorio LEGIVEL "
-    "POR MAQUINA — severidade por item — para o agente fechar o loop. Passe "
-    "`reference_corpus` (paths para MIDI de referencia) para tambem rodar o "
-    "validador anti-copia (AC-16): janelas de eventos da saida sao comparadas "
-    "contra o corpus, invariante a transposicao e mudanca de andamento, e "
-    "qualquer casamento vira `anticopy_issues` com severidade `error`. Sem "
-    "`reference_corpus`, a checagem e pulada e `anticopy_issues` volta vazio "
-    "(retrocompativel). Nunca sobrescreve o MIDI de origem: se `output_path` "
+    "harmonia, placement, artifice, persona, transitions) e devolve o "
+    "relatorio LEGIVEL POR MAQUINA — severidade por item — para o agente "
+    "fechar o loop. `transition_issues` (AC-14) confere, por fronteira de "
+    "`plan.transitions`, se pelo menos DUAS das oito dimensoes (subdivisao, "
+    "registro, largura, textura, densidade, harmonia, perspectiva_espacial, "
+    "protagonista) realmente mudaram no RENDER, e sinaliza divergencia entre "
+    "`dimensions_changed` (a intencao declarada) e o que de fato saiu igual "
+    "dos dois lados. Passe `reference_corpus` (paths para MIDI de "
+    "referencia) para tambem rodar o validador anti-copia (AC-16): janelas "
+    "de eventos da saida sao comparadas contra o corpus, invariante a "
+    "transposicao e mudanca de andamento, e qualquer casamento vira "
+    "`anticopy_issues` com severidade `error`. Sem `reference_corpus`, a "
+    "checagem e pulada e `anticopy_issues` volta vazio (retrocompativel). "
+    "Passe `only` (\"transitions\", \"harmonic\", \"rhythmic\", "
+    "\"electronic\" — string unica, separada por virgula, ou lista) para "
+    "gerar so um subconjunto de `plan.elements`; elemento filtrado nao "
+    "emite track nem aparece no relatorio, e os validadores rodam so sobre "
+    "o que foi gerado. Nunca sobrescreve o MIDI de origem: se `output_path` "
     "colidir com `midi_path`, erro. Mesmo plano + mesmo source + mesma seed "
     "produz arquivo byte-identico. Use apos plan.validate estar limpo — nao "
     "gaste ciclo renderizando plano invalido."
@@ -1676,6 +1722,7 @@ def _render_impl(
     strict_persona = bool(payload.get("strict_persona", False))
     output_path = payload.get("output_path")
     reference_corpus = _resolve_reference_corpus(payload)
+    only = payload.get("only")
 
     try:
         report = render_mod.render(
@@ -1685,6 +1732,7 @@ def _render_impl(
             strict_persona=strict_persona,
             plan_dir=_plan_dir_from_payload(payload),
             reference_corpus=[str(p) for p in reference_corpus] or None,
+            only=only,
         )
     except plan_mod.PlanValidationError as exc:
         raise ToolError(
@@ -1739,6 +1787,9 @@ def _render_impl(
         "artifice_issues": [_artifice_issue_to_dict(i) for i in report.artifice_issues],
         "persona_issues": [_persona_issue_to_dict(i) for i in report.persona_issues],
         "anticopy_issues": [_anticopy_issue_to_dict(i) for i in report.anticopy_issues],
+        "transition_issues": [
+            _transition_issue_to_dict(i) for i in report.transition_issues
+        ],
         "edits": [
             {
                 "track": ed.track,
@@ -1811,6 +1862,17 @@ RENDER_TOOL = Tool(
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
             },
+            "only": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "string", "minLength": 1},
+                    {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                    },
+                ],
+            },
         },
         "required": ["midi_path"],
     },
@@ -1837,8 +1899,8 @@ RENDER_TOOL = Tool(
 # --- validate --------------------------------------------------------------
 
 VALIDATE_DESCRIPTION = (
-    "Roda os validadores (colisao, harmonia, placement, artifice, persona) "
-    "sobre um MIDI JA renderizado, casando as tracks do arquivo aos elementos "
+    "Roda os validadores (colisao, harmonia, placement, artifice, persona, "
+    "transitions) sobre um MIDI JA renderizado, casando as tracks do arquivo aos elementos "
     "do plano pelo nome canonico. NAO reexecuta o render. Use para reauditar "
     "um arquivo antes de aceita-lo, ou para checar um arquivo que veio de "
     "outra origem contra o plano. Se o MIDI renderizado nao tiver as tracks "
@@ -1857,6 +1919,22 @@ def _rendered_tracks_from_midi(
     Casa por nome canonico usando `name_for_element`. Devolve tambem a lista
     de elementos cujas tracks nao foram encontradas — sinal de que o arquivo
     nao corresponde ao plano.
+
+    Alem das tracks de `plan.elements[]`, tambem reconstroi as tracks de
+    ORIGEM/EDICAO como `RenderedTrack` sintetica `source:<nome>` (issue #24
+    finding 1): esta fachada audita um MIDI JA renderizado, entao — ao
+    contrario de `tools.render.render()`, que conhece em memoria quantas
+    tracks clonou do source antes de anexar elementos — ela nao tem como
+    distinguir "track de origem/edicao" de "track de elemento" a nao ser
+    por eliminacao: todo instrumento do MIDI de saida cujo nome NAO casa
+    com nenhum `tname` de elemento e, por construcao (AGENTS.md: toda track
+    de saida e ou elemento gerado ou track de origem/editada), uma track de
+    origem/edicao. Sem isso, `validate_transitions` recebia so as tracks de
+    elemento e pulava toda fronteira num plano so de `plan.edits` (mesmo
+    achado que motivou `tools.render._rendered_tracks_from_source_tracks`
+    no round anterior) — reusa o mesmo helper
+    (`render_mod._rendered_tracks_from_instrument_list`) para nao duplicar
+    a conversao `pretty_midi.Instrument` -> `RenderedTrack`.
     """
     try:
         pm = pretty_midi.PrettyMIDI(midi_path)
@@ -1874,6 +1952,7 @@ def _rendered_tracks_from_midi(
 
     rendered: list[RenderedTrack] = []
     missing: list[str] = []
+    consumed: set[int] = set()
     for el in plan_obj.elements:
         inst_meta = el.instrument or {}
         plugin = str(inst_meta.get("plugin", "")).strip()
@@ -1902,9 +1981,13 @@ def _rendered_tracks_from_midi(
                 rendered.append(RenderedTrack(
                     element_id=el.id, track_name=tname, notes=notes,
                 ))
+                consumed.add(id(inst))
                 found_any = True
         if not found_any:
             missing.append(el.id)
+
+    source_instruments = [inst for inst in pm.instruments if id(inst) not in consumed]
+    rendered.extend(render_mod._rendered_tracks_from_instrument_list(source_instruments))
     return rendered, missing
 
 
@@ -1942,6 +2025,7 @@ def _validate_impl(
         plan_obj, rendered_tracks, analysis,
         strict=bool(payload.get("strict_persona", False)),
     )
+    transitions = validate_transitions(rendered_tracks, plan_obj, analysis)
 
     data = {
         "rendered_path": str(rendered_path),
@@ -1951,6 +2035,7 @@ def _validate_impl(
         "placement_issues": [_placement_issue_to_dict(i) for i in placement],
         "artifice_issues": [_artifice_issue_to_dict(i) for i in artifice],
         "persona_issues": [_persona_issue_to_dict(i) for i in persona],
+        "transition_issues": [_transition_issue_to_dict(i) for i in transitions],
     }
 
     warnings: list[dict[str, Any]] = []

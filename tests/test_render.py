@@ -2507,3 +2507,75 @@ def test_edit_technique_with_density_zero_omitted_from_stamp(tmp_path):
     stamp = _stamp_text(out, "Bass")
     assert "bass.attack_style" in stamp
     assert "bass.palm_mute" not in stamp
+
+
+# --- fronteira alimentada por tracks de origem/edicao (Codex finding #1, PR #106) --
+
+def _build_edit_only_boundary_source(tmp_path: Path) -> Path:
+    """MIDI so com uma track 'Bass': 8 compassos a 120bpm, MESMO padrao
+    ritmico/pitch/registro dos dois lados da fronteira (bar 4) — so a
+    velocity muda (40 -> 100), a mesma transicao 'fraca' que a persona
+    descreve ('muda so o volume'). Usado pelo teste de plano so com
+    `plan.edits` (sem `plan.elements` nenhum): sem a correcao do finding
+    #1, `rendered_tracks` no validador de transicao so continha elementos
+    gerados, e uma fronteira sem elemento nenhum era SEMPRE pulada."""
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=120.0)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    bass = pretty_midi.Instrument(program=32, name="Bass")
+    bar_len = 2.0
+    beat_len = bar_len / 4
+    for bar in range(8):
+        velocity = 40 if bar < 4 else 100
+        for beat in range(4):
+            start = bar * bar_len + beat * beat_len
+            bass.notes.append(pretty_midi.Note(
+                velocity=velocity, pitch=36, start=start, end=start + beat_len,
+            ))
+    pm.instruments.append(bass)
+    dest = tmp_path / "edit_only_source.mid"
+    pm.write(str(dest))
+    return dest
+
+
+def test_edit_only_plan_boundary_sees_source_and_edit_tracks(tmp_path):
+    """Regressao do Codex finding #1 (PR #106): um plano so com
+    `plan.edits` (sem `plan.elements`) precisa que o validador de
+    transicao enxergue as tracks de origem/edicao — antes da correcao,
+    `rendered_tracks` so continha elementos gerados, `events_a`/`events_b`
+    ficavam sempre vazios e a fronteira era sempre pulada
+    (`report.transition_issues == []`), mesmo com o MIDI de saida tendo
+    dado real dos dois lados da fronteira."""
+    src = _build_edit_only_boundary_source(tmp_path)
+    plan = ArrangementPlan(
+        version=1, seed=1,
+        source_midi=SourceMidi(path=str(src), sha256=_sha256_bytes(src)),
+        route="cinematica_emocional",
+        sections=[
+            PlanSection(
+                label="MAIN", kind="verse", start_bar=0, end_bar=4,
+                source="marker", protagonist="texture",
+                energy={"densidade": 4, "impacto": 4, "largura": 4,
+                        "altura": 4, "instabilidade": 3},
+            ),
+            PlanSection(
+                label="NEXT", kind="chorus", start_bar=4, end_bar=8,
+                source="marker", protagonist="texture",
+                energy={"densidade": 8, "impacto": 8, "largura": 8,
+                        "altura": 8, "instabilidade": 5},
+            ),
+        ],
+        elements=[],
+        edits=[PlanEdit(track="Bass", profile="bass", intensity=0.0)],
+    )
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out)
+
+    weak = [i for i in report.transition_issues if i.kind == "weak_transition"]
+    assert len(weak) == 1, (
+        "sem a correcao do finding #1, nao havia track nenhuma alimentando "
+        "o validador de transicao e a fronteira era sempre pulada em "
+        "silencio"
+    )
+    assert weak[0].from_section == "MAIN"
+    assert weak[0].to_section == "NEXT"

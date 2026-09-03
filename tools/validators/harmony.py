@@ -129,6 +129,16 @@ class RenderedTrack:
     element_id: str
     track_name: str
     notes: tuple[RenderedNote, ...] = field(default_factory=tuple)
+    is_drum: bool = False
+    """`pretty_midi.Instrument.is_drum` (canal 10 GM) da track de origem que
+    produziu esta `RenderedTrack` — usado por
+    `tools.validators.transitions._drum_element_ids` para excluir bateria
+    das dimensoes de pitch (`registro`/`largura`/`harmonia`), inclusive
+    tracks de origem NAO declaradas em `plan.edits` (issue #24 finding 3),
+    que nao tem `Element`/`PlanEdit` nenhum pra casar por role/profile.
+    Default `False` — os demais construtores de `RenderedTrack` (elementos
+    gerados, que ja sao classificados via role em `_drum_element_ids`) nao
+    precisam preencher isto."""
 
 
 # --- helpers puros ----------------------------------------------------------
