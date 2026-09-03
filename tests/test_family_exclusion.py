@@ -52,6 +52,24 @@ def _write_brief_excluding(
     return brief_path, brief_sha256(brief_path)
 
 
+def _write_brief_with_raw_excluded_families(
+    tmp_path: Path, raw_value: object,
+) -> tuple[Path, str]:
+    """Mesmo brief minimo de `_write_brief_excluding`, mas grava
+    `excluded_families` com o valor bruto dado direto no JSON — para
+    testar entradas malformadas que `brief.validate`/`brief_schema.py`
+    ja bloqueariam, mas que um brief editado a mao (ou nunca validado)
+    pode carregar quando lido direto por `plan.validate`/`render`."""
+    style_dict = {
+        family: {"authorized_techniques": []}
+        for family in ("bass", "drums", "guitar", "keys")
+    }
+    brief = {"style": style_dict, "excluded_families": raw_value}
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps(brief, indent=2), encoding="utf-8")
+    return brief_path, brief_sha256(brief_path)
+
+
 def _build_source_without_bass(
     tmp_path: Path, name: str = "source_no_bass.mid",
 ) -> Path:
@@ -127,6 +145,53 @@ def test_validate_allows_element_in_family_not_excluded(tmp_path):
     plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
 
     validate(plan)  # nao levanta — "keys" nao esta na lista vetada
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [
+        "guitar",  # string solta em vez de lista
+        ["guiter"],  # typo fora do vocabulario fechado
+        ["guitar", 5],  # item nao-string na lista
+        ["guitar", "guitar"],  # duplicata
+        {"guitar": True},  # tipo totalmente errado (dict)
+    ],
+    ids=["bare-string", "unknown-family", "non-string-item", "duplicate", "dict"],
+)
+def test_validate_rejects_malformed_excluded_families(tmp_path, raw_value):
+    """Achado do Codex na PR #105: `excluded_families` PRESENTE mas
+    malformado (tipo errado, item fora do vocabulario fechado, item
+    nao-string ou duplicata) nao pode virar silenciosamente "sem veto"
+    so porque `brief_ref.sha256` bate — um brief nunca validado por
+    `brief.validate` (editado a mao, ou plano em memoria) tem que
+    continuar recusando a familia declarada, nao liberar tudo."""
+    plan = _valid_plan()
+    brief_path, sha = _write_brief_with_raw_excluded_families(tmp_path, raw_value)
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "brief_ref.path"
+
+
+def test_render_rejects_malformed_excluded_families_in_memory(tmp_path):
+    """Mesmo achado do Codex, camada do render: plano montado em memoria
+    (sem passar por `plan.load`) tambem tem que recusar
+    `excluded_families` malformado, convertido em `RenderError` pelo
+    `except PlanValidationError` ja existente ao redor da barreira."""
+    src = _build_source_without_bass(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _bass_gap_fill_element()
+    brief_path, sha = _write_brief_with_raw_excluded_families(tmp_path, "bass")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    out = tmp_path / "out.mid"
+    with pytest.raises(RenderError) as exc:
+        render(plan, out, plan_dir=tmp_path)
+
+    assert "excluded_families" in str(exc.value)
+    assert not out.exists()
 
 
 def test_validate_without_brief_ref_does_not_block_creation():

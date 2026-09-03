@@ -507,19 +507,53 @@ def _load_brief_excluded_families(
     """Le `brief.excluded_families` (issue #17) apontado por `plan.brief_ref`.
 
     Mesma checagem de integridade de `_load_brief_authorized_techniques`
-    (`_read_and_verify_brief`). Chave ausente ou de tipo errado vira
-    conjunto vazio — brief antigo sem `excluded_families` nao veta nada,
-    o `brief_schema.py` ja garante vocabulario fechado (`STYLE_FAMILIES`)
-    para quem grava a chave.
+    (`_read_and_verify_brief`). Chave AUSENTE do brief vira conjunto vazio
+    — brief antigo sem `excluded_families` nao veta nada. Mas chave
+    PRESENTE e malformada (tipo errado, item que nao e string, familia
+    fora de `STYLE_FAMILIES` ou duplicata) e erro de validacao, nao
+    "sem veto": `brief_schema.py::_validate_excluded_families` so roda
+    dentro de `brief.validate`, e chamadores de `plan.validate`/`render`
+    fora do fluxo guiado por prompt nao tem garantia de ter chamado
+    `brief.validate` antes — um brief editado a mao com
+    `excluded_families: "guitar"` ou `["guiter"]` nao pode virar
+    silenciosamente "nenhuma familia excluida" so porque o sha256 bate.
     """
     ref = plan.brief_ref
     assert ref is not None  # chamada so quando brief_ref esta presente
     brief = _read_and_verify_brief(ref, plan_dir)
 
-    raw = brief.get("excluded_families")
-    if not isinstance(raw, list):
+    if "excluded_families" not in brief:
         return set()
-    return {family for family in raw if family in STYLE_FAMILIES}
+
+    raw = brief["excluded_families"]
+    if not isinstance(raw, list):
+        raise PlanValidationError(
+            "brief_ref.path",
+            (
+                f"brief at {ref.path} has excluded_families of type "
+                f"{type(raw).__name__}, expected a list"
+            ),
+        )
+    seen: set[str] = set()
+    for family in raw:
+        if not isinstance(family, str) or family not in STYLE_FAMILIES:
+            raise PlanValidationError(
+                "brief_ref.path",
+                (
+                    f"brief at {ref.path} has invalid entry {family!r} in "
+                    f"excluded_families; expected one of {list(STYLE_FAMILIES)}"
+                ),
+            )
+        if family in seen:
+            raise PlanValidationError(
+                "brief_ref.path",
+                (
+                    f"brief at {ref.path} has duplicate {family!r} in "
+                    "excluded_families"
+                ),
+            )
+        seen.add(family)
+    return seen
 
 
 def load_brief_instrument_tuning(
