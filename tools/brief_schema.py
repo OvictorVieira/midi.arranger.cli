@@ -407,15 +407,47 @@ def _validate_family_techniques(
     1. Existencia de cada nome no indice — `authorized`, `suggested` e
        `techniques`. Nome desconhecido erra ANTES de qualquer regra de
        autorizacao, para que erros de digitacao apontem para o field certo.
-    2. Anticopia sobre `suggested_techniques` via helper compartilhado.
-    3. `techniques` como SUBCONJUNTO de `authorized_techniques`.
+    2. `authorized_techniques[]` tem que estar em `SUPPORTED_TECHNIQUES` do
+       motor: tecnica documentada mas SEM aplicador registrado nao pode ser
+       autorizada, senao o brief compromete uma execucao que o motor nao
+       consegue entregar. Aceitar-e-ignorar e o vicio ja rejeitado duas
+       vezes nesta base (`_identity_apply` e o gerador de bateria de
+       andaime). A fronteira e aqui, ANTES do `run` — nao no render.
+       `suggested_techniques[]` NAO passa por essa barreira: sugestao e o
+       registro do que a pesquisa levantou, inclusive capacidade futura.
+    3. Anticopia sobre `suggested_techniques` via helper compartilhado.
+    4. `techniques` como SUBCONJUNTO de `authorized_techniques`.
     """
+    from .techniques import SUPPORTED_TECHNIQUES
+
     authorized_raw = entry.get("authorized_techniques", [])
     authorized_canonicals: set[str] = set()
     for i, name in enumerate(authorized_raw):
-        resolved = _resolve_family_technique(
-            idx, family, name, f"style.{family}.authorized_techniques[{i}]",
-        )
+        path = f"style.{family}.authorized_techniques[{i}]"
+        resolved = _resolve_family_technique(idx, family, name, path)
+        if resolved.canonical not in SUPPORTED_TECHNIQUES:
+            implemented_in_family = sorted(
+                c for c in SUPPORTED_TECHNIQUES if c.startswith(f"{family}.")
+            )
+            listing = (
+                ", ".join(implemented_in_family)
+                if implemented_in_family
+                else f"(nenhuma tecnica de {family} implementada no motor)"
+            )
+            raise ToolError(
+                "E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED",
+                f"tecnica {resolved.canonical!r} existe no manual mas nao "
+                f"esta implementada pelo motor — o brief nao pode autorizar "
+                f"tecnica sem aplicador, porque o `run` nao vai aplicar "
+                f"nada. Tecnicas de {family} implementadas hoje: {listing}",
+                path=path,
+                hint=(
+                    "consulte `techniques.list` com "
+                    "`implemented_only=true` para ver o vocabulario que o "
+                    "motor consegue executar; tecnica apenas documentada "
+                    "e capacidade futura, nao autorizacao aceita agora"
+                ),
+            )
         authorized_canonicals.add(resolved.canonical)
 
     suggested = entry.get("suggested_techniques", [])
@@ -663,6 +695,8 @@ def validate_brief(brief: Any) -> None:
     - `E_BRIEF_INVALID`: falha estrutural (schema).
     - `E_BRIEF_MUSICAL_CONTENT`: `style` carrega sequencia de notas.
     - `E_BRIEF_TECHNIQUE_NOT_FOUND`: tecnica citada nao existe no indice.
+    - `E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED`: tecnica autorizada existe no
+      manual mas nao esta em `SUPPORTED_TECHNIQUES` do motor.
     - `E_TECHNIQUES_INDEX`: falha ao ler `knowledge/tecnicas/`.
     - `E_BRIEF_INSTRUMENT_KNOWN_CONFLICT`: `instruments.<familia>.known
       == false` mas `strings`/`tuning` nao sao null.
@@ -719,7 +753,11 @@ BRIEF_VALIDATE_DESCRIPTION = (
     "strings em formato de nome de nota (C4, F#3) sao rejeitados em "
     "qualquer profundidade dentro de style; (2) toda tecnica declarada em "
     "style.<familia>.techniques[].name precisa existir no indice de "
-    "tecnicas (knowledge/tecnicas/); (3) `instruments.<familia>` (guitar, "
+    "tecnicas (knowledge/tecnicas/); (2b) toda tecnica em "
+    "style.<familia>.authorized_techniques[] precisa tambem estar "
+    "implementada pelo motor (`SUPPORTED_TECHNIQUES`); tecnica apenas "
+    "documentada nao pode ser autorizada, senao o brief compromete uma "
+    "execucao que o motor nao consegue entregar; (3) `instruments.<familia>` (guitar, "
     "bass), quando presente, tem numero de cordas coerente com o numero "
     "de notas de tuning, notas em ordem grave->agudo, e tuning.name so "
     "resolve contra o manual guitar.drop_tuning — nome desconhecido exige "

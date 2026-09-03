@@ -358,14 +358,19 @@ def test_validate_brief_maps_techniques_index_failure_to_e_techniques_index(
 
 # --- US-001: separacao sugestao vs autorizacao --------------------------------
 
-# Uma tecnica real por familia, usada nos testes de autorizacao das quatro
-# familias — mantem os testes proximos do que o motor sabe aplicar.
+# Uma tecnica real por familia, usada nos testes de autorizacao. Guitarra
+# nao tem tecnica implementada no motor hoje (todas as documentadas continuam
+# em pesquisa futura), entao os testes de autorizacao+techniques usam apenas
+# familias com implementacao real; guitar entra somente onde o campo em
+# exercicio (por exemplo, `suggested_techniques`) NAO exige implementacao.
 _FAMILY_TECHNIQUE = {
     "drums": "drums.ghost_notes",
     "bass": "bass.ghost_notes",
     "guitar": "guitar.palm_mute",
-    "keys": "keys.hand_asynchrony",
+    "keys": "keys.damper_pedal",
 }
+
+_IMPLEMENTED_FAMILIES = ("drums", "bass", "keys")
 
 
 def _reset_family(brief: dict[str, Any], family: str) -> dict[str, Any]:
@@ -452,9 +457,13 @@ def test_techniques_nonempty_with_absent_authorized_field_is_error(family):
     assert env["error"]["path"] == f"style.{family}.techniques[0].name"
 
 
-@pytest.mark.parametrize("family", ["drums", "bass", "guitar", "keys"])
+@pytest.mark.parametrize("family", _IMPLEMENTED_FAMILIES)
 def test_techniques_subset_of_authorized_passes(family):
     # Contrapartida positiva da regra 3: tecnica autorizada passa.
+    # Familias sem tecnica implementada no motor (guitar hoje) nao entram
+    # aqui: uma tecnica so pode ser autorizada se o motor souber aplicar,
+    # e passar essa contrapartida com guitarra exigiria contradizer a regra
+    # 2b (E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED).
     tech = _FAMILY_TECHNIQUE[family]
     brief = _reset_family(_valid_brief(), family)
     brief["style"][family]["techniques"] = [
@@ -519,3 +528,65 @@ def test_brief_aceita_nome_simples_resolvido_pela_familia_do_bloco():
     brief["style"]["drums"]["authorized_techniques"] = ["ghost_notes"]
     brief["style"]["drums"]["techniques"] = [{"name": "ghost_notes"}]
     validate_brief(brief)  # nao levanta
+
+
+# --- issue #74: brief nao pode autorizar tecnica sem aplicador ------------
+
+
+def test_brief_recusa_authorized_technique_documentada_mas_sem_aplicador_bass_slide():
+    """`bass.slide` esta no manual e fora de `SUPPORTED_TECHNIQUES`.
+
+    Autorizar a tecnica no brief comprometeria uma execucao que o motor nao
+    entrega. `brief.validate` tem que recusar aqui — nao no render, nao no
+    `run` — para nao gastar iteracao com plano invalido.
+    """
+    brief = _reset_family(_valid_brief(), "bass")
+    brief["style"]["bass"]["authorized_techniques"] = ["bass.slide"]
+
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED"
+    assert env["error"]["path"] == "style.bass.authorized_techniques[0]"
+    # A mensagem lista as implementadas para orientar a correcao.
+    assert "bass.ghost_notes" in env["error"]["message"]
+
+
+def test_brief_recusa_authorized_technique_de_keys_nao_implementada():
+    """`keys.melody_lead` e uma das dez tecnicas de teclas documentadas mas
+    fora do motor (issue #14). Autorizacao aqui e no-op silencioso, o vicio
+    ja rejeitado nesta base."""
+    brief = _reset_family(_valid_brief(), "keys")
+    brief["style"]["keys"]["authorized_techniques"] = ["keys.melody_lead"]
+
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED"
+    assert env["error"]["path"] == "style.keys.authorized_techniques[0]"
+    assert "keys.damper_pedal" in env["error"]["message"]
+
+
+def test_brief_recusa_authorized_technique_de_guitarra_sem_aplicador():
+    """Guitarra nao tem tecnica implementada no motor hoje; o brief nao
+    pode autorizar `guitar.palm_mute` (nem qualquer outra) enquanto isso
+    for verdade. A mensagem tem que sinalizar essa ausencia."""
+    brief = _reset_family(_valid_brief(), "guitar")
+    brief["style"]["guitar"]["authorized_techniques"] = ["guitar.palm_mute"]
+
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED"
+    assert env["error"]["path"] == "style.guitar.authorized_techniques[0]"
+    assert "guitar" in env["error"]["message"]
+
+
+def test_brief_aceita_suggested_technique_sem_aplicador():
+    """Sugestao e o registro do que a pesquisa levantou, inclusive
+    capacidade futura. `suggested_techniques` NAO passa pela barreira de
+    `SUPPORTED_TECHNIQUES` — so autorizacao/selecao passa."""
+    brief = _reset_family(_valid_brief(), "guitar")
+    brief["style"]["guitar"]["suggested_techniques"] = [
+        {"name": "guitar.palm_mute", "rationale": "referencia usa"},
+    ]
+
+    env = call("brief.validate", {"brief": brief})
+    assert env["ok"] is True, env
