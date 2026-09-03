@@ -397,11 +397,17 @@ def test_generic_picked_honors_equal_downstroke_upstroke_parameters():
     # picked_downstroke_velocity == picked_upstroke_velocity (ambos 90,
     # valor valido nas duas faixas do manual) pede contraste ZERO entre
     # downstroke e upstroke — mas o antigo `max(1, ...)` forcava um shift
-    # minimo de 1 mesmo assim, entao [80, 80] virava [81, 79] apesar do
-    # plano pedir explicitamente nenhuma diferenca. Dois parametros
-    # aceitos e validados que nao comandam o resultado e' parametro
-    # mentiroso (AGENTS.md).
-    source = _make_midi([80, 80])
+    # minimo de 1 mesmo assim, entao downstroke e upstroke nunca saiam
+    # iguais mesmo com o plano pedindo explicitamente nenhuma diferenca.
+    # Dois parametros aceitos e validados que nao comandam o resultado e'
+    # parametro mentiroso (AGENTS.md).
+    #
+    # Nao assume mais byte-identico ao source: desde a sexta rodada
+    # (achado "Honor the absolute picked velocity settings"), o NIVEL
+    # absoluto pedido (90/90) tambem comanda o resultado via
+    # deslocamento uniforme quando difere do baseline do manual — so a
+    # diferenca RELATIVA entre downstroke e upstroke fica zerada aqui.
+    source = _make_midi([80, 80, 80, 80])
 
     out = apply_technique(
         "bass.attack_style", source, seed=1, tool="generic",
@@ -409,6 +415,31 @@ def test_generic_picked_honors_equal_downstroke_upstroke_parameters():
             "style": "picked",
             "picked_downstroke_velocity": 90,
             "picked_upstroke_velocity": 90,
+        },
+    )
+
+    velocities = [v for _t, _c, _p, v in _structural_note_ons(out)]
+    assert len(set(velocities)) == 1, (
+        "contraste zero pedido (downstroke == upstroke) tem que sair com "
+        f"toda velocity igual: {velocities!r}"
+    )
+
+
+def test_generic_picked_is_byte_identical_when_level_matches_manual_baseline():
+    # Contraste zero E nivel absoluto igual ao baseline do manual (a
+    # media dos defaults de fallback, ~94) e o unico caso em que nenhuma
+    # das duas fontes de comando (contraste, nivel) pede mudanca — byte
+    # identico ao source, cobrindo o mesmo bug historico do `max(1, ...)`
+    # (terceira rodada) sem reintroduzir a asserção que a sexta rodada
+    # invalidou.
+    source = _make_midi([80, 80])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 94,
+            "picked_upstroke_velocity": 94,
         },
     )
 
@@ -520,6 +551,77 @@ def test_generic_picked_enforces_order_across_individual_group_members():
     assert velocities[1] <= velocities[2], (
         "nota 1 (origem 80) nao pode ficar mais forte que a nota 2 "
         f"(origem 81): {velocities!r}"
+    )
+
+
+def test_generic_picked_honors_absolute_velocity_level():
+    # Achado do Codex na PR #104, sexta rodada: (85, 70) e (100, 85) tem a
+    # MESMA diferenca (15), entao so olhando pra diferenca os dois
+    # produziriam alvo identico — o nivel absoluto pedido (dois parametros
+    # aceitos e validados independentemente) nunca comandaria nada. O
+    # nivel mais alto tem que produzir velocity final mais alta.
+    source = _make_midi([80, 80])
+
+    low = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 85,
+            "picked_upstroke_velocity": 70,
+        },
+    )
+    high = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 100,
+            "picked_upstroke_velocity": 85,
+        },
+    )
+
+    low_velocities = [v for _t, _c, _p, v in _structural_note_ons(low)]
+    high_velocities = [v for _t, _c, _p, v in _structural_note_ons(high)]
+    assert low_velocities != high_velocities, (
+        "mesma diferenca (15) com nivel absoluto diferente (85/70 vs "
+        f"100/85) nao pode produzir o mesmo resultado: {low_velocities!r} "
+        f"== {high_velocities!r}"
+    )
+    assert high_velocities[0] > low_velocities[0]
+    assert high_velocities[1] > low_velocities[1]
+
+
+def test_generic_picked_reapplication_with_different_parameters_is_not_skipped():
+    # Achado do Codex na PR #104, sexta rodada: a assinatura de
+    # idempotencia so incluia `style`, entao reaplicar com
+    # picked_downstroke_velocity/picked_upstroke_velocity DIFERENTES numa
+    # track ja marcada pulava a track inteira so porque `style` batia — os
+    # parametros novos, aceitos e validados, nunca chegavam a comandar o
+    # resultado.
+    source = _make_midi([80, 80, 80, 80])
+
+    once = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 90,
+            "picked_upstroke_velocity": 70,
+        },
+    )
+    once_velocities = [v for _t, _c, _p, v in _structural_note_ons(once)]
+
+    twice = apply_technique(
+        "bass.attack_style", once, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 70,
+            "picked_upstroke_velocity": 90,
+        },
+    )
+    twice_velocities = [v for _t, _c, _p, v in _structural_note_ons(twice)]
+
+    assert twice_velocities != once_velocities, (
+        "reaplicar com contraste INVERTIDO nao pode ser tratado como "
+        f"'ja aplicado': {once_velocities!r} == {twice_velocities!r}"
     )
 
 

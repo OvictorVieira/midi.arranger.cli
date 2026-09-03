@@ -3049,7 +3049,20 @@ def _apply_bass_attack_style(
         # contra o contrato `technique` nem contra o dedup central de
         # ornamentos — a checagem e feita aqui, autocontida, no mesmo estilo
         # do `already_applied` do caminho com keyswitch.
-        marker_text = f"midi-arranger:bass.attack_style:generic:{style}"
+        # Achado do Codex na PR #104, sexta rodada: a assinatura so incluia
+        # `style`, entao reaplicar com `picked_downstroke_velocity`/
+        # `picked_upstroke_velocity` DIFERENTES (ex.: contraste invertido)
+        # numa track ja marcada pulava a track inteira so porque `style`
+        # batia — os parametros novos, aceitos e validados, nunca chegavam
+        # a comandar o resultado. A assinatura agora inclui os valores
+        # EFETIVOS que determinam o resultado (`downstroke_vel`/
+        # `upstroke_vel`, ja resolvidos por `_midrange` — parametro do
+        # plano > receita > manual), entao configuracao diferente NUNCA
+        # bate com um marcador anterior.
+        marker_text = (
+            f"midi-arranger:bass.attack_style:generic:{style}:"
+            f"{downstroke_vel}:{upstroke_vel}"
+        )
         already_applied_generic = any(
             msg.is_meta and msg.type == "text" and msg.text == marker_text
             for msg in track
@@ -3126,6 +3139,50 @@ def _apply_bass_attack_style(
         # `down_shift + up_shift == abs(diff)` sempre — o lado "down" recebe
         # o arredondamento pra cima quando a diferenca e impar (convencao
         # arbitraria, mas simetrica quando a diferenca e par).
+        # Achado do Codex na PR #104, sexta rodada: ate aqui so a
+        # DIFERENCA entre downstroke_vel/upstroke_vel comandava o
+        # resultado — (85, 70) e (100, 85) tem a mesma diferenca (15) e
+        # geravam alvo IDENTICO, entao o NIVEL absoluto pedido (dois
+        # parametros aceitos e validados independentemente) nunca
+        # comandava nada. Mas o design de 5 rodadas anteriores tambem
+        # estabeleceu, com evidencia repetida, que sobrescrever a
+        # velocity com um alvo ABSOLUTO destroi a dinamica que a origem
+        # escreveu (mesmo defeito que ja tirou drums.accent_hierarchy do
+        # motor). A saida que respeita as duas exigencias: o nivel
+        # absoluto pedido entra como um DESLOCAMENTO UNIFORME (mesmo
+        # valor somado a TODO alvo, down e up) — desvio de UM UNICO grau
+        # de liberdade em relacao ao baseline do manual (a media dos
+        # defaults de fallback), nao um alvo absoluto por nota. Shift
+        # uniforme nunca muda a diferenca relativa entre dois alvos
+        # (`(a+K) - (b+K) == a-b`), entao a garantia de nao-inversao da
+        # regressao isotonica abaixo continua valendo — o nivel move a
+        # track inteira pra cima/baixo junto, nunca troca a ordem escrita
+        # pela origem.
+        # NAO usar `_range()` aqui: ele consulta `context.parameters`
+        # primeiro (mesma precedencia de `_midrange`), entao um override
+        # do plano vazaria pro "baseline" e cancelaria o proprio bias que
+        # este calculo tenta capturar. O baseline tem que ser o range CRU
+        # do MANUAL (nunca o override do plano), lido direto de
+        # `technique.parameters` — mesmo indice que `_range`/`_midrange`
+        # usam por baixo, so que sem a precedencia de `context.parameters`
+        # /`context.recipe` por cima.
+        def _manual_midpoint(name: str, fallback: tuple[float, float]) -> float:
+            for param in technique.parameters:
+                if param.name != name:
+                    continue
+                if param.range is not None:
+                    return (param.range[0] + param.range[1]) / 2
+                if param.value is not None:
+                    return float(param.value)
+            return (fallback[0] + fallback[1]) / 2
+
+        default_mean = (
+            _manual_midpoint("picked_downstroke_velocity", (85.0, 120.0))
+            + _manual_midpoint("picked_upstroke_velocity", (70.0, 100.0))
+        ) / 2
+        requested_mean = (downstroke_vel + upstroke_vel) / 2
+        level_bias = requested_mean - default_mean
+
         original_velocities = [msg.velocity for _start, msg in structural]
         total_delta = abs(downstroke_vel - upstroke_vel)
         direction = 1 if downstroke_vel >= upstroke_vel else -1
@@ -3135,7 +3192,7 @@ def _apply_bass_attack_style(
         targets = []
         for idx, velocity in enumerate(original_velocities):
             shift = direction * down_shift if idx % 2 == 0 else -direction * up_shift
-            targets.append(float(velocity + shift))
+            targets.append(float(velocity) + shift + level_bias)
 
         # Achado do Codex na PR #104, quinta rodada, achado 2: representar
         # cada grupo de velocity original EMPATADA so pela MEDIA dos alvos
