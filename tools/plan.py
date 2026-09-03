@@ -408,24 +408,21 @@ def _canonicalize_authorized_name(index, family: str, name: str) -> str | None:
     return resolved.canonical if resolved is not None else None
 
 
-def _load_brief_authorized_techniques(
-    plan: ArrangementPlan, plan_dir: Path | None,
-) -> dict[str, set[str]]:
-    """Le o brief apontado por `plan.brief_ref` e devolve as autorizacoes.
+def _read_and_verify_brief(
+    ref: BriefRef, plan_dir: Path | None,
+) -> dict[str, Any]:
+    """Le e verifica o brief apontado por `ref`, devolve o JSON como dict.
 
-    Verifica `brief_ref.sha256` antes de confiar no conteudo — autorizacao
-    editada depois de aprovada deixaria o hash divergir. Retorna um dict
-    `{familia: {canonical, ...}}` para as quatro familias, mesmo que uma
-    familia esteja ausente do brief (nesse caso, conjunto vazio).
-
-    Levanta `PlanValidationError` com o path exato (`brief_ref.path` ou
-    `brief_ref.sha256`) para brief inexistente, ilegivel, JSON invalido
-    ou hash divergente.
+    Verifica `ref.sha256` antes de confiar no conteudo — autorizacao (ou
+    veto) editado depois de aprovado deixaria o hash divergir. Levanta
+    `PlanValidationError` com o path exato (`brief_ref.path` ou
+    `brief_ref.sha256`) para brief inexistente, ilegivel, JSON invalido ou
+    hash divergente. Compartilhado por todo leitor de brief que precisa da
+    mesma garantia de integridade (`_load_brief_authorized_techniques`,
+    `_load_brief_excluded_families`).
     """
     from .brief_ref import brief_sha256
 
-    ref = plan.brief_ref
-    assert ref is not None  # chamada so quando brief_ref esta presente
     brief_path = Path(ref.path).expanduser()
     if not brief_path.is_absolute() and plan_dir is not None:
         brief_path = plan_dir / brief_path
@@ -463,12 +460,27 @@ def _load_brief_authorized_techniques(
             "brief_ref.path",
             f"brief at {brief_path} must be a JSON object",
         )
+    return brief
+
+
+def _load_brief_authorized_techniques(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> dict[str, set[str]]:
+    """Le o brief apontado por `plan.brief_ref` e devolve as autorizacoes.
+
+    Retorna um dict `{familia: {canonical, ...}}` para as quatro familias,
+    mesmo que uma familia esteja ausente do brief (nesse caso, conjunto
+    vazio).
+    """
+    ref = plan.brief_ref
+    assert ref is not None  # chamada so quando brief_ref esta presente
+    brief = _read_and_verify_brief(ref, plan_dir)
 
     style = brief.get("style")
     if not isinstance(style, dict):
         raise PlanValidationError(
             "brief_ref.path",
-            f"brief at {brief_path} has no 'style' object",
+            f"brief at {ref.path} has no 'style' object",
         )
 
     index = _build_techniques_index_for_style()
@@ -487,6 +499,27 @@ def _load_brief_authorized_techniques(
             if canonical is not None:
                 authorized[family].add(canonical)
     return authorized
+
+
+def _load_brief_excluded_families(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> set[str]:
+    """Le `brief.excluded_families` (issue #17) apontado por `plan.brief_ref`.
+
+    Mesma checagem de integridade de `_load_brief_authorized_techniques`
+    (`_read_and_verify_brief`). Chave ausente ou de tipo errado vira
+    conjunto vazio — brief antigo sem `excluded_families` nao veta nada,
+    o `brief_schema.py` ja garante vocabulario fechado (`STYLE_FAMILIES`)
+    para quem grava a chave.
+    """
+    ref = plan.brief_ref
+    assert ref is not None  # chamada so quando brief_ref esta presente
+    brief = _read_and_verify_brief(ref, plan_dir)
+
+    raw = brief.get("excluded_families")
+    if not isinstance(raw, list):
+        return set()
+    return {family for family in raw if family in STYLE_FAMILIES}
 
 
 def load_brief_instrument_tuning(
@@ -1149,6 +1182,14 @@ def validate(
     vazia e erro. Brief inexistente, ilegivel ou com hash divergente e erro
     explicito, nunca fallback silencioso.
 
+    Quando `plan.brief_ref` esta presente, tambem le
+    `brief.excluded_families` (issue #17) e recusa qualquer
+    `plan.elements[]` cuja `role` mapeie para uma familia vetada — mesmo
+    que o elemento carregue `rationale` julgando que a familia esta
+    faltando. `plan.edits` fica fora do veto: edita track que ja existe no
+    MIDI de origem, nunca cria familia nova. Sem `brief_ref` nao ha veto
+    algum, preservando o comportamento de criacao ja entregue.
+
     Retorna lista de avisos (strings). Avisos NAO bloqueiam. Erros
     bloqueiam via `PlanValidationError`.
     """
@@ -1169,6 +1210,7 @@ def validate(
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
     _require_nonempty_str(plan.source_midi.sha256, "source_midi.sha256")
     brief_authorized: dict[str, set[str]] | None = None
+    excluded_families: set[str] = set()
     if plan.brief_ref is not None:
         _require_nonempty_str(plan.brief_ref.path, "brief_ref.path")
         if not isinstance(plan.brief_ref.sha256, str) or not SHA256_RE.fullmatch(plan.brief_ref.sha256):
@@ -1177,6 +1219,14 @@ def validate(
                 "must be 64 lowercase hexadecimal characters",
             )
         brief_authorized = _load_brief_authorized_techniques(
+            plan, Path(plan_dir) if plan_dir is not None else None,
+        )
+        # issue #17: veto explicito de criacao de familia. Sem brief_ref
+        # nao ha como saber o que o usuario vetou, entao o default fica
+        # sem veto (comportamento de criacao ja entregue continua igual);
+        # com brief_ref, `excluded_families` manda mesmo que a IA julgue
+        # que a familia esta faltando.
+        excluded_families = _load_brief_excluded_families(
             plan, Path(plan_dir) if plan_dir is not None else None,
         )
     else:
@@ -1213,6 +1263,24 @@ def validate(
         _require_in(e.articulation, ARTICULATIONS, f"{base}.articulation")
         _require_in(e.harmony, HARMONY_MODES, f"{base}.harmony")
         _require_nonblank_str(e.rationale, f"{base}.rationale")
+
+        # BLOQUEIO (issue #17): veto de criacao de familia. `plan.elements`
+        # e sempre conteudo GERADO (nunca a edicao de uma track existente,
+        # que vive em `plan.edits`) — familia vetada em
+        # `brief.excluded_families` nao pode ser criada mesmo que a IA
+        # tenha julgado (via `rationale`) que ela esta faltando no MIDI de
+        # origem. O veto do usuario manda sobre o julgamento da IA.
+        element_family = _style_family_for_role(e.role)
+        if element_family is not None and element_family in excluded_families:
+            raise PlanValidationError(
+                f"{base}.role",
+                (
+                    f"role {e.role!r} belongs to family {element_family!r}, "
+                    f"which brief.excluded_families vetoes — a IA nao pode "
+                    f"criar essa familia mesmo julgando que falta no MIDI "
+                    f"de origem (rationale: {e.rationale!r})"
+                ),
+            )
 
         if not isinstance(e.register, list) or len(e.register) != 2:
             raise PlanValidationError(

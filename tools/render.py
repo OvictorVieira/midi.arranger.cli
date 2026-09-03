@@ -85,6 +85,7 @@ from .plan import (
     PlanValidationError,
     _canonicalize_authorized_name,
     _load_brief_authorized_techniques,
+    _load_brief_excluded_families,
     _reject_style_techniques_without_brief,
     load,
     load_brief_instrument_tuning,
@@ -234,6 +235,44 @@ def _reject_unauthorized_style_techniques(
                     f"{tech.name!r} not in authorized_techniques for "
                     f"family {family!r} (brief authorized: {shown})"
                 )
+
+
+def _reject_excluded_family_elements(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> None:
+    """Barreira do render: recusa criar familia vetada em `brief.excluded_families`.
+
+    Dupla defesa em relacao a `plan.validate` (issue #17) — mesmo
+    `ArrangementPlan` construido em memoria, sem passar por `plan.load`,
+    nao pode gerar (`plan.elements`) conteudo de uma familia que o brief
+    veta, mesmo que a IA tenha julgado (via `rationale`) que ela esta
+    faltando no MIDI de origem. `plan.edits` fica fora do veto — edita
+    track que ja existe, nunca cria familia nova. Sem `plan.brief_ref` nao
+    ha veto declarado, entao nada e recusado aqui (mesmo default de
+    `plan.validate`)."""
+    if plan.brief_ref is None:
+        return
+    families_used = {
+        _style_family_for_role(e.role) for e in plan.elements
+    }
+    families_used.discard(None)
+    if not families_used:
+        return
+
+    try:
+        excluded = _load_brief_excluded_families(plan, plan_dir)
+    except PlanValidationError as exc:
+        raise RenderError(f"{exc.path}: {exc.message}") from None
+
+    for i, e in enumerate(plan.elements):
+        family = _style_family_for_role(e.role)
+        if family is not None and family in excluded:
+            raise RenderError(
+                f"elements[{i}].role: role {e.role!r} belongs to family "
+                f"{family!r}, which brief.excluded_families vetoes — a IA "
+                f"nao pode criar essa familia mesmo julgando que falta "
+                f"(rationale: {e.rationale!r})"
+            )
 
 
 # --- dataclasses do relatorio ----------------------------------------------
@@ -1726,11 +1765,12 @@ def render(
 
     Raises:
       RenderError: source inexistente, output apontaria para o source,
-        elemento pad sem instrument.plugin/preset, OU tecnica de
+        elemento pad sem instrument.plugin/preset, tecnica de
         `style.<familia>.techniques[]` fora de
-        `brief.style.<familia>.authorized_techniques` (a barreira do
-        render roda antes de `validate_plan`, entao violacao de
-        autorizacao vira `RenderError`, nao `PlanValidationError`).
+        `brief.style.<familia>.authorized_techniques`, OU `plan.elements[]`
+        gerando familia vetada em `brief.excluded_families` (issue #17) — as
+        duas barreiras rodam antes de `validate_plan`, entao violacao vira
+        `RenderError`, nao `PlanValidationError`.
       PlanValidationError: quando `plan` e invalido, vindo de caminho ou
         construido em memoria.
 
@@ -1752,6 +1792,7 @@ def render(
         plan = load(plan_path)
     plan_dir = resolved_plan_dir
     _reject_unauthorized_style_techniques(plan, plan_dir)
+    _reject_excluded_family_elements(plan, plan_dir)
     validate_plan(plan, plan_dir)
     plan = normalize_style_defaults(plan)
 

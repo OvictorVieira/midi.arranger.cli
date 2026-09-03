@@ -392,6 +392,44 @@ A skill `midi-brief` fecha o ciclo: lista as técnicas disponíveis por família
 e o resumo de cada uma, apresenta ao usuário, e preenche `authorized_techniques` só com o que ele
 marcou. Silêncio ou dúvida não autoriza.
 
+### Decisão de criar família ausente e veto do usuário (issue #17)
+
+A criação de bateria/baixo/elementos harmônicos do zero já existia antes da issue #17: qualquer
+`plan.elements[]` gera conteúdo novo independentemente de o MIDI de origem ter uma track daquela
+família — o mecanismo é `role`/`_style_family_for_role` mais o dispatch de `_ROLE_RENDERERS`, o
+mesmo caminho de qualquer elemento do plano. O que faltava era a **camada de decisão**: a IA
+declara *por quê* está criando (AC-03) e o usuário pode vetar a criação de uma família inteira
+mesmo que a IA julgue que ela falta (AC-04 e a "restrição do brief manda").
+
+1. **Justificativa (AC-03).** Todo `plan.elements[]` já carrega `rationale` obrigatório e não vazio
+   (regra pré-existente). Quando o elemento preenche uma lacuna do MIDI de origem, o `rationale`
+   descreve isso em prosa — não há campo estrutural adicional além do já exigido, porque a
+   justificativa textual É o mecanismo de auditoria (o mesmo papel que `rationale` cumpre para
+   qualquer outro elemento do plano).
+
+2. **Veto (AC-04 / "não quero guitarra gerada").** `brief.excluded_families` (`tools/brief_schema.py`)
+   é um array de vocabulário fechado (`STYLE_FAMILIES`: `bass`, `drums`, `guitar`, `keys`) — nunca
+   texto livre parseado de `restricoes`, que continua sendo prosa documental sem maquinário atrás.
+   Campo opcional: brief antigo sem `excluded_families` não veta nada, preservando o comportamento
+   de criação já entregue. Duplicata na lista é `E_BRIEF_EXCLUDED_FAMILIES_DUPLICATE`.
+
+   O veto se aplica só a `plan.elements[]` (conteúdo **gerado**) — `plan.edits[]` fica de fora porque
+   edita uma track que já existe no MIDI de origem, nunca cria família nova.
+
+   Mesmo padrão de três camadas de `authorized_techniques` (seção acima):
+   - **No plano.** `tools/plan.py::validate` lê o brief apontado por `plan.brief_ref`, confere o
+     `sha256` (mesma função `_read_and_verify_brief` que `_load_brief_authorized_techniques` usa) e
+     recusa qualquer `plan.elements[i].role` cuja família (`_style_family_for_role`) esteja em
+     `brief.excluded_families` — `PlanValidationError` no path `elements[i].role`, mesmo que o
+     `rationale` do elemento diga explicitamente que a IA julgou a família ausente. Plano sem
+     `brief_ref` não tem veto nenhum (não há como saber o que o usuário vetou), mesmo default seguro
+     de "sem brief, sem restrição adicional" — a criação sem veto já era o comportamento entregue
+     antes da issue #17.
+   - **No render.** `tools/render.py::_reject_excluded_family_elements` repete a barreira antes de
+     `validate_plan`, para plano construído em memória sem passar por `plan.load` — violação vira
+     `RenderError` explícito citando `role`, família e o `rationale` do elemento, nunca aplica
+     parcial nem ignora em silêncio.
+
 ### Inventário de técnicas do motor
 
 Manual e motor são coisas separadas. `knowledge/tecnicas/*.md` documenta técnicas;
