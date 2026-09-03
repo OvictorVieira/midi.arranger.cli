@@ -201,9 +201,10 @@ fisico que o motor de tecnicas usa para recusar nota abaixo da corda
 solta mais grave, e o export achatado (um canal por track, nao por
 corda) — onde a deteccao automatica simplesmente nao funciona.
 
-**Pergunte SO pela familia que existe no MIDI de origem E esta em
-`families_in_scope`.** Familia fora do escopo declarado na pergunta 0 nao
-recebe pergunta de instrumento de corda mesmo que exista no MIDI. Olhe o
+**Pergunte SO pela familia presente (ver sinais de presenca abaixo — origem
+OU sendo criada nesta sessao) E que esta em `families_in_scope`.** Familia
+fora do escopo declarado na pergunta 0 nao recebe pergunta de instrumento
+de corda mesmo que exista no MIDI. Olhe o
 `tuning_inference` que o `analyze` do passo 1 devolveu: track com
 `is_stringed: true` cujo nome ou `governing_programs` (24-31 = guitarra,
 32-37 = baixo) indicam guitarra vira pergunta de guitarra; indicam baixo
@@ -235,9 +236,18 @@ sinais aparece:
   musico, banda, produtor ou corpus proprio — em vez de silencio/default.
   Uma referencia de guitarra so faz sentido se ha guitarra na musica;
   tratar isso como sinal fecha o buraco do export achatado sem inventar
-  heuristica nova de classificacao automatica.
+  heuristica nova de classificacao automatica; OU
+- `session.intent` inclui `create` (ou `mixed`) e a familia esta em
+  `families_in_scope` — a familia esta sendo GERADA do zero nesta sessao,
+  entao nunca vai existir sinal nenhum na origem pra ela herdar. O
+  default de `create` e justamente "familias AUSENTES do MIDI de origem"
+  (pergunta 0); sem esta terceira condicao, a guitarra/baixo que a sessao
+  esta criando nunca alcancaria a pergunta de afinacao, e a linha nova
+  sairia sem piso fisico declarado nem convencao de corda pro motor de
+  tecnicas aplicar (mesmo defeito que a issue #44 corrigiu, agora pela
+  ausencia de origem em vez de export achatado).
 
-MIDI sem nenhum dos dois sinais para aquela familia NAO pergunta
+MIDI sem nenhum dos tres sinais para aquela familia NAO pergunta
 configuracao de corda — a pergunta so aparece pra familia presente por
 pelo menos um caminho.
 

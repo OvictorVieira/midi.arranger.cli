@@ -221,6 +221,10 @@ def test_referenced_tools_are_registered():
         "roda SO para as familias em `families_in_scope`",
         # Nota sobre retomada de sessao (fora do escopo).
         ".midiarranger/sessions/",
+        # Achado do Codex na PR #99 — familia de corda sendo CRIADA (intent
+        # create/mixed, ausente da origem) tambem precisa da pergunta de
+        # afinacao, senao a linha nova nasce sem piso fisico declarado.
+        "sendo GERADA do zero nesta sessao",
     ],
 )
 def test_body_carries_required_clauses(clause):
