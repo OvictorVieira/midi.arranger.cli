@@ -1357,8 +1357,41 @@ def _apply_drums_ghost_notes(
     # continua por track: as regras de ONDE dentro de um intervalo entre
     # backbeats (`violates_position_rules`) sao sobre candidatos da MESMA
     # track fisica, que e onde o intervalo existe fisicamente.
-    bar_counts: dict[int, int] = {}
-    bar_targets: dict[int, int] = {}
+    #
+    # Segunda rodada do Codex no PR #107: o fix acima so cobre "multiplas
+    # tracks fisicas DENTRO de uma so chamada desta funcao" — mas
+    # `tools.render.render()` chama esta funcao (via `_run_style_pipeline`)
+    # SEPARADAMENTE por edit de bateria distinta em `plan.edits[]` e mais
+    # uma vez por elemento de bateria GERADO, cada chamada com seu proprio
+    # `mid.tracks`. Duas edits de bateria (nomes de track diferentes) com
+    # backbeat no mesmo compasso, ou uma edit de bateria mais um elemento
+    # gerado, cada um caindo em chamada SEPARADA desta funcao, cada qual
+    # recriando `bar_counts`/`bar_targets` do zero, podiam somar mais que
+    # `max_per_bar` ghosts no mesmo compasso no ARQUIVO FINAL (o que um
+    # ouvinte de fato escuta junto) — a cota local so protegia uma unidade
+    # de edicao por vez, nunca o render inteiro.
+    #
+    # `context.parameters["drum_bar_quota"]` (canal separado de
+    # `style.parameters`, mesmo padrao ja usado por `sections`/`bars`/
+    # `tuning`) e um dict MUTAVEL criado UMA VEZ por chamada de
+    # `tools.render.render()` (nunca global/modulo — resetado a cada
+    # render, preserva determinismo entre renders separados) e repassado a
+    # TODO despacho de tecnica de bateria dessa chamada. Quando presente,
+    # `bar_counts`/`bar_targets` mutam DENTRO dele em vez de dicts locais
+    # novos — a cota entao e compartilhada nao so entre tracks fisicas de
+    # uma chamada, mas entre TODAS as chamadas desta funcao dentro do mesmo
+    # `render()`. Chamada direta da tecnica fora do pipeline de
+    # `tools.render` (testes unitarios do motor, por exemplo) nao passa
+    # esse parametro e cai no dict local de sempre — retrocompatibilidade
+    # preservada, e a funcao continua autocontida (o estado compartilhado
+    # chega por `context.parameters`, nunca por global/nonlocal capturado).
+    quota_state = context.parameters.get("drum_bar_quota")
+    if isinstance(quota_state, dict):
+        bar_counts: dict[int, int] = quota_state.setdefault("counts", {})
+        bar_targets: dict[int, int] = quota_state.setdefault("targets", {})
+    else:
+        bar_counts = {}
+        bar_targets = {}
 
     def select_candidates(candidates):
         shuffled = list(candidates)
