@@ -74,24 +74,28 @@ SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 # --- helpers de IO ---------------------------------------------------------
 
-def _resolve_midi(path_str: str) -> Path:
+def _resolve_midi(path_str: str, *, field: str = "midi_path") -> Path:
     """Valida existencia/permissao/formato do MIDI e devolve o Path resolvido.
 
     Erros viram `ToolError` com codigo dedicado. Nunca stack trace.
     `midi_path` vazio nao chega aqui: input_schema exige minLength=1.
+    `field` identifica, no `ToolError.path`, qual campo do payload originou
+    o caminho invalido — default `midi_path` preserva o comportamento
+    existente; chamadores de outros campos de caminho (ex.: `reference_corpus`)
+    passam o proprio nome.
     """
     path = Path(path_str).expanduser()
     if not path.exists():
         raise ToolError(
             "E_MIDI_NOT_FOUND",
             f"arquivo MIDI nao encontrado: {path_str}",
-            path="midi_path",
+            path=field,
         )
     if not path.is_file():
         raise ToolError(
             "E_MIDI_NOT_FILE",
             f"caminho nao e arquivo: {path_str}",
-            path="midi_path",
+            path=field,
         )
     try:
         with open(path, "rb") as f:
@@ -100,21 +104,30 @@ def _resolve_midi(path_str: str) -> Path:
         raise ToolError(
             "E_MIDI_PERMISSION",
             f"sem permissao para ler {path_str}",
-            path="midi_path",
+            path=field,
         ) from None
     except OSError as exc:
         raise ToolError(
             "E_MIDI_IO",
             f"erro lendo MIDI {path_str}: {exc}",
-            path="midi_path",
+            path=field,
         ) from None
     if head != b"MThd":
         raise ToolError(
             "E_MIDI_INVALID",
             f"arquivo nao e MIDI valido (header != 'MThd'): {path_str}",
-            path="midi_path",
+            path=field,
         )
     return path
+
+
+def _resolve_reference_corpus(payload: dict[str, Any]) -> list[Path]:
+    """Resolve `reference_corpus` (lista opcional de paths de MIDI de
+    referencia) com a mesma validacao de `midi_path`. Ausente ou vazio
+    devolve lista vazia — o chamador decide se isso vira `None` para
+    `render_mod.render` (checagem anti-copia pulada, retrocompativel)."""
+    raw = payload.get("reference_corpus") or []
+    return [_resolve_midi(item, field="reference_corpus") for item in raw]
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -1415,6 +1428,20 @@ def _persona_issue_to_dict(i) -> dict[str, Any]:
     }
 
 
+def _anticopy_issue_to_dict(i) -> dict[str, Any]:
+    return {
+        "validator": "anticopy",
+        "severity": i.severity,
+        "element_id": i.element_id,
+        "track": i.track,
+        "bar": int(i.bar),
+        "n": int(i.n),
+        "source": i.source,
+        "source_track": i.source_track,
+        "message": i.message,
+    }
+
+
 def _collision_report_to_dict(rep) -> dict[str, Any]:
     return {
         "relocations": [
@@ -1508,11 +1535,33 @@ _PERSONA_ISSUE_SCHEMA = {
     ],
 }
 
+_ANTICOPY_ISSUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "validator": {"const": "anticopy"},
+        "severity": {"type": "string"},
+        "element_id": {"type": "string"},
+        "track": {"type": "string"},
+        "bar": {"type": "integer"},
+        "n": {"type": "integer"},
+        "source": {"type": "string"},
+        "source_track": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "required": [
+        "validator", "severity", "element_id", "track", "bar", "n",
+        "source", "source_track", "message",
+    ],
+}
+
 def _issues_schema_block() -> dict[str, Any]:
     """Reaproveita o bloco `harmony_issues/placement_issues/... + collision`.
 
     Compartilhado entre render e validate — ambos devolvem o mesmo core de
-    relatorio dos validadores.
+    relatorio dos validadores. `anticopy_issues` NAO entra aqui: so `render`
+    recebe `reference_corpus` e roda a checagem anti-copia (`validate`
+    audita um MIDI ja renderizado sem corpus de referencia); ver
+    `RENDER_TOOL.output_schema` para o bloco proprio de `render`.
     """
     return {
         "collision": _COLLISION_SCHEMA,
@@ -1592,10 +1641,16 @@ RENDER_DESCRIPTION = (
     "originais saem NOTA A NOTA IDENTICAS (nada declarado para edit fica "
     "byte-identico no arquivo de saida). Roda todos os validadores (colisao, "
     "harmonia, placement, artifice, persona) e devolve o relatorio LEGIVEL "
-    "POR MAQUINA — severidade por item — para o agente fechar o loop. Nunca "
-    "sobrescreve o MIDI de origem: se `output_path` colidir com `midi_path`, "
-    "erro. Mesmo plano + mesmo source + mesma seed produz arquivo byte-identico. "
-    "Use apos plan.validate estar limpo — nao gaste ciclo renderizando plano invalido."
+    "POR MAQUINA — severidade por item — para o agente fechar o loop. Passe "
+    "`reference_corpus` (paths para MIDI de referencia) para tambem rodar o "
+    "validador anti-copia (AC-16): janelas de eventos da saida sao comparadas "
+    "contra o corpus, invariante a transposicao e mudanca de andamento, e "
+    "qualquer casamento vira `anticopy_issues` com severidade `error`. Sem "
+    "`reference_corpus`, a checagem e pulada e `anticopy_issues` volta vazio "
+    "(retrocompativel). Nunca sobrescreve o MIDI de origem: se `output_path` "
+    "colidir com `midi_path`, erro. Mesmo plano + mesmo source + mesma seed "
+    "produz arquivo byte-identico. Use apos plan.validate estar limpo — nao "
+    "gaste ciclo renderizando plano invalido."
 )
 
 
@@ -1620,6 +1675,7 @@ def _render_impl(
 
     strict_persona = bool(payload.get("strict_persona", False))
     output_path = payload.get("output_path")
+    reference_corpus = _resolve_reference_corpus(payload)
 
     try:
         report = render_mod.render(
@@ -1628,6 +1684,7 @@ def _render_impl(
             source_path=str(src),
             strict_persona=strict_persona,
             plan_dir=_plan_dir_from_payload(payload),
+            reference_corpus=[str(p) for p in reference_corpus] or None,
         )
     except plan_mod.PlanValidationError as exc:
         raise ToolError(
@@ -1681,6 +1738,7 @@ def _render_impl(
         "placement_issues": [_placement_issue_to_dict(i) for i in report.placement_issues],
         "artifice_issues": [_artifice_issue_to_dict(i) for i in report.artifice_issues],
         "persona_issues": [_persona_issue_to_dict(i) for i in report.persona_issues],
+        "anticopy_issues": [_anticopy_issue_to_dict(i) for i in report.anticopy_issues],
         "edits": [
             {
                 "track": ed.track,
@@ -1749,6 +1807,10 @@ RENDER_TOOL = Tool(
             "output_path": {"type": ["string", "null"]},
             "seed": {"type": "integer", "minimum": 0},
             "strict_persona": {"type": "boolean"},
+            "reference_corpus": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
         },
         "required": ["midi_path"],
     },
@@ -1760,11 +1822,12 @@ RENDER_TOOL = Tool(
             "seed": {"type": "integer"},
             "elements": {"type": "array", "items": _ELEMENT_REPORT_SCHEMA},
             **_issues_schema_block(),
+            "anticopy_issues": {"type": "array", "items": _ANTICOPY_ISSUE_SCHEMA},
             "edits": {"type": "array", "items": _EDIT_REPORT_SCHEMA},
         },
         "required": [
             "output_path", "source_sha256", "seed", "elements",
-            *_ISSUES_REQUIRED, "edits",
+            *_ISSUES_REQUIRED, "anticopy_issues", "edits",
         ],
     },
     func=_render_impl,
