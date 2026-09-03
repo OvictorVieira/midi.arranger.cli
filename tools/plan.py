@@ -65,6 +65,21 @@ EDIT_INTENSITY_MAX = 1.0
 
 STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
 STYLE_CONFIDENCE_LEVELS = ("high", "medium", "low", "default")
+
+# --- issue #96 — sessao de trabalho ---------------------------------------
+#
+# O plano herda o bloco `session` do brief: mesmo vocabulario fechado de
+# `intent`, mesmas famílias em `families_in_scope`. O plano nao inventa
+# nem sobrescreve — carrega o snapshot para que o render/harness saibam
+# em que rodada de trabalho o plano vive.
+#
+# Regra de coerencia do plano: quando `session.families_in_scope` esta
+# declarado, nenhum elemento gerado (`plan.elements`) de familia fora do
+# escopo entra, e nenhum `plan.style.<outra-familia>.techniques[]` pode
+# aparecer. Tracks copiadas do MIDI em `plan.edits` sao livres porque
+# saem byte-identicas quando nao recebem tecnica.
+SESSION_INTENTS = ("edit", "create", "layer", "transition", "mixed")
+SESSION_FIELDS = ("id", "intent", "families_in_scope", "created_at")
 STYLE_FAMILY_REQUIRED_FIELDS = (
     "reference",
     "researched_at",
@@ -249,6 +264,25 @@ class FamilyStyle:
 
 
 @dataclass
+class PlanSession:
+    """Sessao de trabalho herdada do brief (issue #96).
+
+    - `id`: string nao vazia (o brief usa UUID; o plano nao valida formato,
+      so exige nao-vazio — o brief e a fonte de verdade).
+    - `intent`: um de `SESSION_INTENTS`.
+    - `families_in_scope`: subconjunto de STYLE_FAMILIES sem duplicatas.
+      Vazio significa que o plano nao pode declarar tecnica nem elemento
+      de familia nenhuma (raramente util; para nao restringir, omita o
+      bloco inteiro).
+    - `created_at`: ISO-8601 UTC (`YYYY-MM-DDTHH:MM:SS[.fff]Z`).
+    """
+    id: str
+    intent: str
+    families_in_scope: list[str]
+    created_at: str
+
+
+@dataclass
 class ArrangementPlan:
     version: int
     seed: int
@@ -261,6 +295,7 @@ class ArrangementPlan:
     transitions: list[Transition] = field(default_factory=list)
     edits: list[PlanEdit] = field(default_factory=list)
     style: dict[str, FamilyStyle] | None = None
+    session: PlanSession | None = None
 
 
 # --- validacao --------------------------------------------------------------
@@ -913,6 +948,112 @@ def _validate_suggested_instrument(
         )
 
 
+_ISO_DATETIME_UTC_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"
+)
+
+
+def _validate_session(session: Any) -> None:
+    """Valida o bloco `session` do plano (issue #96).
+
+    Mesmos vocabularios fechados do brief — `intent` em SESSION_INTENTS,
+    cada familia em STYLE_FAMILIES, sem duplicatas. Estrutura invalida vira
+    `PlanValidationError` com path exato.
+    """
+    if not isinstance(session, PlanSession):
+        raise PlanValidationError(
+            "session", f"must be PlanSession, got {type(session).__name__}"
+        )
+    _require_nonempty_str(session.id, "session.id")
+    _require_in(session.intent, SESSION_INTENTS, "session.intent")
+    if not isinstance(session.families_in_scope, list):
+        raise PlanValidationError(
+            "session.families_in_scope",
+            f"must be list, got {type(session.families_in_scope).__name__}",
+        )
+    for i, family in enumerate(session.families_in_scope):
+        if family not in STYLE_FAMILIES:
+            raise PlanValidationError(
+                f"session.families_in_scope[{i}]",
+                f"expected one of {list(STYLE_FAMILIES)}, got {family!r}",
+            )
+    if len(session.families_in_scope) != len(set(session.families_in_scope)):
+        raise PlanValidationError(
+            "session.families_in_scope",
+            f"duplicate entries: {session.families_in_scope!r}",
+        )
+    if (
+        not isinstance(session.created_at, str)
+        or not _ISO_DATETIME_UTC_RE.match(session.created_at)
+    ):
+        raise PlanValidationError(
+            "session.created_at",
+            (
+                f"must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SS[.fff]Z), "
+                f"got {session.created_at!r}"
+            ),
+        )
+    try:
+        date.fromisoformat(session.created_at[:10])
+        # tempo real do calendario: `datetime.fromisoformat` no 3.11+ aceita `Z`.
+        from datetime import datetime as _datetime
+        _datetime.fromisoformat(session.created_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise PlanValidationError(
+            "session.created_at",
+            f"is not a real calendar date/time: {session.created_at!r}",
+        ) from None
+
+
+def _validate_session_scope(plan: ArrangementPlan) -> None:
+    """Fronteira de escopo da sessao (issue #96).
+
+    `plan.session.families_in_scope` recorta o que o plano pode fazer:
+    - nenhum `plan.style.<familia>.techniques[]` fora do escopo pode ter item;
+    - nenhum `plan.elements[]` cuja `role` mapeie para familia fora do escopo.
+
+    `plan.edits[]` fica livre: tracks do MIDI que nao entram no escopo saem
+    byte-identicas (sem receber tecnica), o que ja e o comportamento seguro
+    de `render._apply_style_techniques_to_edit_tracks` para toda familia sem
+    entrada em `plan.style`. Role sem mapeamento de familia
+    (`_style_family_for_role` retorna None) tambem passa — o escopo cobre
+    material das quatro familias musicais, o resto e neutro.
+    """
+    if plan.session is None:
+        return
+    scope = set(plan.session.families_in_scope)
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            if family not in STYLE_FAMILIES:
+                continue
+            if not isinstance(entry, FamilyStyle):
+                continue
+            if not entry.techniques:
+                continue
+            if family not in scope:
+                raise PlanValidationError(
+                    f"style.{family}.techniques",
+                    (
+                        f"family {family!r} declares techniques but is outside "
+                        f"session.families_in_scope ({sorted(scope) or '[]'}); "
+                        "sessao de trabalho recorta o escopo — tecnica so pode "
+                        "aparecer para familia em escopo"
+                    ),
+                )
+    for i, element in enumerate(plan.elements):
+        family = _style_family_for_role(element.role)
+        if family is None:
+            continue
+        if family not in scope:
+            raise PlanValidationError(
+                f"elements[{i}].role",
+                (
+                    f"role {element.role!r} belongs to family {family!r}, "
+                    f"outside session.families_in_scope ({sorted(scope) or '[]'})"
+                ),
+            )
+
+
 def validate(
     plan: ArrangementPlan, plan_dir: Path | str | None = None,
 ) -> list[str]:
@@ -947,6 +1088,9 @@ def validate(
         )
     if not isinstance(plan.seed, int) or isinstance(plan.seed, bool):
         raise PlanValidationError("seed", f"must be int, got {type(plan.seed).__name__}")
+
+    if plan.session is not None:
+        _validate_session(plan.session)
 
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
@@ -1103,6 +1247,9 @@ def validate(
                     "must not contain '|' — separador reservado do carimbo",
                 )
 
+    # BLOQUEIO: fronteira de escopo da sessao (issue #96).
+    _validate_session_scope(plan)
+
     # AVISO: todos os 5 eixos sobem simultaneamente entre secoes consecutivas.
     for i in range(len(plan.sections) - 1):
         a = plan.sections[i]
@@ -1135,6 +1282,15 @@ def _brief_ref_to_dict(ref: BriefRef) -> dict[str, Any]:
     return {
         "path": ref.path,
         "sha256": ref.sha256,
+    }
+
+
+def _session_to_dict(s: PlanSession) -> dict[str, Any]:
+    return {
+        "id": s.id,
+        "intent": s.intent,
+        "families_in_scope": list(s.families_in_scope),
+        "created_at": s.created_at,
     }
 
 
@@ -1234,6 +1390,8 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
         }
     if plan.brief_ref is not None:
         data["brief_ref"] = _brief_ref_to_dict(plan.brief_ref)
+    if plan.session is not None:
+        data["session"] = _session_to_dict(plan.session)
     return data
 
 
@@ -1254,6 +1412,26 @@ def _brief_ref_from_dict(data: Any) -> BriefRef:
     return BriefRef(
         path=_require_field(data, "path", "brief_ref"),
         sha256=_require_field(data, "sha256", "brief_ref"),
+    )
+
+
+def _session_from_dict(data: Any) -> PlanSession:
+    if not isinstance(data, dict):
+        raise PlanValidationError(
+            "session", f"must be object, got {type(data).__name__}",
+        )
+    _reject_unknown_keys(data, SESSION_FIELDS, "session")
+    families = _require_field(data, "families_in_scope", "session")
+    if not isinstance(families, list):
+        raise PlanValidationError(
+            "session.families_in_scope",
+            f"must be list, got {type(families).__name__}",
+        )
+    return PlanSession(
+        id=_require_field(data, "id", "session"),
+        intent=_require_field(data, "intent", "session"),
+        families_in_scope=list(families),
+        created_at=_require_field(data, "created_at", "session"),
     )
 
 
@@ -1386,6 +1564,7 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],
         style=_style_from_dict(data["style"]) if "style" in data else None,
         brief_ref=_brief_ref_from_dict(data["brief_ref"]) if "brief_ref" in data else None,
+        session=_session_from_dict(data["session"]) if "session" in data else None,
     )
 
 

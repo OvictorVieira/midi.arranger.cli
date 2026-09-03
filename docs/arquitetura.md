@@ -98,6 +98,37 @@ Contexto limpo a cada iteração significa que **todo estado vive em arquivo**.
 de ser consumido em memória: o render fica determinístico, auditável e re-executável sem refazer
 pesquisa.
 
+### Bloco `session` (issue #96)
+
+`session` é a **fronteira de trabalho**: identifica uma rodada focada com um `intent` (o que o
+usuário está fazendo nessa passada) e um recorte de famílias em jogo. Vive no brief e é herdado
+pelo plano — nunca inventado pelo agente no meio do caminho. O bloco é **opcional**: brief e plano
+sem `session` continuam válidos e byte-idênticos ao que sempre foram (modo monolítico).
+
+Campos:
+
+- `id`: string não vazia (o brief usa UUID; o plano só exige não-vazio — o brief é a fonte).
+- `intent`: vocabulário FECHADO — `edit`, `create`, `layer`, `transition`, `mixed`.
+- `families_in_scope`: subconjunto sem duplicatas de `bass`/`drums`/`guitar`/`keys`.
+- `created_at`: ISO-8601 UTC — `YYYY-MM-DDTHH:MM:SS[.fff]Z`, data real do calendário.
+
+**Fronteira de escopo do plano.** Quando `session.families_in_scope` está declarado:
+
+- nenhum `plan.style.<outra-família>.techniques[]` pode aparecer com item — validado por
+  `tools.plan.validate` em `_validate_session_scope`;
+- nenhum `plan.elements[]` cujo `role` mapeie para família fora do escopo entra (o mapeamento
+  role→família reusa `ROLE_STYLE_FAMILIES` de `tools/plan.py`, o mesmo que o render já usa);
+- `plan.edits[]` fica livre: track do MIDI que não entra no escopo sai byte-idêntica, sem receber
+  técnica. É a mesma regra que já vale para família sem entrada em `plan.style` no render.
+
+**Persistência append-only.** Quando o consumidor (harness/CLI) decide arquivar a sessão, chama
+`tools.sessions.archive_session(plan, base_dir)`. O arquivo vai em
+`<base>/.midiarranger/sessions/<id>-<intent>-<famílias-com-dash>.json` — nome determinístico, sem
+timestamp (o `created_at` do plano já carrega o momento). Se o arquivo já existir, é erro
+(`SessionArchiveError`): colisão aponta bug de id duplicado, nunca sobrescreve histórico. O módulo
+NÃO é chamado por `tools/render.py` — a ordem inviolável do pipeline não muda por causa desta
+issue, e o consumidor é quem invoca a persistência explicitamente.
+
 ### Bloco `influence` (perfil por música)
 
 `InfluenceProfile` é o contrato entre a **pesquisa** feita pela IA do usuário e o **dicionário de
