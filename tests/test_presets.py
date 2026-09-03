@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 from pathlib import Path
 
 from tools import presets
@@ -438,3 +439,129 @@ def test_scan_all_with_opaque_returns_both(tmp_path):
     grouped, opaque = presets.scan_all_with_opaque(pr)
     assert "Omnisphere" in grouped  # sempre listado
     assert any(op.plugin == "Superior Drummer 3" for op in opaque)
+
+
+# --- Kontakt library roots (achado Codex PR #95: "Classify library roots as
+# their host plugins") --------------------------------------------------------
+#
+# `~/Documents/Native Instruments/Libraries/<Library>/Instruments/*.nki` e o
+# layout canonico de instalacao de uma library Kontakt/Kontakt Player. O nome
+# da PASTA (`Nord Piano 3`, `Session Strings Pro`, etc.) e o nome comercial da
+# library, nao um plugin — quem toca o `.nki` e sempre Kontakt. Classificar a
+# library como se fosse plugin quebra o dedup por path em `scan_all` (o grupo
+# `Kontakt` dedicado fica vazio) e impede casar o preset de volta com
+# `plugins.scan`.
+
+def test_sweep_classifies_ni_library_as_kontakt_when_walked_via_documents(tmp_path):
+    documents = tmp_path / "Documents"
+    _touch(
+        documents / "Native Instruments" / "Libraries" / "Nord Piano 3"
+        / "Instruments" / "Grand.nki",
+        "binary",
+    )
+    pr = presets.PresetRoots(extra_roots=(documents,), disable_defaults=True)
+    found, _opaque = presets.sweep(pr)
+
+    assert [p.name for p in found] == ["Grand"]
+    assert found[0].plugin == "Kontakt"
+    assert found[0].vendor == "Native Instruments"
+
+
+def test_scan_all_groups_ni_library_preset_under_kontakt_key(tmp_path):
+    documents = tmp_path / "Documents"
+    _touch(
+        documents / "Native Instruments" / "Libraries" / "Session Strings"
+        / "Instruments" / "Ensemble.nki",
+        "binary",
+    )
+    pr = presets.PresetRoots(extra_roots=(documents,), disable_defaults=True)
+    result = presets.scan_all(pr)
+
+    assert [p.name for p in result["Kontakt"]] == ["Ensemble"]
+    # A library nao pode virar uma chave de plugin propria.
+    assert "Session Strings" not in result
+
+
+def test_sweep_classifies_ni_library_as_kontakt_when_extra_root_points_at_library(
+    tmp_path,
+):
+    # Diagnostico: `extra_roots` apontando direto pra dentro da library (ex.:
+    # volume externo com a library isolada), sem passar por `Documents/
+    # Native Instruments` no caminho relativo ao root do sweep.
+    library_root = (
+        tmp_path / "External Drive" / "Native Instruments" / "Libraries"
+        / "Nord Piano 3"
+    )
+    _touch(library_root / "Instruments" / "Grand.nki", "binary")
+    pr = presets.PresetRoots(extra_roots=(library_root,), disable_defaults=True)
+    found, _opaque = presets.sweep(pr)
+
+    assert [p.name for p in found] == ["Grand"]
+    assert found[0].plugin == "Kontakt"
+
+
+# --- permission-denied roots (achado Codex PR #95: "Report permission-denied
+# preset roots") ---------------------------------------------------------------
+#
+# Um root canonico ou vendor dir whitelisted que EXISTE mas nao pode ser
+# listado (`PermissionError`) tem que aparecer em `unresolved_roots`, nao
+# virar silenciosamente "biblioteca vazia" — o harness precisa distinguir os
+# dois casos pra saber se ha acao do usuario pendente (ajustar permissao).
+
+def test_discover_roots_reports_permission_denied_canonical_root(tmp_path, monkeypatch):
+    blocked = tmp_path / "Library" / "Audio" / "Presets"
+    blocked.mkdir(parents=True)
+    _touch(blocked / "Spectrasonics" / "hidden.prt_a", "binary")
+
+    real_iterdir = pathlib.Path.iterdir
+
+    def fake_iterdir(self):
+        if self == blocked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", fake_iterdir)
+
+    pr = presets.PresetRoots(extra_roots=(blocked,), disable_defaults=True)
+    roots, _discoveries, unresolved = presets.discover_roots(pr)
+
+    assert blocked in roots
+    denied = [u for u in unresolved if u.reason == "permission_denied"]
+    assert len(denied) == 1
+    assert denied[0].source == str(blocked)
+    assert denied[0].target == str(blocked)
+
+
+def test_discover_roots_reports_permission_denied_vendor_dir(tmp_path, monkeypatch):
+    # `~/Documents/<Vendor>` e o padrao filtrado por whitelist; se a propria
+    # vendor dir nao puder ser listada, isso tambem precisa virar diagnostico
+    # (nao so o canonical root de primeiro nivel).
+    documents = tmp_path / "Documents"
+    blocked_vendor = documents / "Arturia"
+    _touch(blocked_vendor / "Pigments" / "preset.arturiax", "binary")
+
+    real_iterdir = pathlib.Path.iterdir
+
+    def fake_iterdir(self):
+        if self == blocked_vendor:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", fake_iterdir)
+
+    pr = presets.PresetRoots(extra_roots=(documents,), disable_defaults=True)
+    _roots, _discoveries, unresolved = presets.discover_roots(pr)
+
+    denied = [u for u in unresolved if u.reason == "permission_denied"]
+    assert len(denied) == 1
+    assert denied[0].source == str(blocked_vendor)
+
+
+def test_discover_roots_permission_denied_does_not_report_readable_roots(tmp_path):
+    # Sem nenhum bloqueio real, nao pode aparecer 'permission_denied'
+    # falso-positivo.
+    documents = tmp_path / "Documents"
+    _touch(documents / "Arturia" / "Pigments" / "preset.arturiax", "binary")
+    pr = presets.PresetRoots(extra_roots=(documents,), disable_defaults=True)
+    _roots, _discoveries, unresolved = presets.discover_roots(pr)
+    assert [u for u in unresolved if u.reason == "permission_denied"] == []

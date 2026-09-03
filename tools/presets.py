@@ -253,7 +253,7 @@ class UnresolvedRoot:
 
     source: str
     target: str
-    reason: str  # 'target_unavailable'
+    reason: str  # 'target_unavailable' ou 'permission_denied'
 
 
 @dataclass(frozen=True)
@@ -375,6 +375,21 @@ _GENERIC_DIR_NAMES: frozenset[str] = frozenset({
     "Bank", "Sound Sets", "Sound Packs",
 })
 
+# Segmento que marca uma library de instrumento Kontakt/Kontakt Player: o
+# nome da PASTA (ex.: "Nord Piano 3") nao e o plugin que a toca — o host e
+# sempre Kontakt. Detectado no caminho ABSOLUTO (nao so relativo ao root),
+# porque `extra_roots` pode apontar direto pra dentro de uma library.
+_NI_VENDOR_DIR = "Native Instruments"
+_NI_LIBRARIES_DIR = "Libraries"
+
+
+def _is_native_instruments_library_path(path: Path) -> bool:
+    parts = path.parts
+    for i in range(len(parts) - 1):
+        if parts[i] == _NI_VENDOR_DIR and parts[i + 1] == _NI_LIBRARIES_DIR:
+            return True
+    return False
+
 
 def _classify(path: Path, root: Path) -> tuple[str | None, str]:
     """Deduz `(vendor, plugin)` a partir do caminho relativo ao root.
@@ -386,10 +401,16 @@ def _classify(path: Path, root: Path) -> tuple[str | None, str]:
       - Quando o "plugin" cai numa pasta generica (Presets / Libraries /
         Instruments / Patches / Programs / Banks / User / Factory), o parser
         desce para o proximo nivel real. Cobre padrao FabFilter
-        (`~/Documents/FabFilter/Presets/<Plugin>/*.ffp`) e Kontakt
-        (`~/Documents/Native Instruments/Libraries/<Library>/Instruments/*.nki`).
+        (`~/Documents/FabFilter/Presets/<Plugin>/*.ffp`).
+      - `.../Native Instruments/Libraries/<Library>/...` (o nome da library,
+        ex.: "Nord Piano 3", NAO e um plugin — quem toca esse `.nki` e
+        sempre Kontakt/Kontakt Player) → vendor="Native Instruments",
+        plugin="Kontakt", verificado no caminho ABSOLUTO pra cobrir tanto o
+        sweep generico quanto `extra_roots` apontando direto pra library.
     Nome de plugin passa por `_PLUGIN_ALIASES` (ex.: 'NEXUS library' → 'Nexus').
     """
+    if _is_native_instruments_library_path(path):
+        return _NI_VENDOR_DIR, "Kontakt"
     try:
         rel = path.relative_to(root)
     except ValueError:
@@ -502,17 +523,29 @@ _LIBRARY_POINTER_HINTS: tuple[str, ...] = (
 )
 
 
-def _iter_discovery_dirs(root: Path, *, filter_vendor: bool) -> Iterable[Path]:
+def _iter_discovery_dirs(
+    root: Path, *, filter_vendor: bool, denied: list[Path] | None = None,
+) -> Iterable[Path]:
     """Itera diretorios para descoberta sem seguir symlinks.
 
     A busca e limitada em profundidade: ponteiros de instalacao vivem perto da
     raiz do vendor; descer uma library inteira so aumentaria custo e ruido.
+
+    Quando `denied` e passado, todo diretorio que existe mas nao pode ser
+    listado por `PermissionError` (o root canonico em si, uma vendor dir
+    whitelisted, ou algo mais fundo na descoberta) e acrescentado a ele — o
+    chamador usa isso pra relatar `permission_denied` em vez de tratar
+    silenciosamente como biblioteca ausente/vazia.
     """
     if not root.is_dir():
         return
     try:
         first_level = sorted(root.iterdir())
-    except (OSError, PermissionError):
+    except PermissionError:
+        if denied is not None:
+            denied.append(root)
+        return
+    except OSError:
         return
 
     stack: list[tuple[Path, int]] = []
@@ -530,7 +563,11 @@ def _iter_discovery_dirs(root: Path, *, filter_vendor: bool) -> Iterable[Path]:
             continue
         try:
             children = sorted(current.iterdir(), reverse=True)
-        except (OSError, PermissionError):
+        except PermissionError:
+            if denied is not None:
+                denied.append(current)
+            continue
+        except OSError:
             continue
         for child in children:
             try:
@@ -550,11 +587,17 @@ def discover_roots(
     busca, inclusive quando fica em volume externo. Ponteiro quebrado e
     relatado para o harness diagnosticar volume desmontado/permissao, nunca
     vira pedido automatico para o usuario configurar env var.
+
+    Um root canonico ou vendor dir whitelisted que EXISTE mas nao pode ser
+    listado (`PermissionError`) tambem e relatado em `unresolved` com
+    `reason="permission_denied"` — sem isso o harness nao distingue "biblioteca
+    vazia" de "bloqueado por permissao, precisa de acao do usuario".
     """
     seeds = _configured_roots(pr or PresetRoots())
     roots: list[Path] = []
     discoveries: list[DiscoveredRoot] = []
     unresolved: list[UnresolvedRoot] = []
+    denied: list[Path] = []
     queued: list[Path] = list(seeds)
     seen_roots: set[str] = set()
     seen_sources: set[str] = set()
@@ -568,7 +611,7 @@ def discover_roots(
         roots.append(root)
 
         for candidate in _iter_discovery_dirs(
-            root, filter_vendor=_needs_vendor_filter(root),
+            root, filter_vendor=_needs_vendor_filter(root), denied=denied,
         ):
             if not candidate.is_symlink():
                 continue
@@ -595,6 +638,16 @@ def discover_roots(
                     target=str(target),
                     reason="target_unavailable",
                 ))
+
+    seen_denied: set[str] = set()
+    for path in denied:
+        key = str(path)
+        if key in seen_denied:
+            continue
+        seen_denied.add(key)
+        unresolved.append(UnresolvedRoot(
+            source=key, target=key, reason="permission_denied",
+        ))
 
     return roots, discoveries, unresolved
 
