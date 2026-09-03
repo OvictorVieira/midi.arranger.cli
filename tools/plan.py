@@ -204,11 +204,27 @@ class PlanEdit:
       metadado puro (nao altera nota nenhuma). Chaves aceitas:
       `plugin` (str nao vazio), `preset` (str nao vazio), `verified` (bool,
       default False). Passa pelas mesmas regras de `tools/tracks.py`.
+    - `tool`: ferramenta-alvo desta track para resolucao de receita de
+      `style.<familia>.techniques[]` (ex.: "MODO Bass", "Superior Drummer").
+      Normalizada igual a `instrument.plugin` de elemento gerado (ver
+      `tools.render._normalize_tool_name`) — resolve a receita especifica do
+      manual quando existir; ausencia cai em `generic` sem fallback
+      artificial. SEPARADO de `suggested_instrument`: aquele e so metadado
+      de exibicao, este muda qual receita a tecnica le (ex.: sem declarar
+      `tool="modo_bass"`, `bass.attack_style` nao acha `keyswitch_dedo` na
+      receita `generic` e vira no-op — a track nunca ganha o keyswitch que
+      diz ao MODO BASS pra tocar com dedo). Quando declarado, `validate()`
+      exige string nao vazia apos strip com pelo menos um caractere
+      alfanumerico — valor so com separador/pontuacao (ex.: `"!!!"`)
+      normalizaria para vazio em `_normalize_tool_name` e cairia em
+      `generic` em silencio, recriando o mesmo no-op que este campo existe
+      para evitar.
     """
     track: str
     profile: str
     intensity: float
     suggested_instrument: dict[str, Any] | None = None
+    tool: str | None = None
 
 
 @dataclass
@@ -1060,6 +1076,32 @@ def validate(
             _validate_suggested_instrument(
                 ed.suggested_instrument, ed.profile, f"{base}.suggested_instrument",
             )
+        if ed.tool is not None:
+            _require_nonblank_str(ed.tool, f"{base}.tool")
+            if not any(ch.isalnum() for ch in ed.tool):
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    f"must contain at least one alphanumeric character, "
+                    f"got {ed.tool!r} (normalizes to no tool, which would "
+                    "silently fall back to the generic recipe)",
+                )
+            # `edit.tool` vira `plugin` no carimbo (`_stamp_edit_tracks`,
+            # tools/render.py) igual a `suggested_instrument.plugin` — mesma
+            # checagem ASCII/sem '|' daquele campo, senao o erro so aparece
+            # tarde no render (`_format_stamp`) em vez de aqui, na validacao.
+            from .tracks import is_ascii_safe
+
+            if not is_ascii_safe(ed.tool):
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    f"must be ASCII (meta-evento SMF nao carrega encoding), "
+                    f"got {ed.tool!r}",
+                )
+            if "|" in ed.tool:
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    "must not contain '|' — separador reservado do carimbo",
+                )
 
     # AVISO: todos os 5 eixos sobem simultaneamente entre secoes consecutivas.
     for i in range(len(plan.sections) - 1):
@@ -1135,6 +1177,8 @@ def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
     }
     if e.suggested_instrument is not None:
         data["suggested_instrument"] = dict(e.suggested_instrument)
+    if e.tool is not None:
+        data["tool"] = e.tool
     return data
 
 
@@ -1251,6 +1295,7 @@ def _edit_from_dict(data: dict[str, Any]) -> PlanEdit:
         profile=data["profile"],
         intensity=float(data["intensity"]),
         suggested_instrument=dict(suggested) if suggested is not None else None,
+        tool=data.get("tool"),
     )
 
 
