@@ -303,6 +303,24 @@ def test_generic_picked_reapplication_is_byte_identical():
     assert _structural_note_ons(twice) == _structural_note_ons(once)
 
 
+def test_generic_picked_saturated_velocity_is_not_reported_as_applied():
+    # Origem ja saturada no clamp [1, 127] (127 alternando com 1): o shift
+    # relativo nao produz nenhuma mudanca audivel de velocity. Achado do
+    # Codex na PR #104 — gravar o marcador de idempotencia mesmo sem
+    # nenhuma nota mudar fazia `_midi_bytes` enxergar bytes diferentes (o
+    # meta text em si) e o pipeline reportar a tecnica como aplicada ao
+    # usuario sem nada ter de fato mudado.
+    source = _make_midi([127, 1, 127, 1])
+    original_bytes = _serialize(source)
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    assert _serialize(out) == original_bytes
+
+
 def test_generic_fingered_style_remains_no_op():
     source = _make_midi([80, 90, 100, 110])
     original_bytes = _serialize(source)

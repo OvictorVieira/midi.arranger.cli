@@ -3034,10 +3034,29 @@ def _apply_bass_attack_style(
         # Mesma alternancia relativa do caminho MODO BASS (nunca absoluta) —
         # preserva a invariante de pressao: nota que a origem escreveu alta
         # nao pode virar baixa so por causa do downstroke/upstroke.
+        #
+        # Calcula os novos valores ANTES de escrever qualquer coisa: se toda
+        # nota ja esta saturada no clamp [1, 127] (ex.: velocity 127
+        # alternando com 1), o shift nao muda nada de audivel. Gravar o
+        # marcador mesmo assim faria `_midi_bytes` enxergar bytes diferentes
+        # (o meta text em si) e `_run_style_pipeline` reportar a tecnica como
+        # aplicada ao usuario sem nenhuma nota ter mudado — achado do Codex
+        # na PR #104. Sem mudanca real, nao ha nada pra tornar idempotente:
+        # pula a track inteira, sem marcador e sem escrita.
         half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
+        new_velocities = []
         for idx, (_start, msg) in enumerate(structural):
             shift = half_delta if idx % 2 == 0 else -half_delta
-            msg.velocity = max(1, min(127, msg.velocity + shift))
+            new_velocities.append(max(1, min(127, msg.velocity + shift)))
+
+        if all(
+            new == msg.velocity
+            for new, (_start, msg) in zip(new_velocities, structural, strict=True)
+        ):
+            continue
+
+        for (_start, msg), new_velocity in zip(structural, new_velocities, strict=True):
+            msg.velocity = new_velocity
 
         absolute = _collect_absolute(track)
         absolute.append((
