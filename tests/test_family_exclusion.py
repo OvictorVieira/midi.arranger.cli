@@ -175,6 +175,28 @@ def test_render_rejects_excluded_family_element_in_memory(tmp_path):
     assert not out.exists()
 
 
+def test_render_malformed_role_surfaces_as_plan_validation_error(tmp_path):
+    """Achado do Codex na PR #105: a barreira de exclusao roda ANTES de
+    `validate_plan` — `role` nao-string (plano em memoria montado errado,
+    sem passar por `plan.load`) nao pode estourar `TypeError` dentro da
+    barreira. O contrato de `render()` e que plano malformado sempre vira
+    `PlanValidationError`, nunca uma excecao interna do pipeline; a
+    barreira so calcula familia pra `role` que ja e string, e deixa
+    `validate_plan` reportar o tipo invalido normalmente."""
+    src = _build_source_without_bass(tmp_path)
+    plan = _build_plan(src)
+    plan.elements[0] = _bass_gap_fill_element()
+    plan.elements[0].role = ["bass"]  # type: ignore[assignment]
+    brief_path, sha = _write_brief_excluding(tmp_path, ["bass"])
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=sha)
+
+    out = tmp_path / "out.mid"
+    with pytest.raises(PlanValidationError):
+        render(plan, out, plan_dir=tmp_path)
+
+    assert not out.exists()
+
+
 def test_render_allows_creation_when_brief_declares_no_veto(tmp_path):
     src = _build_source_without_bass(tmp_path)
     plan = _build_plan(src)

@@ -146,7 +146,24 @@ agrupadas.** Agrupe assim, nesta ordem:
 4. **Antirreferencias.** *"tem alguma coisa que voce NAO quer que soe? um
    estilo, um artista, um clichê a evitar?"*
 5. **Restricoes.** *"algum veto duro? tipo 'nada de double kick', 'sem
-   pedal steel', 'baixo so fundamental', 'guitarra so acompanhamento'?"*
+   pedal steel', 'baixo so fundamental', 'guitarra so acompanhamento'?
+   e alguma familia inteira que voce NAO quer que eu crie do zero, mesmo
+   que eu julgue que esta faltando — tipo 'nao quero guitarra gerada'?"*
+
+   **Toda restricao que vetar a CRIACAO de uma familia inteira vira
+   `excluded_families[]`, nunca so `restricoes` em prosa** (achado
+   do Codex na PR #105): `plan.validate`/`render` fazem o veto valer
+   comparando contra o vocabulario fechado de `excluded_families`
+   (`tools/brief_schema.py`) — texto livre em `restricoes` nao e parseado
+   por eles, entao "nao quero guitarra gerada" gravado so ali NUNCA
+   bloqueia a criacao de verdade. Regra de traducao: se a resposta veta
+   familia inteira ("nao quero X gerada/criada", "sem X do zero"), some X
+   (uma das quatro de `families_in_scope`: `bass`, `drums`, `guitar`,
+   `keys`) em `excluded_families`. Restricao mais estreita que
+   nao veta a familia inteira (ex.: "baixo so fundamental", "guitarra so
+   acompanhamento") continua so em `restricoes` — ela restringe COMO a
+   familia soa, nao SE ela pode ser criada. Sem veto de familia inteira
+   nesta pergunta, `excluded_families` sai `[]`.
 
 Nao inclua pergunta 6. Se precisar de mais informacao, essa informacao
 vira `assumption` declarada, nao pergunta.
@@ -467,6 +484,8 @@ Modo rapido default:
   `techniques: []`, `authorized_techniques: []`, `suggested_techniques: []`.
   Modo rapido nao autoriza tecnica em silencio — o default seguro e nao
   aplicar nenhuma.
+- `excluded_families`: `[]`. Modo rapido nao pergunta veto de
+  familia inteira, entao nao inventa nenhum.
 - `assumptions`: uma linha por decisao, sempre comecando com "Modo rapido
   —" para o usuario reconhecer.
 

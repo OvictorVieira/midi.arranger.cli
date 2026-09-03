@@ -252,8 +252,17 @@ def _reject_excluded_family_elements(
     `plan.validate`)."""
     if plan.brief_ref is None:
         return
+    # `role` so tem familia quando e string reconhecida — plano malformado
+    # (ex.: `role` nao-string vindo de `ArrangementPlan` construido em
+    # memoria sem passar por `plan.load`) nao pode estourar `TypeError`
+    # aqui: essa barreira roda ANTES de `validate_plan`, e e o proprio
+    # `validate_plan` quem tem que reportar o tipo invalido como
+    # `PlanValidationError` (achado do Codex na PR #105). Elemento
+    # malformado so nao entra no calculo de familias vetadas.
     families_used = {
-        _style_family_for_role(e.role) for e in plan.elements
+        _style_family_for_role(e.role)
+        for e in plan.elements
+        if isinstance(e.role, str)
     }
     families_used.discard(None)
     if not families_used:
@@ -265,6 +274,8 @@ def _reject_excluded_family_elements(
         raise RenderError(f"{exc.path}: {exc.message}") from None
 
     for i, e in enumerate(plan.elements):
+        if not isinstance(e.role, str):
+            continue
         family = _style_family_for_role(e.role)
         if family is not None and family in excluded:
             raise RenderError(
