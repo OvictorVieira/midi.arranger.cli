@@ -359,7 +359,10 @@ def _classify_annotation_noise(
 ) -> dict[int, str]:
     """Marca eventos como ruido; devolve {index_in_events: reason}.
 
-    Duas regras, aplicadas nesta ordem:
+    Tres regras, aplicadas nesta ordem:
+      0. Texto vazio ou so espaco em branco — nao carrega informacao nenhuma,
+         e o schema da tool exige `annotations[].text` com `minLength: 1`
+         (mesma barreira que `PlanAnnotation` aplica do lado do plano).
       1. Texto casa qualquer padrao em `noise_patterns` (regex ancorado).
       2. Texto aparece em > `repetition_threshold` posicoes (ticks) distintas.
     """
@@ -373,6 +376,9 @@ def _classify_annotation_noise(
     reasons: dict[int, str] = {}
     for i, event in enumerate(events):
         text = event["text"]
+        if not text.strip():
+            reasons[i] = "blank"
+            continue
         matched_pattern: str | None = None
         for raw_pat, regex in compiled:
             if regex.search(text):

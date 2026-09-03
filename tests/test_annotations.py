@@ -207,6 +207,24 @@ def test_repetition_threshold_marks_repeated_text_as_noise(tmp_path):
     assert all("repetition" in d.reason for d in a.discarded_annotations)
 
 
+def test_blank_and_whitespace_only_text_events_are_discarded_as_noise(tmp_path):
+    """AC: evento `text` vazio ou so espaco em branco nunca vira anotacao real —
+    o schema da tool exige `annotations[].text` com `minLength: 1` (achado do
+    Codex na PR #103), e `PlanAnnotation` tambem rejeita texto em branco. Vai
+    para `discarded_annotations` com razao `blank`, igual ao filtro de ruido
+    existente."""
+    p = str(tmp_path / "blank.mid")
+    _write_midi_with_events(
+        p,
+        text_events=[(0, ""), (240, "   "), (480, "real note")],
+    )
+    a = analyze_mod.analyze(p)
+    assert [ann.text for ann in a.annotations] == ["real note"]
+    reasons = {d.text: d.reason for d in a.discarded_annotations}
+    assert reasons[""] == "blank"
+    assert reasons["   "] == "blank"
+
+
 # --- escopo ----------------------------------------------------------------
 
 def test_scope_ends_at_next_annotation_within_same_section(tmp_path):
