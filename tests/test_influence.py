@@ -384,6 +384,40 @@ def test_prose_with_single_bare_note_mention_still_allowed():
     validate(payload)
 
 
+# --- anticopia semantica: notas coladas em pontuacao (achado Codex PR #101) -
+
+
+def test_semantic_value_note_names_joined_by_slash_rejected():
+    # Achado do review na PR #101: o split so cortava em espaco/virgula/
+    # ponto-e-virgula, entao "C4/D4/E4" ficava um token so e nao casava
+    # NOTE_NAME_RE nenhuma vez — a barreira nao disparava.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = "toca C4/D4/E4 na virada"
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
+def test_semantic_value_note_names_joined_by_hyphen_rejected():
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = "desce C4-D4-E4 no fill"
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
+def test_semantic_value_note_names_with_trailing_punctuation_rejected():
+    # Ponto final apos a ultima nota colava o token ("E4.") e a ultima
+    # ocorrencia deixava de contar.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["semantic_value"] = (
+        "toca C4 depois D4 depois E4."
+    )
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
+
+
 # --- unknown field --------------------------------------------------------
 
 

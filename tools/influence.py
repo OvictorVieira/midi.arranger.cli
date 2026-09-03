@@ -636,8 +636,20 @@ def _validate_free_string(value: str, path: str) -> None:
       F"` tem 4 ocorrencias e e rejeitado).
     - Sequencia de inteiros em faixa MIDI (0..127) — mesma contagem
       nao-contigua.
+
+    ACHADO PR #101 (review do Codex): o split so cortava em espaco/virgula/
+    ponto-e-virgula, entao pontuacao musical comum — `/` e `-` entre notas
+    (`"C4/D4/E4"`, `"C4-D4-E4"`) ou ponto final apos a ultima nota
+    (`"C4 depois D4 depois E4."`) deixava o token colado a pontuacao
+    (`"E4."`, `"C4/D4/E4"` inteiro) e ele parava de casar `NOTE_NAME_RE`/
+    `_BARE_NOTE_RE`, furando a barreira. O tokenizador corrigido quebra em
+    QUALQUER caractere que nao seja letra, digito ou acidente de nota
+    (`#`, `♯`, `♭`) — cobre `/`, `-`, `.`, `!`, `?`, parenteses etc, alem
+    de espaco/virgula/ponto-e-virgula que ja funcionavam. Acidente fica
+    fora da classe de separador de proposito: cortar em `#`/`♭` quebraria
+    `F#3`/`Bb` em pedacos que nao casam nota nenhuma.
     """
-    tokens = [t for t in re.split(r"[\s,;]+", value) if t]
+    tokens = [t for t in re.split(r"[^A-Za-z0-9#♯♭]+", value) if t]
 
     note_hits = sum(1 for t in tokens if _looks_like_note_name(t))
     if note_hits >= 3:
