@@ -81,16 +81,34 @@ def archive_session(
             f"nao consegui criar {target_dir}: {exc}"
         ) from None
 
-    target = target_dir / session_filename(plan.session)
-    if target.exists():
+    filename = session_filename(plan.session)
+    target = target_dir / filename
+    # `session.id` so e validado como string nao-vazia em `tools/plan.py` —
+    # nao ha bloqueio contra '/', '\\' ou '..'. Sem esta checagem, um id
+    # malicioso (ou so mal formado) escapa de `.midiarranger/sessions/` e
+    # pode escrever fora do diretorio de destino. Resolve os dois lados e
+    # confirma que o alvo continua filho direto de `target_dir` antes de
+    # tocar no disco.
+    resolved_dir = target_dir.resolve()
+    resolved_target = target.resolve()
+    if resolved_target.parent != resolved_dir:
+        raise SessionArchiveError(
+            f"session.id {plan.session.id!r} produz um nome de arquivo "
+            f"invalido ({filename!r}); precisa resultar em um arquivo "
+            f"direto dentro de {target_dir}, sem separador de caminho"
+        )
+
+    try:
+        # Abertura exclusiva ('x') torna o check-e-escreve atomico: duas
+        # chamadas concorrentes para o mesmo id nao podem mais passar pelo
+        # `exists()` juntas e uma sobrescrever a outra.
+        with resolved_target.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(to_dict(plan), indent=2))
+    except FileExistsError:
         raise SessionArchiveError(
             f"arquivo de sessao ja existe em {target}; sessao append-only, "
             "colisao aponta bug de id duplicado — nunca sobrescreve historico"
-        )
-    try:
-        target.write_text(
-            json.dumps(to_dict(plan), indent=2), encoding="utf-8",
-        )
+        ) from None
     except OSError as exc:
         raise SessionArchiveError(
             f"nao consegui escrever {target}: {exc}"

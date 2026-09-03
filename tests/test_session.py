@@ -443,6 +443,46 @@ def test_archive_session_requires_session_on_plan(tmp_path: Path):
         archive_session(plan, tmp_path)
 
 
+def test_archive_session_rejects_path_traversal_via_session_id(tmp_path: Path):
+    """Regressao: `session.id` so e validado como string nao-vazia em
+    `tools/plan.py` — nenhuma regra bloqueia '/', '\\' ou '..'. Sem checagem
+    em `archive_session`, um id malicioso escapava de
+    `.midiarranger/sessions/` e escrevia fora do diretorio de destino."""
+    plan = _plan_with_session(["bass"])
+    plan.session.id = "../../../outside"
+    outside_before = list(tmp_path.parent.iterdir())
+
+    with pytest.raises(SessionArchiveError) as exc:
+        archive_session(plan, tmp_path)
+    assert "invalido" in str(exc.value)
+
+    # nada foi escrito fora de tmp_path, nem dentro do proprio tmp_path
+    # (o mkdir de .midiarranger/sessions/ e o unico efeito colateral aceitavel).
+    assert list(tmp_path.parent.iterdir()) == outside_before
+    sessions = sessions_dir(tmp_path)
+    assert not sessions.exists() or list(sessions.iterdir()) == []
+
+
+def test_archive_session_second_call_race_still_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Regressao: a checagem antiga era `exists()` e depois `write_text()`,
+    uma janela de tempo entre a checagem e a escrita. Trocar para abertura
+    exclusiva ('x') fecha essa janela — aqui simulamos a corrida escrevendo
+    o arquivo-alvo bem antes da chamada real, e confirmamos que o append-only
+    ainda recusa mesmo que `Path.exists()` tivesse mentido no meio do caminho."""
+    plan = _plan_with_session(["bass"])
+    target = sessions_dir(tmp_path) / session_filename(plan.session)
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8")  # concorrente "venceu" a corrida
+
+    with pytest.raises(SessionArchiveError) as exc:
+        archive_session(plan, tmp_path)
+    assert "ja existe" in str(exc.value)
+    # o conteudo escrito pelo "concorrente" nao foi pisado
+    assert target.read_text(encoding="utf-8") == "{}"
+
+
 def test_session_filename_is_deterministic():
     session = PlanSession(
         id="abc",
