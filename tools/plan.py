@@ -1416,6 +1416,24 @@ def validate(
                     "must not contain '|' — separador reservado do carimbo",
                 )
 
+    # BLOQUEIO: transitions[].dimensions_changed so aceita string — plano em
+    # memoria com item nao-string (ex.: via from_dict malformado) precisa
+    # falhar aqui, e nao mais tarde com AttributeError em `.strip()` dentro
+    # de `tools.validators.transitions._normalize_dimension_name`.
+    for i, t in enumerate(plan.transitions):
+        base = f"transitions[{i}]"
+        if not isinstance(t.dimensions_changed, list):
+            raise PlanValidationError(
+                f"{base}.dimensions_changed",
+                f"must be list, got {type(t.dimensions_changed).__name__}",
+            )
+        for j, dim in enumerate(t.dimensions_changed):
+            if not isinstance(dim, str):
+                raise PlanValidationError(
+                    f"{base}.dimensions_changed[{j}]",
+                    f"must be str, got {type(dim).__name__}",
+                )
+
     # BLOQUEIO: fronteira de escopo da sessao (issue #96).
     _validate_session_scope(plan)
 

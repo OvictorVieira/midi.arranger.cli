@@ -139,10 +139,10 @@ def test_strong_transition_changes_all_eight_dimensions():
 
     plan = _plan(dimensions_changed=[])
     analysis = _analysis()
-    sections = {s.label: s for s in plan.sections}
     bars = _t._bar_lookup(analysis)
-    bounds_a = _t._window_bounds(sections["MAIN"], tail=True, bars_by_index=bars)
-    bounds_b = _t._window_bounds(sections["NEXT"], tail=False, bars_by_index=bars)
+    at_bar = plan.transitions[0].at_bar
+    bounds_a = _t._window_bounds(at_bar, before=True, bars_by_index=bars)
+    bounds_b = _t._window_bounds(at_bar, before=False, bars_by_index=bars)
     tracks = _strong_tracks()
     events_a = _t._notes_in_window(tracks, bounds_a)
     events_b = _t._notes_in_window(tracks, bounds_b)
@@ -269,3 +269,109 @@ def test_format_issues_empty_is_ok():
 def test_min_dimensions_changed_is_two():
     """AC-14 e literal: 'ao menos DUAS'."""
     assert MIN_DIMENSIONS_CHANGED == 2
+
+
+# --- fronteira sem Transition declarado (Codex finding #1, PR #106) ---------
+
+def test_boundary_without_declared_transition_still_checks_weak_transition():
+    """AC-14 vale para TODA fronteira de secao, mesmo quando
+    `plan.transitions` fica vazio — a IA pode encadear secoes adjacentes
+    sem declarar um registro de `Transition` pra cada uma, e a validacao
+    estrutural do plano nao exige isso. Sem esse regression test, o antigo
+    early-return `if not plan.transitions: return []` deixava passar uma
+    fronteira identica dos dois lados sem warning nenhum."""
+    plan = _plan(dimensions_changed=[])
+    plan.transitions = []
+    analysis = _analysis()
+    issues = validate_transitions(_weak_tracks(), plan, analysis)
+    weak = [i for i in issues if i.kind == "weak_transition"]
+    assert len(weak) == 1
+    assert weak[0].from_section == "MAIN"
+    assert weak[0].to_section == "NEXT"
+
+
+def test_boundary_without_declared_transition_has_no_unrealized_intent():
+    """Sem `Transition` declarado casando a fronteira nao ha intencao
+    nenhuma pra comparar — so `weak_transition` pode aparecer, nunca
+    `unrealized_intent`."""
+    plan = _plan(dimensions_changed=[])
+    plan.transitions = []
+    analysis = _analysis()
+    issues = validate_transitions(_weak_tracks(), plan, analysis)
+    assert [i for i in issues if i.kind == "unrealized_intent"] == []
+
+
+def test_only_one_section_has_no_boundary_to_check():
+    plan = _plan(dimensions_changed=[])
+    plan.transitions = []
+    plan.sections = [plan.sections[0]]
+    analysis = _analysis()
+    issues = validate_transitions(_weak_tracks(), plan, analysis)
+    assert issues == []
+
+
+# --- ancoragem da janela em at_bar (Codex finding #2, PR #106) --------------
+
+def test_window_is_anchored_to_at_bar_not_section_boundary():
+    """`Transition.at_bar` declarado (4) diverge da fronteira natural
+    entre as secoes (bar 8, `NEXT.start_bar`) — dado malformado, mas hoje
+    valido. A regiao ao redor de `at_bar=4` (compassos [0,4) vs [4,8), em
+    segundos [0,8) vs [8,16)) muda MUITAS dimensoes; a regiao ao redor da
+    fronteira rotulada por `from_section`/`to_section` (compassos [4,8)
+    vs [8,12), em segundos [8,16) vs [16,24)) e uma copia identica
+    deslocada no tempo — se o validador ainda usasse a cauda/cabeca das
+    secoes (bug antigo) em vez de `at_bar`, apareceria `weak_transition`
+    aqui; ancorado corretamente em `at_bar`, nao aparece."""
+    sections = [
+        PlanSection(
+            label="MAIN", kind="verse", start_bar=0, end_bar=8,
+            source="marker", protagonist="texture",
+            energy={"densidade": 4, "impacto": 4, "largura": 4,
+                    "altura": 4, "instabilidade": 3},
+        ),
+        PlanSection(
+            label="NEXT", kind="chorus", start_bar=8, end_bar=16,
+            source="marker", protagonist="texture",
+            energy={"densidade": 8, "impacto": 8, "largura": 8,
+                    "altura": 8, "instabilidade": 5},
+        ),
+    ]
+    plan = ArrangementPlan(
+        version=1, seed=0,
+        source_midi=SourceMidi(path="/dev/null", sha256="0" * 64),
+        route="cinematica_emocional",
+        sections=sections,
+        elements=[_element("pad_a", "MAIN"), _element("pad_b1", "NEXT"), _element("pad_b2", "NEXT")],
+        transitions=[
+            Transition(
+                at_bar=4, from_section="MAIN", to_section="NEXT",
+                dimensions_changed=[],
+                elements=["pad_b1"],
+                technique="entrada antecipada",
+            ),
+        ],
+    )
+    analysis = _analysis(bars=16)
+
+    # notas esparsas mono (t=[0,8), bars [0,4)): densidade baixa, registro
+    # fechado num pitch, 1 elemento.
+    notes_a = [_note(60, float(t)) for t in (0.0, 2.0, 4.0, 6.0)]
+    track_a = RenderedTrack(element_id="pad_a", track_name="Pad A", notes=tuple(notes_a))
+
+    # padrao de acorde denso repetido a cada 1s, IDENTICO nos dois lados
+    # da fronteira ROTULADA (t=[8,16) e t=[16,24)) — se o validador usasse
+    # essas janelas, seria uma transicao fraca (tudo igual).
+    notes_b1: list[RenderedNote] = []
+    notes_b2: list[RenderedNote] = []
+    for offset in range(8):
+        for base_t in (8.0, 16.0):
+            t = base_t + offset
+            notes_b1.append(_note(72, t))
+            notes_b1.append(_note(76, t))
+            notes_b2.append(_note(79, t))
+    track_b1 = RenderedTrack(element_id="pad_b1", track_name="Pad B1", notes=tuple(notes_b1))
+    track_b2 = RenderedTrack(element_id="pad_b2", track_name="Pad B2", notes=tuple(notes_b2))
+
+    issues = validate_transitions([track_a, track_b1, track_b2], plan, analysis)
+    weak = [i for i in issues if i.kind == "weak_transition"]
+    assert weak == [], weak

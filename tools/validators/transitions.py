@@ -5,6 +5,20 @@ volume. `docs/objetivo.md` (AC-14, FR-20) exige que toda fronteira de
 secao altere DE VERDADE ao menos DUAS das oito dimensoes abaixo — mudar
 uma so (tipicamente velocity/volume) nao conta como transicao.
 
+## Fronteiras vem de `plan.sections`, nao de `plan.transitions`
+
+`plan.transitions` e metadado OPCIONAL — um plano valido pode encadear
+varias secoes adjacentes sem declarar um registro de `Transition` pra
+nenhuma delas (a validacao estrutural do plano nao exige isso), e AC-14
+vale pra TODA fronteira mesmo assim. Por isso as fronteiras checadas sao
+derivadas de `plan.sections` ordenadas por `start_bar` — cada par
+adjacente E uma fronteira — e nao de `plan.transitions`. Quando existe um
+`Transition` casando a fronteira (por `from_section`/`to_section`, ou por
+`at_bar` batendo com a fronteira natural — ver `_boundary_transition`),
+sua `dimensions_changed` alimenta a checagem de divergencia intencao x
+realidade abaixo; sem `Transition` casando, so a checagem 1 (AC-14 em si)
+roda — nao ha intencao declarada pra comparar.
+
 ## As oito dimensoes (nomes canonicos, PT-BR sem acento — mesma convencao
 ## de `tools.plan.ENERGY_AXES`)
 
@@ -20,14 +34,17 @@ RENDERIZADA (o MIDI de saida de fato) e faz DUAS checagens independentes:
 1. **AC-14 em si**: conta quantas das 8 dimensoes realmente mudaram na
    janela antes/depois da fronteira, comparando o que foi RENDERIZADO —
    nao o que o plano prometeu. Menos de duas mudancas reais vira warning
-   `weak_transition` nomeando quais dimensoes ficaram iguais.
-2. **Divergencia intencao x realidade**: para cada dimensao que o plano
-   DECLAROU em `dimensions_changed`, confere se ela de fato mudou no
-   render. Plano que promete `densidade` e `registro` mas renderiza os
-   dois lados iguais gera warning `unrealized_intent` — exatamente o caso
-   que a issue #24 cita como motivador ("Plano que promete mudar
-   densidade e registro mas renderiza igual dos dois lados e exatamente o
-   que este validador existe para pegar").
+   `weak_transition` nomeando quais dimensoes ficaram iguais. Roda pra
+   TODA fronteira entre secoes adjacentes, com ou sem `Transition`
+   declarado (ver secao acima).
+2. **Divergencia intencao x realidade**: SO quando ha `Transition`
+   declarado casando a fronteira — para cada dimensao que ele DECLAROU em
+   `dimensions_changed`, confere se ela de fato mudou no render. Plano que
+   promete `densidade` e `registro` mas renderiza os dois lados iguais
+   gera warning `unrealized_intent` — exatamente o caso que a issue #24
+   cita como motivador ("Plano que promete mudar densidade e registro mas
+   renderiza igual dos dois lados e exatamente o que este validador
+   existe para pegar").
 
 Severidade sempre `warning` (nao ha `--allow-*`; e um validador de
 qualidade de composicao, nao uma regra estrutural do formato como
@@ -37,12 +54,19 @@ qualidade de composicao, nao uma regra estrutural do formato como
 ## insumo que os demais validadores usam — nunca reabre o MIDI)
 
 A janela de cada lado da fronteira usa `WINDOW_BARS` compassos (CONVENCAO,
-ver docstring da constante), recortados nas bordas de `PlanSection` via
-`Analysis.bars` (grade de compassos em segundos, calculada sobre o MIDI de
-origem — a grade de tempo/compasso nao muda com o arranjo). Todas as notas
-de TODOS os `RenderedTrack` (qualquer elemento) que atacam dentro da
-janela entram na medicao — "o que de fato soa naquele instante", nao so a
-track de um elemento.
+ver docstring da constante), ANCORADOS no `at_bar` da fronteira — o
+`at_bar` do `Transition` declarado quando existe, senao
+`section_b.start_bar` (a fronteira natural, onde a secao A termina e a
+secao B comeca por ordem do plano) — via `Analysis.bars` (grade de
+compassos em segundos, calculada sobre o MIDI de origem — a grade de
+tempo/compasso nao muda com o arranjo). A janela NUNCA confia em
+`from_section.end_bar`/`to_section.start_bar` do rotulo declarado: um
+plano onde `at_bar` nao cai na fronteira rotulada (dado malformado, mas
+hoje valido) mediria compassos completamente errados se usasse a cauda/
+cabeca das secoes em vez do proprio `at_bar` — ver docstring de
+`_window_bounds`. Todas as notas de TODOS os `RenderedTrack` (qualquer
+elemento) que atacam dentro da janela entram na medicao — "o que de fato
+soa naquele instante", nao so a track de um elemento.
 
 - `densidade`: notas por segundo na janela (contagem / duracao). Metrica
   de TAXA — quantos eventos por unidade de tempo.
@@ -99,7 +123,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from ..analyze import Analysis, BarAnalysis
-from ..plan import ArrangementPlan, PlanSection
+from ..plan import ArrangementPlan, PlanSection, Transition
 from .harmony import SEVERITY_ERROR, SEVERITY_WARNING, RenderedNote, RenderedTrack
 
 # --- vocabulario --------------------------------------------------------
@@ -123,13 +147,15 @@ CONVENCAO — e o numero literal do criterio de aceite."""
 
 WINDOW_BARS: int = 4
 """CONVENCAO: quantos compassos de cada lado da fronteira entram na
-medicao (cauda da secao A, cabeca da secao B). Compassos insuficientes na
-secao (secao mais curta que a janela) usam a secao inteira. Numero
-pequeno o bastante para capturar SO o entorno imediato da fronteira (o que
-de fato muda NA transicao, nao a media da secao inteira, que dilui uma
-mudanca real de 2 compassos numa secao de 16) e grande o bastante para
-nao depender de um unico compasso ruidoso — mesmo raciocinio de janela
-fixa de `tools.validators.anticopy.DEFAULT_N`."""
+medicao, ancorados no `at_bar` da fronteira (ANTES/DEPOIS de `at_bar` —
+ver `_window_bounds`). Fronteira perto demais do inicio/fim da grade de
+compassos (`Analysis.bars` nao cobre a janela inteira) fica sem dado — a
+fronteira e pulada, nao vira janela encolhida. Numero pequeno o bastante
+para capturar SO o entorno imediato da fronteira (o que de fato muda NA
+transicao, nao a media da secao inteira, que dilui uma mudanca real de 2
+compassos numa secao de 16) e grande o bastante para nao depender de um
+unico compasso ruidoso — mesmo raciocinio de janela fixa de
+`tools.validators.anticopy.DEFAULT_N`."""
 
 ONSET_BUCKET_MS: int = 5
 """Bucket de onset em ms para colapsar chord voicing no mesmo evento —
@@ -238,23 +264,28 @@ def _bar_lookup(analysis: Analysis) -> dict[int, BarAnalysis]:
 
 
 def _window_bounds(
-    section: PlanSection,
+    at_bar: int,
     *,
-    tail: bool,
+    before: bool,
     bars_by_index: dict[int, BarAnalysis],
 ) -> tuple[float, float] | None:
-    """Bordas em segundos da janela de `WINDOW_BARS` compassos na cauda
-    (`tail=True`) ou na cabeca (`tail=False`) de `section`. None quando a
-    secao nao tem compasso nenhum ou os indices nao batem com
-    `Analysis.bars` (fora do range da analise do MIDI de origem)."""
-    span = section.end_bar - section.start_bar
-    if span <= 0:
-        return None
-    width = min(WINDOW_BARS, span)
-    if tail:
-        lo, hi = section.end_bar - width, section.end_bar
+    """Bordas em segundos da janela de `WINDOW_BARS` compassos ANTES
+    (`before=True`) ou DEPOIS (`before=False`) de `at_bar` — a fronteira
+    de secao declarada em `Transition.at_bar`, ou `section_b.start_bar`
+    quando a fronteira nao tem `Transition` declarada (ver
+    `_boundary_at_bar`). A janela e ancorada no PROPRIO `at_bar`, nunca em
+    `PlanSection.start_bar`/`end_bar` de `from_section`/`to_section` — um
+    plano onde `at_bar` nao cai exatamente na fronteira rotulada (dado
+    malformado, mas hoje valido) media os compassos ao redor da transicao
+    declarada, nao os de secoes possivelmente erradas. None quando a
+    janela cai fora da grade (`Analysis.bars`, ex.: `at_bar` proximo do
+    inicio/fim da analise do MIDI de origem)."""
+    if before:
+        lo, hi = at_bar - WINDOW_BARS, at_bar
     else:
-        lo, hi = section.start_bar, section.start_bar + width
+        lo, hi = at_bar, at_bar + WINDOW_BARS
+    if lo < 0 or hi <= lo:
+        return None
     first = bars_by_index.get(lo)
     last = bars_by_index.get(hi - 1)
     if first is None or last is None:
@@ -370,31 +401,72 @@ def _changed(dimension: str, before: _Metrics, after: _Metrics) -> bool | None:
 
 # --- API publica -------------------------------------------------------------
 
+def _boundary_transition(
+    section_a: PlanSection,
+    section_b: PlanSection,
+    transitions_by_pair: dict[tuple[str, str], Transition],
+    transitions_by_at_bar: dict[int, Transition],
+) -> tuple[int, Transition | None]:
+    """Resolve o `at_bar` de ancoragem e o `Transition` declarado (se
+    houver) para a fronteira `section_a` -> `section_b`.
+
+    Toda fronteira entre secoes ADJACENTES precisa ser checada (AC-14),
+    mesmo quando `plan.transitions` nao declara um registro pra ela — a
+    ancoragem natural nesse caso e `section_b.start_bar` (onde a secao A
+    termina e a secao B comeca, por ordem do plano). Quando existe um
+    `Transition` cujo `from_section`/`to_section` casa com esta fronteira,
+    ele e a intencao declarada e seu `at_bar` e a ancora AUTORITATIVA —
+    mesmo que divirja de `section_b.start_bar` (dado malformado, mas hoje
+    valido; ver docstring de `_window_bounds`). Na ausencia de casamento
+    por rotulo, um `Transition` cujo `at_bar` bate com a fronteira natural
+    ainda conta como declarado para ela (mesmo defeito de dado, caminho
+    inverso)."""
+    natural_at_bar = section_b.start_bar
+    declared = transitions_by_pair.get((section_a.label, section_b.label))
+    if declared is None:
+        declared = transitions_by_at_bar.get(natural_at_bar)
+    at_bar = declared.at_bar if declared is not None else natural_at_bar
+    return at_bar, declared
+
+
 def validate_transitions(
     rendered_tracks: Iterable[RenderedTrack],
     plan: ArrangementPlan,
     analysis: Analysis,
 ) -> list[TransitionIssue]:
-    """AC-14: cada fronteira de `plan.transitions` precisa mudar de
-    verdade ao menos `MIN_DIMENSIONS_CHANGED` das `TRANSITION_DIMENSIONS`,
-    medidas no RENDER (nao no plano). Ver docstring do modulo para o
-    metodo de medicao e para a checagem de divergencia intencao x
-    realidade (`dimensions_changed` do plano)."""
-    if not plan.transitions:
+    """AC-14: cada fronteira entre `PlanSection`s ADJACENTES do plano
+    (ordenadas por `start_bar`) precisa mudar de verdade ao menos
+    `MIN_DIMENSIONS_CHANGED` das `TRANSITION_DIMENSIONS`, medidas no
+    RENDER (nao no plano) — vale para TODA fronteira, mesmo quando
+    `plan.transitions` nao declara um registro pra ela (a IA pode deixar
+    `transitions` vazio; a validacao estrutural do plano nao exige um
+    registro por fronteira). Quando existe um `Transition` casando essa
+    fronteira (ver `_boundary_transition`), a checagem adicional de
+    divergencia intencao x realidade (`dimensions_changed`) tambem roda;
+    sem `Transition` declarado, so a checagem AC-14 em si roda — nao ha
+    intencao pra comparar. Ver docstring do modulo para o metodo de
+    medicao. 0 ou 1 secao no plano nao tem fronteira nenhuma pra checar."""
+    if len(plan.sections) < 2:
         return []
 
     tracks = list(rendered_tracks)
-    sections_by_label = {s.label: s for s in plan.sections}
     bars_by_index = _bar_lookup(analysis)
+    ordered_sections = sorted(plan.sections, key=lambda s: s.start_bar)
+
+    transitions_by_pair: dict[tuple[str, str], Transition] = {}
+    transitions_by_at_bar: dict[int, Transition] = {}
+    for t in plan.transitions:
+        transitions_by_pair.setdefault((t.from_section, t.to_section), t)
+        transitions_by_at_bar.setdefault(t.at_bar, t)
 
     issues: list[TransitionIssue] = []
-    for t in plan.transitions:
-        section_a = sections_by_label.get(t.from_section)
-        section_b = sections_by_label.get(t.to_section)
-        if section_a is None or section_b is None:
-            continue
-        bounds_a = _window_bounds(section_a, tail=True, bars_by_index=bars_by_index)
-        bounds_b = _window_bounds(section_b, tail=False, bars_by_index=bars_by_index)
+    for section_a, section_b in zip(ordered_sections, ordered_sections[1:], strict=False):
+        at_bar, declared = _boundary_transition(
+            section_a, section_b, transitions_by_pair, transitions_by_at_bar,
+        )
+
+        bounds_a = _window_bounds(at_bar, before=True, bars_by_index=bars_by_index)
+        bounds_b = _window_bounds(at_bar, before=False, bars_by_index=bars_by_index)
         if bounds_a is None or bounds_b is None:
             continue
 
@@ -423,14 +495,14 @@ def validate_transitions(
         if len(changed_dims) < MIN_DIMENSIONS_CHANGED:
             issues.append(TransitionIssue(
                 severity=SEVERITY_WARNING,
-                at_bar=t.at_bar,
-                from_section=t.from_section,
-                to_section=t.to_section,
+                at_bar=at_bar,
+                from_section=section_a.label,
+                to_section=section_b.label,
                 kind="weak_transition",
                 dimensions=unchanged_dims,
                 message=(
-                    f"transition at bar {t.at_bar} ({t.from_section!r} -> "
-                    f"{t.to_section!r}): only {len(changed_dims)} dimension(s) "
+                    f"transition at bar {at_bar} ({section_a.label!r} -> "
+                    f"{section_b.label!r}): only {len(changed_dims)} dimension(s) "
                     f"actually changed in the render "
                     f"({', '.join(changed_dims) or 'none'}) — AC-14 requires "
                     f"at least {MIN_DIMENSIONS_CHANGED}. Unchanged: "
@@ -438,28 +510,33 @@ def validate_transitions(
                 ),
             ))
 
-        declared = {
+        if declared is None:
+            # Sem `Transition` declarado nao ha intencao pra comparar —
+            # so a checagem AC-14 acima roda para esta fronteira.
+            continue
+
+        declared_names = {
             norm
-            for raw in t.dimensions_changed
+            for raw in declared.dimensions_changed
             if (norm := _normalize_dimension_name(raw)) is not None
         }
         unrealized = tuple(
             d for d in TRANSITION_DIMENSIONS
-            if d in declared and d in unchanged_dims
+            if d in declared_names and d in unchanged_dims
         )
         if unrealized:
             issues.append(TransitionIssue(
                 severity=SEVERITY_WARNING,
-                at_bar=t.at_bar,
-                from_section=t.from_section,
-                to_section=t.to_section,
+                at_bar=at_bar,
+                from_section=section_a.label,
+                to_section=section_b.label,
                 kind="unrealized_intent",
                 dimensions=unrealized,
                 message=(
-                    f"transition at bar {t.at_bar} ({t.from_section!r} -> "
-                    f"{t.to_section!r}): plan declared "
-                    f"dimensions_changed={list(t.dimensions_changed)} but the "
-                    f"render shows no real change in {', '.join(unrealized)}."
+                    f"transition at bar {at_bar} ({section_a.label!r} -> "
+                    f"{section_b.label!r}): plan declared "
+                    f"dimensions_changed={list(declared.dimensions_changed)} but "
+                    f"the render shows no real change in {', '.join(unrealized)}."
                 ),
             ))
     return issues

@@ -1270,6 +1270,21 @@ def test_dump_writes_indented_json_that_parses(tmp_path: Path):
 
 # --- rejeicoes: mensagens carregam path exato ------------------------------
 
+def test_rejects_non_string_dimensions_changed_entry():
+    """Codex finding do PR #106: um plano em memoria (ou lido direto via
+    `from_dict`) com item nao-string em `transitions[i].dimensions_changed`
+    tinha que ser aceito por `validate()` e so quebrava depois, dentro de
+    `tools.validators.transitions._normalize_dimension_name` (`AttributeError`
+    em `.strip()`), com o pipeline de render ja rodado. `validate()` agora
+    rejeita isso cedo, com path exato."""
+    plan = _valid_plan()
+    plan.transitions[0].dimensions_changed = ["densidade", 42]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "transitions[0].dimensions_changed[1]"
+    assert "str" in exc.value.message
+
+
 def test_rejects_unknown_sync_role_with_element_path():
     """AC: 'rejeita sync_role desconhecido' + path exato aponta o elemento."""
     plan = _valid_plan()
