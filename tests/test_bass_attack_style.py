@@ -415,6 +415,61 @@ def test_generic_picked_honors_equal_downstroke_upstroke_parameters():
     assert _serialize(out) == _serialize(source)
 
 
+def test_generic_picked_honors_inverted_stroke_contrast_sign():
+    # Achado do Codex na PR #104, quarta rodada: `abs(downstroke_vel -
+    # upstroke_vel)` jogava fora o SINAL do contraste pedido — o codigo
+    # sempre fazia "down" mais forte, mesmo com
+    # picked_downstroke_velocity=85 < picked_upstroke_velocity=100 (valido
+    # nas duas faixas do manual, pedindo o contraste INVERTIDO). Com
+    # velocities de origem iguais, o downstroke tinha que sair mais FRACO
+    # que o upstroke, nao mais forte.
+    source = _make_midi([80, 80, 80, 80])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 85,
+            "picked_upstroke_velocity": 100,
+        },
+    )
+
+    after = _structural_note_ons(out)
+    downs = [v for i, (_t, _c, _p, v) in enumerate(after) if i % 2 == 0]
+    ups = [v for i, (_t, _c, _p, v) in enumerate(after) if i % 2 == 1]
+    assert downs[0] < ups[0], (
+        "picked_downstroke_velocity < picked_upstroke_velocity pede "
+        f"downstroke mais fraco que upstroke: downs={downs!r} ups={ups!r}"
+    )
+
+
+def test_generic_picked_local_conflict_does_not_disable_whole_track():
+    # Achado do Codex na PR #104, quarta rodada: uma magnitude UNICA pra
+    # toda a track corrigia inversao, mas um UNICO par de paridade oposta
+    # com diferenca pequena (aqui, notas 0/1: 90 e 91) zerava a
+    # diferenciacao da track INTEIRA, inclusive notas 2/3 (60, 60) que nao
+    # tinham conflito nenhum entre si. A regressao isotonica so poola
+    # (agrupa) o que precisa pra resolver o conflito local, deixando o
+    # resto da track livre pra diferenciar.
+    source = _make_midi([90, 91, 60, 60])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    after = _structural_note_ons(out)
+    velocities = [v for _t, _c, _p, v in after]
+    # Nenhuma inversao em lugar nenhum: nota 0 (orig 90) <= nota 1 (orig 91).
+    assert velocities[0] <= velocities[1]
+    # O conflito local entre notas 0/1 nao pode zerar a diferenciacao das
+    # notas 2/3 — elas nao tinham par de gap pequeno nenhum entre si.
+    assert velocities[2] != velocities[3], (
+        "notas sem conflito local nao deveriam perder diferenciacao so "
+        f"por causa de um par distante em conflito: {velocities!r}"
+    )
+
+
 def test_generic_picked_saturated_velocity_is_not_reported_as_applied():
     # Origem ja saturada no clamp [1, 127] (127 alternando com 1): o shift
     # relativo nao produz nenhuma mudanca audivel de velocity. Achado do

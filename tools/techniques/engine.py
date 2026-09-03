@@ -3088,37 +3088,88 @@ def _apply_bass_attack_style(
         # magnitude cheia, nota 2 ficava presa a 0 pelo gap de 1 com a
         # nota 1 no meio — 90+cheio > 91+0, invertendo nota 0 acima da 2).
         #
-        # A UNICA magnitude que preserva TODAS as ordens originais, entre
-        # QUAISQUER duas notas (vizinhas ou nao), e uma magnitude UNICA
-        # compartilhada por toda a track: notas de mesma paridade recebem
-        # o MESMO shift (a diferenca entre elas fica identica a original,
-        # nunca inverte, nao importa o valor da magnitude); notas de
-        # paridade oposta arriscam inverter quando o shift somado (2x a
-        # magnitude) ultrapassa a diferenca original entre elas — entao a
-        # magnitude tem que ser <= metade da MENOR diferenca original
-        # entre QUALQUER par de paridade oposta (nao so vizinhos). Par com
-        # a MESMA velocity original nao tem ordem nenhuma pra inverter e
-        # nao entra na conta — e o caso testado em
-        # `test_generic_picked_alternates_downstroke_upstroke_by_relative_delta`
-        # (origem toda igual a 80, sem par de gap>0 em lugar nenhum).
+        # Achado do Codex na PR #104, quarta rodada, achado 1: uma UNICA
+        # magnitude pra track inteira preservava a ordem, mas jogava fora o
+        # SINAL do contraste pedido — `abs(downstroke_vel - upstroke_vel)`
+        # sempre fazia "down" mais forte, mesmo quando o plano pede
+        # `picked_downstroke_velocity < picked_upstroke_velocity` (contraste
+        # invertido, valido nas duas faixas do manual). O sinal do shift por
+        # posicao agora segue o sinal PEDIDO (`direction`), nao um "down
+        # sempre sobe" fixo.
+        #
+        # Achado do Codex na PR #104, quarta rodada, achado 2: uma unica
+        # magnitude GLOBAL tambem tem o problema oposto — um UNICO par de
+        # paridade oposta com diferenca pequena em QUALQUER lugar da track
+        # zerava a magnitude (e a tecnica inteira) mesmo quando so aquele
+        # par precisava de ajuste. "constrain the affected values or
+        # passage instead of zeroing the technique across the entire
+        # track."
+        #
+        # As duas exigencias juntas — nunca inverter NENHUM par (nao so
+        # vizinhos) E nao apagar a diferenciacao onde nao ha conflito — sao
+        # exatamente o problema que REGRESSAO ISOTONICA resolve: dado um
+        # alvo por nota (velocity original + shift pedido) e uma ordem que
+        # os resultados tem que respeitar (a mesma ordem da velocity
+        # original), a regressao isotonica devolve a sequencia mais proxima
+        # possivel dos alvos que nunca viola essa ordem — e so "agrupa"
+        # (poola) as notas estritamente necessarias pra resolver um
+        # conflito local, deixando o resto da track com a diferenciacao
+        # plena pedida. E o mesmo principio matematico do "piso" em
+        # `drums.accent_hierarchy` (nunca inverte a intencao da origem),
+        # so que aqui resolvido de forma otima em vez de um piso fixo.
         original_velocities = [msg.velocity for _start, msg in structural]
         half_delta = abs(downstroke_vel - upstroke_vel) // 2
-        magnitude = half_delta
-        for i in range(len(structural)):
-            for j in range(i + 1, len(structural)):
-                if i % 2 == j % 2:
-                    continue
-                gap = abs(original_velocities[i] - original_velocities[j])
-                if gap == 0:
-                    continue
-                cap = gap // 2
-                if cap < magnitude:
-                    magnitude = cap
+        direction = 1 if downstroke_vel >= upstroke_vel else -1
 
-        new_velocities = []
-        for idx, (_start, msg) in enumerate(structural):
-            shift = magnitude if idx % 2 == 0 else -magnitude
-            new_velocities.append(max(1, min(127, msg.velocity + shift)))
+        targets = []
+        for idx, velocity in enumerate(original_velocities):
+            shift = direction * half_delta if idx % 2 == 0 else -direction * half_delta
+            targets.append(float(velocity + shift))
+
+        # Agrupa por velocity ORIGINAL EXATA — notas empatadas na origem nao
+        # tem ordem NENHUMA pra preservar entre si (so entre grupos de
+        # valor DIFERENTE). Tratar empate como ordem total via desempate
+        # por indice (a forma ingenua de regressao isotonica) sobre-restringe:
+        # forcaria as notas empatadas a ficar sempre no mesmo valor final
+        # mesmo sem conflito real entre elas, exatamente o "poola a track
+        # inteira" que o achado 2 pede pra evitar.
+        groups_by_value: dict[int, list[int]] = {}
+        for idx, velocity in enumerate(original_velocities):
+            groups_by_value.setdefault(velocity, []).append(idx)
+
+        # Regressao isotonica no nivel de GRUPO (um "bloco" PAVA por valor
+        # original distinto, representado pela media dos alvos dos seus
+        # membros) garante `orig[i] < orig[j] implica novo[i] <= novo[j]`
+        # para TODO par de grupos DIFERENTES, vizinhos ou nao — nunca
+        # inverte. Cada bloco carrega os grupos originais que ele contem;
+        # bloco com um UNICO grupo (nunca precisou fundir com vizinho) nao
+        # teve conflito nenhum — os membros usam o proprio alvo individual,
+        # diferenciando plenamente entre si (empate nao e ordem, entao
+        # `direction`/`half_delta` continua valendo dentro do grupo). Bloco
+        # com MULTIPLOS grupos fundidos e onde o conflito de fato existiu —
+        # so ali todo mundo cai no mesmo valor pooled, o minimo necessario
+        # pra nao inverter a ordem entre os grupos que colidiram.
+        stack: list[list] = []
+        for value in sorted(groups_by_value):
+            indices = groups_by_value[value]
+            rep = sum(targets[i] for i in indices) / len(indices)
+            stack.append([rep, float(len(indices)), [indices]])
+            while len(stack) > 1 and stack[-2][0] > stack[-1][0]:
+                rep2, w2, groups2 = stack.pop()
+                rep1, w1, groups1 = stack.pop()
+                merged_w = w1 + w2
+                merged_rep = (rep1 * w1 + rep2 * w2) / merged_w
+                stack.append([merged_rep, merged_w, groups1 + groups2])
+
+        new_velocities = [0] * len(structural)
+        for rep_value, _weight, constituent_groups in stack:
+            if len(constituent_groups) == 1:
+                for i in constituent_groups[0]:
+                    new_velocities[i] = max(1, min(127, int(round(targets[i]))))
+            else:
+                for indices in constituent_groups:
+                    for i in indices:
+                        new_velocities[i] = max(1, min(127, int(round(rep_value))))
 
         if all(
             new == msg.velocity
