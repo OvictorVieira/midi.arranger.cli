@@ -105,7 +105,10 @@ agrupadas.** Agrupe assim, nesta ordem:
    NAO-VAZIO de `bass`, `drums`, `guitar`, `keys`. **Unica excecao:**
    quando `intent` = `transition`, `families_in_scope` pode ficar
    **vazia** — a sessao so gera pecas de transicao entre secoes e nao
-   toca as familias musicais direto.
+   toca as familias musicais direto. Resposta que citar familia fora
+   dessa lista (ex.: "vocal", "strings", "todas as familias que
+   existirem") **nao e inferida** — repita a pergunta explicando o
+   vocabulario fechado ate o usuario declarar so nomes dessa lista.
 
    Sugira default segundo o `intent` (o usuario pode aceitar ou trocar):
    - `edit`: default = familias detectadas no MIDI de origem (o `analyze`
