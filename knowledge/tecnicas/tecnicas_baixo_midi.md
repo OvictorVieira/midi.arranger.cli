@@ -288,16 +288,17 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
 {
   "name": "palm_mute",
   "family": "bass",
-  "summary": "Abafamento continuo por CC no MODO BASS, nao articulacao discreta.",
+  "summary": "Abafamento por gate/velocity e, no MODO BASS configurado, automacao CC9.",
   "verified": false,
-  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. ATENCAO: a pagina CONTROL mostra MUTING como Off — NAO EXISTE CC DE FABRICA. O plano precisa declarar qual CC o usuario atribuiu, ou a tecnica nao sai. Desenhe uma curva, nao um valor unico; articulacao por CC e gated por valor e sem o retorno a zero o mute fica preso.",
+  "description": "No MODO BASS mute NAO e um estilo separado: e uma quantidade continua aplicada por cima do estilo ativo. Na pagina CONTROL, ative MUTING como CC 9 antes de renderizar: o motor escreve CC9 antes de cada nota escolhida e CC9=0 no fim dela. Sem esse mapeamento no plugin, os eventos continuam validos no MIDI, mas nao controlam o timbre; a skill deve orientar essa configuracao antes de autorizar a tecnica.",
   "parameters": [
     {"name": "velocity", "range": [60, 100], "source": "CONVENCAO — mute abafa timbre, nao reduz forca de ataque a niveis de ghost note; faixa media escolhida para o motor, sem medicao publicada"},
-    {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"}
+    {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — nota curta caracteristica de palm mute; sem medicao publicada (ver secao 7)"},
+    {"name": "amount", "range": [18, 35], "source": "CONVENCAO — perfil de muting por secao em base_conhecimento_midi_realista_modo_bass.md (verso 35, refrão 18, breakdown 28); faixa moderada para automacao deterministica"}
   ],
   "tools": {
     "generic": {"note": "gate curto e velocity media; sem CC dedicado"},
-    "modo_bass": {"cc": null, "note": "SEM CC de fabrica (pagina CONTROL, v1.5.2). O plano declara o CC atribuido pelo usuario. Curva desenhada; retorno a 0 obrigatorio"}
+    "modo_bass": {"cc": 9, "note": "Antes de renderizar, configure MUTING na pagina CONTROL como CC 9. O motor envia valor antes da nota e CC9=0 ao fim; nao e keyswitch"}
   }
 }
 ```
@@ -390,6 +391,13 @@ Mesmo formato do manual de bateria: bloco `technique` com JSON. Campos obrigató
   "tools": {
     "generic": {"note": "sem controle de corda: o timbre sai do que o instrumento decidir. Declare no plano que a intencao de corda nao pode ser honrada nesta ferramenta"},
     "modo_bass": {
+      "keyswitch_corda_C": 0,
+      "keyswitch_corda_A": 9,
+      "keyswitch_corda_B": 11,
+      "keyswitch_corda_D": 14,
+      "keyswitch_corda_E": 16,
+      "keyswitch_corda_G": 19,
+      "cc_posicao_mao": 4,
       "note": "LATCH vem DESLIGADO de fabrica: o keyswitch e momentaneo e vale enquanto segurado. Ligue LATCH na pagina CONTROL se quiser que a corda persista. CC 4 controla a posicao da mao de forma continua"
     }
   }

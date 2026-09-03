@@ -378,6 +378,7 @@ def _plan_schema() -> dict[str, Any]:
                             "required": ["plugin", "preset"],
                             "additionalProperties": False,
                         },
+                        "tool": {"type": ["string", "null"], "minLength": 1},
                     },
                     "required": ["track", "profile", "intensity"],
                 },
