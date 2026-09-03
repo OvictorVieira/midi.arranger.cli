@@ -33,6 +33,7 @@ from .style_schema import (
     STYLE_TECHNIQUE_STYLE_VALUES,
     find_style_musical_content,
     is_style_parameter_pair,
+    is_style_parameter_value,
 )
 
 # --- vocabularios fechados (secao 5 do spec) --------------------------------
@@ -88,7 +89,12 @@ STYLE_FAMILY_REQUIRED_FIELDS = (
     "techniques",
     "parameters",
 )
-STYLE_TECHNIQUE_FIELDS = ("name", "density", "rationale", "style")
+STYLE_TECHNIQUE_FIELDS = (
+    "name", "density", "rationale", "style",
+    # issue #72: contrato de tecnica com parametros por tecnica e
+    # rastreabilidade.
+    "parameters", "intensity", "evidence_refs",
+)
 DEFAULT_STYLE_REFERENCE = "persona base"
 DEFAULT_STYLE_RESEARCHED_AT = "0001-01-01"
 DEFAULT_STYLE_SOURCE = "knowledge/persona/persona_produtor_metal_moderno.md"
@@ -290,6 +296,37 @@ class PlanEdit:
 
 @dataclass
 class StyleTechnique:
+    """Uma tecnica de `style.<familia>.techniques[]` (issue #72).
+
+    - `parameters`: parametros que pertencem a ESTA tecnica, nao a familia
+      inteira. Mesma forma restrita de `FamilyStyle.parameters` (numero
+      escalar ou par `[min, max]`); validado contra a receita da propria
+      tecnica resolvida (`tools.techniques.build_index()`), nunca contra
+      todas as tecnicas da familia — e exatamente a colisao que o contrato
+      legado (`style.<familia>.parameters`, compartilhado por familia)
+      arriscava. Quando um nome aparece nos dois niveis para a mesma
+      tecnica, `parameters` desta tecnica MANDA sobre o legado
+      `FamilyStyle.parameters` — mais especifico vence, mesma logica de
+      "parametros do plano > receita da tool > range do manual" ja
+      documentada em AGENTS.md — e `plan.validate()` emite warning de
+      conflito. `tools.render._run_style_pipeline` funde os dois canais
+      (legado como base, `parameters` desta tecnica por cima) antes de
+      despachar, entao o aplicador recebe so os parametros relevantes para
+      ELE, nunca o dict inteiro da familia.
+    - `intensity`: intensidade semantica explicita (issue #72), 0.0-1.0,
+      mesma escala de `PlanEdit.intensity` (0.0 desliga, 1.0 e a faixa
+      cheia). Quando `density` esta ausente, `intensity` assume o papel de
+      `density` no despacho (liga/desliga a tecnica e entra em
+      `context.parameters["density"]`) — sempre disponivel tambem em
+      `context.parameters["intensity"]`. `density`, quando declarado,
+      continua tendo precedencia (retrocompatibilidade: plano v1 nunca
+      declara `intensity`, entao o comportamento e byte-identico).
+    - `evidence_refs`: ids de achados (`InfluenceFinding.id`,
+      `tools/influence.py`) que justificaram esta tecnica — rastreabilidade
+      pura, sem efeito no render. Validado so estruturalmente (lista de
+      strings nao vazias); este modulo nao carrega nem cruza contra um
+      `InfluenceProfile` (fora do escopo desta issue).
+    """
     name: str
     density: float | None = None
     rationale: str | None = None
@@ -297,6 +334,9 @@ class StyleTechnique:
     """Selecao de tecnica de execucao (dedo/palheta/slap em bass.attack_style
     e afins). Vocabulario FECHADO — ver STYLE_TECHNIQUE_STYLE_VALUES em
     style_schema.py. NAO e um campo de texto livre."""
+    parameters: dict[str, float | list[float]] = field(default_factory=dict)
+    intensity: float | None = None
+    evidence_refs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -746,6 +786,105 @@ def _validate_style_parameters_against_techniques(
                 )
 
 
+def _validate_parameters_shape(parameters: Any, path: str) -> None:
+    """`{string -> numero | [min, max]}` — a forma restrita de `style`.
+
+    Compartilhada por `FamilyStyle.parameters` (legado, nivel de familia) e
+    `StyleTechnique.parameters` (issue #72, nivel de tecnica); usa
+    `is_style_parameter_value` de `style_schema.py` para as duas camadas
+    nunca divergirem sobre o que e forma valida.
+    """
+    if not isinstance(parameters, dict):
+        raise PlanValidationError(
+            path, f"must be dict of numbers, got {type(parameters).__name__}",
+        )
+    for key, value in parameters.items():
+        if not isinstance(key, str) or not key:
+            raise PlanValidationError(path, "parameter names must be non-empty strings")
+        if not is_style_parameter_value(value):
+            raise PlanValidationError(
+                f"{path}.{key}",
+                f"must be number or [min, max] pair, got {type(value).__name__}",
+            )
+
+
+def _validate_technique_parameters_against_manual(
+    technique_base: str,
+    parameters: dict[str, float | list[float]],
+    resolved_technique: Any,
+    warnings: list[str],
+) -> None:
+    """Valida `StyleTechnique.parameters` contra a receita da PROPRIA tecnica.
+
+    Ao contrario de `_validate_style_parameters_against_techniques` (que
+    varre TODAS as tecnicas da familia para o contrato legado de
+    `FamilyStyle.parameters`), aqui so a receita de `resolved_technique`
+    importa — e exatamente a garantia por-tecnica que o contrato legado nao
+    dava: duas tecnicas da mesma familia podem declarar parametro com o
+    mesmo nome e faixas diferentes sem colidir (issue #72).
+    """
+    declared = {parameter.name: parameter for parameter in resolved_technique.parameters}
+    for key, value in parameters.items():
+        parameter = declared.get(key)
+        if parameter is None:
+            # Nome sem declaracao no manual desta tecnica: nada para
+            # validar contra — mesma postura do contrato legado (so nomes
+            # que casam um parametro documentado sao checados).
+            continue
+        path = f"{technique_base}.parameters.{key}"
+        if parameter.range is not None:
+            lo, hi = float(parameter.range[0]), float(parameter.range[1])
+            values = _style_parameter_values(value)
+            if any(v < lo or v > hi for v in values):
+                raise PlanValidationError(
+                    path,
+                    (
+                        f"value {value!r} outside expected range "
+                        f"{_format_manual_range(lo, hi)} declared by "
+                        f"{resolved_technique.canonical}.{parameter.name}"
+                    ),
+                )
+            continue
+
+        if parameter.value is None and parameter.source is None:
+            warnings.append(
+                f"{path}: parameter {key!r} is a source gap in "
+                f"{resolved_technique.canonical}; no manual range/source exists"
+            )
+
+
+def _warn_style_parameter_conflicts(
+    base: str,
+    techniques: list[StyleTechnique],
+    family_parameters: dict[str, float | list[float]],
+    warnings: list[str],
+) -> None:
+    """Avisa quando `StyleTechnique.parameters` conflita com o legado
+    `FamilyStyle.parameters` (issue #72).
+
+    O nivel de tecnica e mais especifico e MANDA — mesma logica de
+    "parametros do plano > receita da tool > range do manual" ja
+    documentada em AGENTS.md, aplicada de novo aqui entre os dois niveis de
+    `parameters`. O conflito nunca e erro (o legado continua valido
+    sozinho, e planos v1 nunca declaram `parameters` por tecnica), so
+    aviso — o chamador (`tools.render._run_style_pipeline`) e quem de fato
+    aplica a precedencia ao fundir os dois dicts.
+    """
+    for i, technique in enumerate(techniques):
+        if not isinstance(technique, StyleTechnique) or not technique.parameters:
+            continue
+        for key, tech_value in technique.parameters.items():
+            if key not in family_parameters:
+                continue
+            family_value = family_parameters[key]
+            warnings.append(
+                f"{base}.techniques[{i}].parameters.{key}: overrides legacy "
+                f"{base}.parameters.{key}={family_value!r} with "
+                f"technique-scoped value {tech_value!r} (technique-level "
+                "parameters take precedence)"
+            )
+
+
 def _raise_style_musical_content(path: str, reason: str) -> None:
     raise PlanValidationError(
         path,
@@ -780,6 +919,9 @@ def _family_style_content_scan_dict(entry: FamilyStyle) -> dict[str, Any]:
                 "density": technique.density,
                 "rationale": technique.rationale,
                 "style": technique.style,
+                "parameters": technique.parameters,
+                "intensity": technique.intensity,
+                "evidence_refs": technique.evidence_refs,
             }
             if isinstance(technique, StyleTechnique)
             else technique
@@ -883,6 +1025,27 @@ def _validate_style(
                     tuple(sorted(STYLE_TECHNIQUE_STYLE_VALUES)),
                     f"{technique_base}.style",
                 )
+            _validate_parameters_shape(technique.parameters, f"{technique_base}.parameters")
+            if technique.intensity is not None:
+                if not isinstance(technique.intensity, (int, float)) or isinstance(
+                    technique.intensity, bool,
+                ):
+                    raise PlanValidationError(
+                        f"{technique_base}.intensity",
+                        f"must be number, got {type(technique.intensity).__name__}",
+                    )
+                if not 0.0 <= float(technique.intensity) <= 1.0:
+                    raise PlanValidationError(
+                        f"{technique_base}.intensity",
+                        f"must be in 0.0-1.0, got {technique.intensity}",
+                    )
+            if not isinstance(technique.evidence_refs, list):
+                raise PlanValidationError(
+                    f"{technique_base}.evidence_refs",
+                    f"must be list, got {type(technique.evidence_refs).__name__}",
+                )
+            for j, ref in enumerate(technique.evidence_refs):
+                _require_nonempty_str(ref, f"{technique_base}.evidence_refs[{j}]")
             if technique_index is not None:
                 resolved = _resolve_style_technique(
                     technique_index,
@@ -891,6 +1054,10 @@ def _validate_style(
                     f"{technique_base}.name",
                 )
                 resolved_techniques.append(resolved)
+                if technique.parameters:
+                    _validate_technique_parameters_against_manual(
+                        technique_base, technique.parameters, resolved, warnings,
+                    )
                 if brief_authorized is not None:
                     allowed = brief_authorized.get(family, set())
                     if resolved.canonical not in allowed:
@@ -904,27 +1071,14 @@ def _validate_style(
                                 "aplica se o usuario autorizou"
                             ),
                         )
-        if not isinstance(entry.parameters, dict):
-            raise PlanValidationError(
-                f"{base}.parameters",
-                f"must be dict of numbers, got {type(entry.parameters).__name__}",
-            )
-        for key, value in entry.parameters.items():
-            if not isinstance(key, str) or not key:
-                raise PlanValidationError(f"{base}.parameters", "parameter names must be non-empty strings")
-            if is_style_parameter_pair(value):
-                continue
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
-                raise PlanValidationError(
-                    f"{base}.parameters.{key}",
-                    f"must be number or [min, max] pair, got {type(value).__name__}",
-                )
+        _validate_parameters_shape(entry.parameters, f"{base}.parameters")
         _validate_style_parameters_against_techniques(
             entry.parameters,
             resolved_techniques,
             base,
             warnings,
         )
+        _warn_style_parameter_conflicts(base, entry.techniques, entry.parameters, warnings)
     return warnings
 
 
@@ -1693,6 +1847,12 @@ def _style_technique_to_dict(t: StyleTechnique) -> dict[str, Any]:
         data["rationale"] = t.rationale
     if t.style is not None:
         data["style"] = t.style
+    if t.parameters:
+        data["parameters"] = dict(t.parameters)
+    if t.intensity is not None:
+        data["intensity"] = float(t.intensity)
+    if t.evidence_refs:
+        data["evidence_refs"] = list(t.evidence_refs)
     return data
 
 
@@ -1886,11 +2046,24 @@ def _style_technique_from_dict(data: dict[str, Any], path: str) -> StyleTechniqu
     if not isinstance(data, dict):
         raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
     _reject_unknown_keys(data, STYLE_TECHNIQUE_FIELDS, path)
+    parameters = data.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise PlanValidationError(
+            f"{path}.parameters", f"must be dict, got {type(parameters).__name__}",
+        )
+    evidence_refs = data.get("evidence_refs", [])
+    if not isinstance(evidence_refs, list):
+        raise PlanValidationError(
+            f"{path}.evidence_refs", f"must be list, got {type(evidence_refs).__name__}",
+        )
     return StyleTechnique(
         name=_require_field(data, "name", path),
         density=data.get("density"),
         rationale=data.get("rationale"),
         style=data.get("style"),
+        parameters=dict(parameters),
+        intensity=data.get("intensity"),
+        evidence_refs=list(evidence_refs),
     )
 
 

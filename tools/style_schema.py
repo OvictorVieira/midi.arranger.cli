@@ -75,6 +75,44 @@ def style_technique_schema(*, additional_properties: bool | None = None) -> dict
                     {"enum": sorted(STYLE_TECHNIQUE_STYLE_VALUES)},
                 ],
             },
+            # issue #72: parametros pertencem a TECNICA que os consome, nao a
+            # familia inteira (`style.<familia>.parameters`, ainda suportado
+            # como contrato legado). Mesma forma restrita de `parameters` de
+            # familia — numero escalar ou par `[min, max]` — para a barreira
+            # anticopia e a validacao de faixa nao precisarem de duas regras.
+            "parameters": {
+                "type": "object",
+                "additionalProperties": {
+                    "oneOf": [
+                        {"type": "number"},
+                        {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                    ],
+                },
+            },
+            # Intensidade semantica explicita da tecnica (issue #72) — mesma
+            # escala 0.0-1.0 de `PlanEdit.intensity`: 0.0 desliga, 1.0 e a
+            # faixa cheia. Separado de `density`: existe para tecnica que
+            # quer expressar "o quanto" sem sobrescrever `density`, que
+            # continua tendo precedencia quando ambos estao declarados.
+            "intensity": {
+                "oneOf": [
+                    {"type": "null"},
+                    {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                ],
+            },
+            # Rastreabilidade (issue #72): ids de achados (`InfluenceFinding.id`,
+            # `tools/influence.py`) que justificaram esta tecnica. Estrutural
+            # apenas — string nao vazia; este modulo nao cruza contra um
+            # `InfluenceProfile` carregado (fora do escopo desta issue).
+            "evidence_refs": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
         },
         "required": ["name"],
     }
@@ -83,12 +121,27 @@ def style_technique_schema(*, additional_properties: bool | None = None) -> dict
     return schema
 
 
+def is_style_parameter_scalar(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def is_style_parameter_pair(value: Any) -> bool:
     return (
         isinstance(value, list)
         and len(value) == 2
         and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value)
     )
+
+
+def is_style_parameter_value(value: Any) -> bool:
+    """True quando `value` tem a forma aceita por um parametro de `style`.
+
+    Numero escalar ou par `[min, max]` — a UNICA forma aceita tanto em
+    `style.<familia>.parameters` (nivel de familia, legado) quanto em
+    `StyleTechnique.parameters` (nivel de tecnica, issue #72). Compartilhado
+    para as duas camadas nunca divergirem sobre o que e forma valida.
+    """
+    return is_style_parameter_scalar(value) or is_style_parameter_pair(value)
 
 
 def find_style_musical_content(

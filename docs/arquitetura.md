@@ -261,15 +261,37 @@ nunca vira arquivo em `knowledge/`. Cada família declara:
 - `confidence`: vocabulário fechado: `high`, `medium`, `low` ou `default`.
 - `techniques`: nomes validados contra `tools.techniques.build_index()`, em forma canônica ou
   simples quando o caminho da família desambigua.
-- `parameters`: apenas número escalar ou par `[min, max]`.
-- `techniques[].style`: única exceção não numérica do bloco `style`. Seleção fechada de técnica de
-  execução (dedo/palheta/slap, ex. `bass.attack_style`), validada contra
+- `parameters`: apenas número escalar ou par `[min, max]` — contrato LEGADO, compartilhado por
+  todas as técnicas da família (ver `techniques[].parameters` abaixo para o contrato atual,
+  por técnica).
+- `techniques[].style`: única exceção não numérica ao "número ou par" do bloco `style`. Seleção
+  fechada de técnica de execução (dedo/palheta/slap, ex. `bass.attack_style`), validada contra
   `STYLE_TECHNIQUE_STYLE_VALUES` — nunca string livre. Existe porque a escolha não tem como ser
   número: o manual da técnica declara a categoria, não uma faixa.
+- `techniques[].parameters` (issue #72): mesma forma restrita de `parameters` de família (número
+  escalar ou par `[min, max]`), mas pertence à TÉCNICA que os consome, não à família inteira.
+  Validado contra a receita da PRÓPRIA técnica resolvida (`tools.techniques.build_index()`), nunca
+  contra todas as técnicas da família — duas técnicas da mesma família podem declarar um parâmetro
+  de mesmo nome (ex. `velocity`) com faixas diferentes sem colidir. Quando o mesmo nome aparece nos
+  dois níveis para a mesma técnica, o nível da técnica MANDA sobre o legado `parameters` de família
+  — mesma lógica de "parâmetros do plano > receita da tool > range do manual" já documentada acima
+  — e `plan.validate()` emite warning de conflito. `tools.render._run_style_pipeline` funde os dois
+  canais (legado como base, `parameters` da técnica por cima) antes de despachar, então o aplicador
+  recebe só os parâmetros relevantes para ELE.
+- `techniques[].intensity` (issue #72): intensidade semântica explícita, `0.0`-`1.0`, mesma escala
+  de `PlanEdit.intensity`. Quando `techniques[].density` está ausente, `intensity` assume o papel
+  de `density` no despacho (liga/desliga a técnica e entra em `context.parameters["density"]`) —
+  sempre exposta também em `context.parameters["intensity"]`. `density`, quando declarado, continua
+  tendo precedência (retrocompatibilidade: plano v1 nunca declara `intensity`).
+- `techniques[].evidence_refs` (issue #72): lista de ids de achados (`InfluenceFinding.id`,
+  `tools/influence.py`) que justificaram a técnica — rastreabilidade pura, validada só
+  estruturalmente (strings não vazias); sem cruzamento contra um `InfluenceProfile` carregado
+  (fora do escopo da issue #72).
 
 O bloco é estruturalmente anticópia: chaves ou formas que carreguem notas, tempos, riffs, grooves,
-frases, melodias, motivos ou sequências musicais são erro. Quando um parâmetro casa com uma técnica
-citada e o manual declara `range`, valor fora da faixa é erro, nunca clamp silencioso.
+frases, melodias, motivos ou sequências musicais são erro — a mesma barreira vale para `parameters`
+de família e para `techniques[].parameters`. Quando um parâmetro casa com uma técnica citada e o
+manual declara `range`, valor fora da faixa é erro, nunca clamp silencioso.
 
 No render, `style.<familia>.techniques[]` é aplicado pelo motor determinístico de
 `tools/techniques/engine.py` em dois alvos: (a) tracks recém-geradas para aquela família e (b)

@@ -865,10 +865,20 @@ def _style_technique_parameters(
     sections: tuple[dict[str, Any], ...] | None = None,
     bars: tuple[dict[str, Any], ...] | None = None,
     drum_bar_quota: dict[str, dict[int, int]] | None = None,
+    intensity: float | None = None,
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = dict(style_parameters)
     if density is not None:
         parameters["density"] = float(density)
+    if intensity is not None:
+        # Intensidade semantica explicita de `StyleTechnique.intensity`
+        # (issue #72) — canal separado de `density` (que ja comanda o
+        # liga/desliga acima; ver `_run_style_pipeline`, que resolve
+        # `effective_density` com `density` tendo precedencia sobre
+        # `intensity` quando os dois estao declarados). Sempre exposta para
+        # o aplicador que quiser ler o valor bruto, mesmo quando `density`
+        # tambem esta presente.
+        parameters["intensity"] = float(intensity)
     if sections:
         # Mesmo canal separado de `tuning` logo abaixo: janelas de tick de
         # `plan.sections[].energy` (issue #45), consumidas hoje so por
@@ -1013,8 +1023,23 @@ def _run_style_pipeline(
     before_bytes = _midi_bytes(current)
     for technique in style.techniques:
         canonical = _canonical_style_technique(index, family, technique.name)
-        if technique.density is not None and technique.density <= 0.0:
+        # issue #72: `density` continua tendo precedencia quando declarado
+        # (retrocompatibilidade byte-a-byte — plano v1 nunca declara
+        # `intensity`); `intensity` so assume o papel de liga/desliga e de
+        # magnitude quando `density` esta ausente.
+        effective_density = (
+            technique.density if technique.density is not None else technique.intensity
+        )
+        if effective_density is not None and effective_density <= 0.0:
             continue
+        # Precedencia issue #72: `StyleTechnique.parameters` (nivel de
+        # tecnica) funde por cima do legado `FamilyStyle.parameters` (nivel
+        # de familia) — mais especifico vence, mesmo conflito ja avisado por
+        # `tools.plan._warn_style_parameter_conflicts` em `plan.validate()`.
+        # So os parametros relevantes para ESTA tecnica chegam ao
+        # aplicador: o dict resultante nao carrega parametro de OUTRA
+        # tecnica da mesma familia.
+        merged_parameters = {**style.parameters, **technique.parameters}
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
@@ -1024,13 +1049,14 @@ def _run_style_pipeline(
                     edit_track=edit_track,
                 ),
                 parameters=_style_technique_parameters(
-                    style.parameters,
-                    technique.density,
+                    merged_parameters,
+                    effective_density,
                     technique.style,
                     tuning,
                     family_section_windows,
                     family_bar_windows,
                     family_drum_bar_quota,
+                    intensity=technique.intensity,
                 ),
                 tool=tool_target,
                 index=index,
