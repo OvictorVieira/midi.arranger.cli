@@ -418,6 +418,31 @@ def test_semantic_value_note_names_with_trailing_punctuation_rejected():
     assert exc.value.code == "E_INFLUENCE_MUSICAL_CONTENT"
 
 
+# --- user_stated tem que ser booleano de verdade (achado Codex PR #101) ---
+
+
+def test_user_stated_string_false_is_rejected_not_coerced():
+    # Achado do review: `bool("false")` e True em Python. Um achado SEM
+    # fonte com `"user_stated": "false"` nao pode passar como se o usuario
+    # tivesse mesmo declarado a preferencia — a proveniencia inverteria.
+    payload = _valid_profile_dict()
+    payload["findings"][0]["source_ids"] = []
+    payload["findings"][0]["user_stated"] = "false"
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_SHAPE"
+    assert "user_stated" in exc.value.path
+
+
+def test_user_stated_int_one_is_rejected_not_coerced():
+    payload = _valid_profile_dict()
+    payload["findings"][0]["source_ids"] = []
+    payload["findings"][0]["user_stated"] = 1
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_SHAPE"
+
+
 # --- unknown field --------------------------------------------------------
 
 

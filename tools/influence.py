@@ -333,6 +333,22 @@ def _finding_from_dict(payload: Any, path: str) -> InfluenceFinding:
             f"{path}.source_ids",
             "precisa ser lista de strings",
         )
+    user_stated = payload.get("user_stated", False)
+    # ACHADO PR #101: `bool(...)` coagia QUALQUER string nao-vazia (inclusive
+    # a literal "false") para True. Um achado sem fonte com
+    # `"user_stated": "false"` passava a regra "sem fonte precisa de
+    # user_stated=True" como se o usuario tivesse mesmo declarado a
+    # preferencia, e um achado COM fonte e `"user_stated": "false"` corria o
+    # risco simetrico de cair na checagem de contradicao "fonte + user_stated
+    # verdadeiro" — a proveniencia (pesquisa vs. preferencia do usuario) e
+    # exatamente o dado que este campo existe para proteger, entao valor que
+    # nao seja booleano de verdade e erro de forma, nao coercao silenciosa.
+    if not isinstance(user_stated, bool):
+        raise InfluenceValidationError(
+            "E_INFLUENCE_SHAPE",
+            f"{path}.user_stated",
+            f"precisa ser booleano, recebi {user_stated!r}",
+        )
     return InfluenceFinding(
         id=payload["id"],
         family=payload["family"],
@@ -341,7 +357,7 @@ def _finding_from_dict(payload: Any, path: str) -> InfluenceFinding:
         intensity=payload["intensity"],
         confidence=payload["confidence"],
         source_ids=tuple(source_ids),
-        user_stated=bool(payload.get("user_stated", False)),
+        user_stated=user_stated,
         summary=payload.get("summary", ""),
     )
 
