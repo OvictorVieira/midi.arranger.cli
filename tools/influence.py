@@ -268,19 +268,47 @@ def from_dict(payload: Any) -> InfluenceProfile:
         project_ref=payload.get("project_ref"),
         sources=[
             _source_from_dict(s, f"sources[{i}]")
-            for i, s in enumerate(payload.get("sources", []) or [])
+            for i, s in enumerate(
+                _list_field(payload, "sources", "sources")
+            )
         ],
         findings=[
             _finding_from_dict(f, f"findings[{i}]")
-            for i, f in enumerate(payload.get("findings", []) or [])
+            for i, f in enumerate(
+                _list_field(payload, "findings", "findings")
+            )
         ],
         unmapped_findings=[
             _finding_from_dict(f, f"unmapped_findings[{i}]")
             for i, f in enumerate(
-                payload.get("unmapped_findings", []) or []
+                _list_field(payload, "unmapped_findings", "unmapped_findings")
             )
         ],
     )
+
+
+def _list_field(payload: dict[str, Any], key: str, path: str) -> list[Any]:
+    """Le `payload[key]` como lista, defaultando so quando AUSENTE (chave
+    faltando) ou `None`.
+
+    ACHADO PR #101: `payload.get(key, []) or []` tratava qualquer valor
+    FALSEY como "campo ausente" — `""`, `0`, `False`, `{}` viravam `[]` em
+    silencio em vez de disparar `E_INFLUENCE_SHAPE`, descartando dado real
+    (ex.: `findings` acidentalmente serializado como `{}` perdia os achados
+    sem aviso nenhum). Chave ausente ou `None` continua defaultando para
+    lista vazia — a UNICA forma legitima de "sem itens"; qualquer outro tipo
+    e forma malformada e tem que falhar explicitamente.
+    """
+    value = payload.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise InfluenceValidationError(
+            "E_INFLUENCE_SHAPE",
+            path,
+            f"precisa ser lista, recebi {type(value).__name__}",
+        )
+    return value
 
 
 def _source_from_dict(payload: Any, path: str) -> InfluenceSource:

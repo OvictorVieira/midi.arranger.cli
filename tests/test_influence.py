@@ -443,6 +443,54 @@ def test_user_stated_int_one_is_rejected_not_coerced():
     assert exc.value.code == "E_INFLUENCE_SHAPE"
 
 
+# --- forma das colecoes do perfil (achado Codex PR #101) ------------------
+
+
+def test_findings_wrong_type_falsey_dict_is_rejected():
+    # Achado do review: `payload.get("findings", []) or []` tratava
+    # QUALQUER valor falsey (nao so ausencia) como lista vazia — um
+    # `findings` acidentalmente serializado como `{}` descartava os achados
+    # reais em silencio em vez de falhar como E_INFLUENCE_SHAPE.
+    payload = _valid_profile_dict()
+    payload["findings"] = {}
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_SHAPE"
+    assert exc.value.path == "findings"
+
+
+def test_sources_wrong_type_falsey_string_is_rejected():
+    payload = _valid_profile_dict()
+    payload["sources"] = ""
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_SHAPE"
+    assert exc.value.path == "sources"
+
+
+def test_unmapped_findings_wrong_type_falsey_zero_is_rejected():
+    payload = _valid_profile_dict()
+    payload["unmapped_findings"] = 0
+    with pytest.raises(InfluenceValidationError) as exc:
+        validate(payload)
+    assert exc.value.code == "E_INFLUENCE_SHAPE"
+    assert exc.value.path == "unmapped_findings"
+
+
+def test_findings_absent_key_still_defaults_to_empty_list():
+    # Ausencia genuina (chave nem existe) continua sendo a UNICA forma
+    # legitima de "sem achados" — nao pode virar erro.
+    payload = _valid_profile_dict()
+    del payload["findings"]
+    validate(payload)
+
+
+def test_findings_none_still_defaults_to_empty_list():
+    payload = _valid_profile_dict()
+    payload["findings"] = None
+    validate(payload)
+
+
 # --- unknown field --------------------------------------------------------
 
 
