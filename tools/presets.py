@@ -49,9 +49,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from html import unescape
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
+from html import unescape
 from pathlib import Path
 
 # --- constantes de descoberta ------------------------------------------------
@@ -357,9 +357,7 @@ def _is_preset_file(path: Path) -> bool:
     if ext in PRESET_EXTS:
         return True
     # Neural DSP archetypes salvam presets como `.xml` dentro da propria arvore.
-    if ext == ".xml" and _NEURAL_DSP_MARKER in path.parts:
-        return True
-    return False
+    return bool(ext == ".xml" and _NEURAL_DSP_MARKER in path.parts)
 
 
 # Pastas cujo nome NAO e nome de plugin (containers genericos). Quando
@@ -433,10 +431,7 @@ def _classify(path: Path, root: Path) -> tuple[str | None, str]:
 
     if is_logic:
         # Estrutura: <Plug-In Settings>/<Plugin>/[<subdir>]/<file>
-        if len(parts) >= 2:
-            plugin_raw = _pick_plugin(0)
-        else:
-            plugin_raw = "Logic"
+        plugin_raw = _pick_plugin(0) if len(parts) >= 2 else "Logic"
         return None, _alias(plugin_raw)
 
     if root.name.upper() == "STEAM" and len(parts) >= 2:
@@ -656,9 +651,7 @@ def _needs_vendor_filter(root: Path) -> bool:
     """`~/Library/Application Support`, `~/Documents` e `/Users/Shared`
     varrem so subpastas de vendors conhecidos; demais roots descem tudo."""
     name = root.name
-    if name in ("Application Support", "Documents", "Shared"):
-        return True
-    return False
+    return name in ("Application Support", "Documents", "Shared")
 
 
 _SPECTRASONICS_FILE_RE = re.compile(rb'<FILE\s+name="([^"]+)"')
