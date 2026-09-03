@@ -14,15 +14,25 @@ Cobre:
 from __future__ import annotations
 
 import os
-import tempfile
 from collections import Counter
 
 import mido
-import pretty_midi
 import pytest
 
 from tools import analyze as analyze_mod
 from tools import contract  # noqa: F401 — popula o registry por side effect
+from tools.plan import (
+    ArrangementPlan,
+    Element,
+    PlanAnnotation,
+    PlanSection,
+    PlanValidationError,
+    SourceAnnotation,
+    SourceMidi,
+    from_dict,
+    to_dict,
+    validate,
+)
 from tools.registry import call
 
 ANCORA = os.path.join(
@@ -324,19 +334,6 @@ def test_analyze_tool_envelope_includes_annotations_and_summary():
 
 
 # --- plan schema: source_annotation + PlanAnnotation (issue #32) ----------
-
-from tools.plan import (
-    ArrangementPlan,
-    Element,
-    PlanAnnotation,
-    PlanSection,
-    PlanValidationError,
-    SourceAnnotation,
-    SourceMidi,
-    from_dict,
-    to_dict,
-    validate,
-)
 
 
 def _minimal_plan_with_element(element: Element) -> ArrangementPlan:
