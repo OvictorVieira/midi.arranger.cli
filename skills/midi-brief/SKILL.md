@@ -349,6 +349,18 @@ grave em `knowledge/`. Nao crie arquivo em `personas/`. Nao proponha
 "vou salvar isso para reusar depois". Cada musica pesquisa de novo — o
 perfil aqui e servico do arranjo desta faixa, nao base do proximo.
 
+## Descoberta de plugins e libraries
+
+A escolha de plugin/preset acontece na fase `run`, nao entra no brief. Nao
+pergunte ao usuario onde ficam STEAM, Kontakt libraries, bancos do Nexus ou
+qualquer outra pasta de preset, e nao instrua a configurar env var. Os drivers
+do `run` chamam `plugins.scan` + `presets.scan`; a tool resolve roots canonicos
+e ponteiros locais automaticamente. Se um plugin instalado ficar sem library,
+o agente do `run` inspeciona configs, symlinks e aliases locais de forma
+read-only e repete a tool com `extra_roots`. Intervencao do usuario so cabe
+quando o destino existe como referencia mas esta inacessivel, como volume
+externo desmontado ou permissao negada.
+
 ## Modo rapido
 
 Se o usuario pedir pressa — *"vai logo"*, *"defaults, so quero ver rodar"*,

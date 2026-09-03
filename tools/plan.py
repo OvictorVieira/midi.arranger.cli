@@ -65,6 +65,21 @@ EDIT_INTENSITY_MAX = 1.0
 
 STYLE_FAMILIES = ("bass", "drums", "guitar", "keys")
 STYLE_CONFIDENCE_LEVELS = ("high", "medium", "low", "default")
+
+# --- issue #96 — sessao de trabalho ---------------------------------------
+#
+# O plano herda o bloco `session` do brief: mesmo vocabulario fechado de
+# `intent`, mesmas famílias em `families_in_scope`. O plano nao inventa
+# nem sobrescreve — carrega o snapshot para que o render/harness saibam
+# em que rodada de trabalho o plano vive.
+#
+# Regra de coerencia do plano: quando `session.families_in_scope` esta
+# declarado, nenhum elemento gerado (`plan.elements`) de familia fora do
+# escopo entra, e nenhum `plan.style.<outra-familia>.techniques[]` pode
+# aparecer. Tracks copiadas do MIDI em `plan.edits` sao livres porque
+# saem byte-identicas quando nao recebem tecnica.
+SESSION_INTENTS = ("edit", "create", "layer", "transition", "mixed")
+SESSION_FIELDS = ("id", "intent", "families_in_scope", "created_at")
 STYLE_FAMILY_REQUIRED_FIELDS = (
     "reference",
     "researched_at",
@@ -164,6 +179,51 @@ class PlanSection:
 
 
 @dataclass
+class SourceAnnotation:
+    """Anotacao textual do MIDI de origem que motivou este elemento (issue #32).
+
+    Campos espelham `tools.analyze.Annotation` no que interessa para auditoria:
+    o texto exato como o usuario escreveu e a posicao (tick/bar/track/tipo).
+    Elemento que carrega `source_annotation` DEVE citar o texto no `rationale`
+    — a validacao exige, para que a rastreabilidade da autoria seja auditavel.
+    """
+    text: str
+    tick: int
+    bar: int
+    track: str
+    event_type: str
+
+
+@dataclass
+class PlanAnnotation:
+    """Anotacao declarada no plano com seu status de execucao (issue #32).
+
+    Toda anotacao lida do MIDI de origem deve aparecer aqui — inclusive as
+    que a IA leu e decidiu NAO acionar. Status:
+
+    - `actioned`: virou elemento; `element_id` aponta para ele.
+    - `declined`: a IA leu e decidiu nao acionar; `reason` diz por que.
+    - `conflict`: a anotacao entra em conflito com uma restricao do brief
+      (veto de familia/instrumento); nao foi executada e o `reason` nomeia
+      os dois lados (o que a anotacao pediu e o que o brief veta).
+
+    Anotacao com `status=actioned` precisa apontar um elemento existente; com
+    `status` diferente, `element_id` fica None e `reason` e obrigatorio.
+    """
+    text: str
+    tick: int
+    bar: int
+    track: str
+    event_type: str
+    status: str
+    element_id: str | None = None
+    reason: str | None = None
+
+
+ANNOTATION_STATUSES = ("actioned", "declined", "conflict")
+
+
+@dataclass
 class Element:
     id: str
     role: str
@@ -179,6 +239,7 @@ class Element:
     instrument: dict[str, Any] | None = None
     rationale: str | None = None
     is_protagonist: bool = False
+    source_annotation: SourceAnnotation | None = None
 
 
 @dataclass
@@ -204,11 +265,27 @@ class PlanEdit:
       metadado puro (nao altera nota nenhuma). Chaves aceitas:
       `plugin` (str nao vazio), `preset` (str nao vazio), `verified` (bool,
       default False). Passa pelas mesmas regras de `tools/tracks.py`.
+    - `tool`: ferramenta-alvo desta track para resolucao de receita de
+      `style.<familia>.techniques[]` (ex.: "MODO Bass", "Superior Drummer").
+      Normalizada igual a `instrument.plugin` de elemento gerado (ver
+      `tools.render._normalize_tool_name`) — resolve a receita especifica do
+      manual quando existir; ausencia cai em `generic` sem fallback
+      artificial. SEPARADO de `suggested_instrument`: aquele e so metadado
+      de exibicao, este muda qual receita a tecnica le (ex.: sem declarar
+      `tool="modo_bass"`, `bass.attack_style` nao acha `keyswitch_dedo` na
+      receita `generic` e vira no-op — a track nunca ganha o keyswitch que
+      diz ao MODO BASS pra tocar com dedo). Quando declarado, `validate()`
+      exige string nao vazia apos strip com pelo menos um caractere
+      alfanumerico — valor so com separador/pontuacao (ex.: `"!!!"`)
+      normalizaria para vazio em `_normalize_tool_name` e cairia em
+      `generic` em silencio, recriando o mesmo no-op que este campo existe
+      para evitar.
     """
     track: str
     profile: str
     intensity: float
     suggested_instrument: dict[str, Any] | None = None
+    tool: str | None = None
 
 
 @dataclass
@@ -233,6 +310,25 @@ class FamilyStyle:
 
 
 @dataclass
+class PlanSession:
+    """Sessao de trabalho herdada do brief (issue #96).
+
+    - `id`: string nao vazia (o brief usa UUID; o plano nao valida formato,
+      so exige nao-vazio — o brief e a fonte de verdade).
+    - `intent`: um de `SESSION_INTENTS`.
+    - `families_in_scope`: subconjunto de STYLE_FAMILIES sem duplicatas.
+      Vazio significa que o plano nao pode declarar tecnica nem elemento
+      de familia nenhuma (raramente util; para nao restringir, omita o
+      bloco inteiro).
+    - `created_at`: ISO-8601 UTC (`YYYY-MM-DDTHH:MM:SS[.fff]Z`).
+    """
+    id: str
+    intent: str
+    families_in_scope: list[str]
+    created_at: str
+
+
+@dataclass
 class ArrangementPlan:
     version: int
     seed: int
@@ -245,6 +341,8 @@ class ArrangementPlan:
     transitions: list[Transition] = field(default_factory=list)
     edits: list[PlanEdit] = field(default_factory=list)
     style: dict[str, FamilyStyle] | None = None
+    annotations: list[PlanAnnotation] = field(default_factory=list)
+    session: PlanSession | None = None
 
 
 # --- validacao --------------------------------------------------------------
@@ -823,6 +921,32 @@ def normalize_style_defaults(plan: ArrangementPlan) -> ArrangementPlan:
     return normalized
 
 
+SOURCE_ANNOTATION_FIELDS = ("text", "tick", "bar", "track", "event_type")
+PLAN_ANNOTATION_FIELDS = (
+    "text", "tick", "bar", "track", "event_type", "status", "element_id", "reason",
+)
+ANNOTATION_EVENT_TYPES = ("marker", "text", "cue_marker")
+
+
+def _validate_source_annotation(data: Any, path: str) -> None:
+    """Regras estruturais de `SourceAnnotation` (issue #32)."""
+    if not isinstance(data, SourceAnnotation):
+        raise PlanValidationError(
+            path, f"must be SourceAnnotation, got {type(data).__name__}",
+        )
+    _require_nonblank_str(data.text, f"{path}.text")
+    _require_nonblank_str(data.track, f"{path}.track")
+    _require_in(data.event_type, ANNOTATION_EVENT_TYPES, f"{path}.event_type")
+    if not isinstance(data.tick, int) or isinstance(data.tick, bool) or data.tick < 0:
+        raise PlanValidationError(
+            f"{path}.tick", f"must be non-negative int, got {data.tick!r}",
+        )
+    if not isinstance(data.bar, int) or isinstance(data.bar, bool) or data.bar < 0:
+        raise PlanValidationError(
+            f"{path}.bar", f"must be non-negative int, got {data.bar!r}",
+        )
+
+
 SUGGESTED_INSTRUMENT_FIELDS = ("plugin", "preset", "verified")
 
 
@@ -897,6 +1021,112 @@ def _validate_suggested_instrument(
         )
 
 
+_ISO_DATETIME_UTC_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"
+)
+
+
+def _validate_session(session: Any) -> None:
+    """Valida o bloco `session` do plano (issue #96).
+
+    Mesmos vocabularios fechados do brief — `intent` em SESSION_INTENTS,
+    cada familia em STYLE_FAMILIES, sem duplicatas. Estrutura invalida vira
+    `PlanValidationError` com path exato.
+    """
+    if not isinstance(session, PlanSession):
+        raise PlanValidationError(
+            "session", f"must be PlanSession, got {type(session).__name__}"
+        )
+    _require_nonempty_str(session.id, "session.id")
+    _require_in(session.intent, SESSION_INTENTS, "session.intent")
+    if not isinstance(session.families_in_scope, list):
+        raise PlanValidationError(
+            "session.families_in_scope",
+            f"must be list, got {type(session.families_in_scope).__name__}",
+        )
+    for i, family in enumerate(session.families_in_scope):
+        if family not in STYLE_FAMILIES:
+            raise PlanValidationError(
+                f"session.families_in_scope[{i}]",
+                f"expected one of {list(STYLE_FAMILIES)}, got {family!r}",
+            )
+    if len(session.families_in_scope) != len(set(session.families_in_scope)):
+        raise PlanValidationError(
+            "session.families_in_scope",
+            f"duplicate entries: {session.families_in_scope!r}",
+        )
+    if (
+        not isinstance(session.created_at, str)
+        or not _ISO_DATETIME_UTC_RE.match(session.created_at)
+    ):
+        raise PlanValidationError(
+            "session.created_at",
+            (
+                f"must be ISO-8601 UTC (YYYY-MM-DDTHH:MM:SS[.fff]Z), "
+                f"got {session.created_at!r}"
+            ),
+        )
+    try:
+        date.fromisoformat(session.created_at[:10])
+        # tempo real do calendario: `datetime.fromisoformat` no 3.11+ aceita `Z`.
+        from datetime import datetime as _datetime
+        _datetime.fromisoformat(session.created_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise PlanValidationError(
+            "session.created_at",
+            f"is not a real calendar date/time: {session.created_at!r}",
+        ) from None
+
+
+def _validate_session_scope(plan: ArrangementPlan) -> None:
+    """Fronteira de escopo da sessao (issue #96).
+
+    `plan.session.families_in_scope` recorta o que o plano pode fazer:
+    - nenhum `plan.style.<familia>.techniques[]` fora do escopo pode ter item;
+    - nenhum `plan.elements[]` cuja `role` mapeie para familia fora do escopo.
+
+    `plan.edits[]` fica livre: tracks do MIDI que nao entram no escopo saem
+    byte-identicas (sem receber tecnica), o que ja e o comportamento seguro
+    de `render._apply_style_techniques_to_edit_tracks` para toda familia sem
+    entrada em `plan.style`. Role sem mapeamento de familia
+    (`_style_family_for_role` retorna None) tambem passa — o escopo cobre
+    material das quatro familias musicais, o resto e neutro.
+    """
+    if plan.session is None:
+        return
+    scope = set(plan.session.families_in_scope)
+    if isinstance(plan.style, dict):
+        for family, entry in plan.style.items():
+            if family not in STYLE_FAMILIES:
+                continue
+            if not isinstance(entry, FamilyStyle):
+                continue
+            if not entry.techniques:
+                continue
+            if family not in scope:
+                raise PlanValidationError(
+                    f"style.{family}.techniques",
+                    (
+                        f"family {family!r} declares techniques but is outside "
+                        f"session.families_in_scope ({sorted(scope) or '[]'}); "
+                        "sessao de trabalho recorta o escopo — tecnica so pode "
+                        "aparecer para familia em escopo"
+                    ),
+                )
+    for i, element in enumerate(plan.elements):
+        family = _style_family_for_role(element.role)
+        if family is None:
+            continue
+        if family not in scope:
+            raise PlanValidationError(
+                f"elements[{i}].role",
+                (
+                    f"role {element.role!r} belongs to family {family!r}, "
+                    f"outside session.families_in_scope ({sorted(scope) or '[]'})"
+                ),
+            )
+
+
 def validate(
     plan: ArrangementPlan, plan_dir: Path | str | None = None,
 ) -> list[str]:
@@ -931,6 +1161,9 @@ def validate(
         )
     if not isinstance(plan.seed, int) or isinstance(plan.seed, bool):
         raise PlanValidationError("seed", f"must be int, got {type(plan.seed).__name__}")
+
+    if plan.session is not None:
+        _validate_session(plan.session)
 
     _require_in(plan.route, ROUTES, "route")
     _require_nonempty_str(plan.source_midi.path, "source_midi.path")
@@ -1016,6 +1249,102 @@ def validate(
                     f"section {label!r} not declared in plan.sections",
                 )
 
+    # BLOQUEIO: `source_annotation` do elemento cita o texto no `rationale`.
+    # Sem essa amarra a autoria da anotacao vira decorativa — mesma categoria
+    # do `rationale` vazio ja rejeitado acima.
+    element_ids_seen: set[str] = set()
+    elements_by_id: dict[str, Element] = {}
+    for i, e in enumerate(plan.elements):
+        element_ids_seen.add(e.id)
+        elements_by_id[e.id] = e
+        if e.source_annotation is None:
+            continue
+        base = f"elements[{i}].source_annotation"
+        _validate_source_annotation(e.source_annotation, base)
+        text = e.source_annotation.text
+        if not isinstance(e.rationale, str) or text not in e.rationale:
+            raise PlanValidationError(
+                f"elements[{i}].rationale",
+                (
+                    f"element carries source_annotation {text!r} but rationale "
+                    "does not cite it verbatim; anotacao acionada precisa ser "
+                    "referenciada no rationale para a autoria ser auditavel"
+                ),
+            )
+
+    # BLOQUEIO: annotations do plano — status/refs consistentes.
+    for i, annot in enumerate(plan.annotations):
+        base = f"annotations[{i}]"
+        if not isinstance(annot, PlanAnnotation):
+            raise PlanValidationError(
+                base,
+                f"must be PlanAnnotation, got {type(annot).__name__}",
+            )
+        _require_nonblank_str(annot.text, f"{base}.text")
+        _require_nonblank_str(annot.track, f"{base}.track")
+        _require_in(annot.event_type, ANNOTATION_EVENT_TYPES, f"{base}.event_type")
+        _require_in(annot.status, ANNOTATION_STATUSES, f"{base}.status")
+        if not isinstance(annot.tick, int) or isinstance(annot.tick, bool) or annot.tick < 0:
+            raise PlanValidationError(f"{base}.tick", f"must be non-negative int, got {annot.tick!r}")
+        if not isinstance(annot.bar, int) or isinstance(annot.bar, bool) or annot.bar < 0:
+            raise PlanValidationError(f"{base}.bar", f"must be non-negative int, got {annot.bar!r}")
+        if annot.status == "actioned":
+            if annot.element_id is None or not annot.element_id:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    "annotation with status='actioned' must reference an element_id",
+                )
+            if annot.element_id not in element_ids_seen:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    f"element_id {annot.element_id!r} not declared in plan.elements",
+                )
+            target = elements_by_id[annot.element_id]
+            sa = target.source_annotation
+            if sa is None:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    (
+                        f"element {annot.element_id!r} has no source_annotation — "
+                        "an actioned annotation must reference an element that "
+                        "was actually built from it, for the audit trail to hold"
+                    ),
+                )
+            mismatched = (
+                sa.text != annot.text
+                or sa.tick != annot.tick
+                or sa.bar != annot.bar
+                or sa.track != annot.track
+                or sa.event_type != annot.event_type
+            )
+            if mismatched:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    (
+                        f"element {annot.element_id!r}.source_annotation "
+                        f"{_source_annotation_to_dict(sa)!r} does not match this "
+                        f"annotation {_plan_annotation_to_dict(annot)!r} — actioned "
+                        "annotation must point at the element it actually produced"
+                    ),
+                )
+        else:
+            if annot.element_id is not None:
+                raise PlanValidationError(
+                    f"{base}.element_id",
+                    (
+                        f"annotation with status={annot.status!r} must not carry "
+                        "an element_id — it was not actioned"
+                    ),
+                )
+            if not isinstance(annot.reason, str) or not annot.reason.strip():
+                raise PlanValidationError(
+                    f"{base}.reason",
+                    (
+                        f"annotation with status={annot.status!r} must carry a "
+                        "non-empty reason explaining why it was not actioned"
+                    ),
+                )
+
     # BLOQUEIO: duas camadas na mesma secao nao podem ambas declarar protagonista.
     protagonists_by_section: dict[str, list[str]] = {}
     for e in plan.elements:
@@ -1060,6 +1389,35 @@ def validate(
             _validate_suggested_instrument(
                 ed.suggested_instrument, ed.profile, f"{base}.suggested_instrument",
             )
+        if ed.tool is not None:
+            _require_nonblank_str(ed.tool, f"{base}.tool")
+            if not any(ch.isalnum() for ch in ed.tool):
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    f"must contain at least one alphanumeric character, "
+                    f"got {ed.tool!r} (normalizes to no tool, which would "
+                    "silently fall back to the generic recipe)",
+                )
+            # `edit.tool` vira `plugin` no carimbo (`_stamp_edit_tracks`,
+            # tools/render.py) igual a `suggested_instrument.plugin` — mesma
+            # checagem ASCII/sem '|' daquele campo, senao o erro so aparece
+            # tarde no render (`_format_stamp`) em vez de aqui, na validacao.
+            from .tracks import is_ascii_safe
+
+            if not is_ascii_safe(ed.tool):
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    f"must be ASCII (meta-evento SMF nao carrega encoding), "
+                    f"got {ed.tool!r}",
+                )
+            if "|" in ed.tool:
+                raise PlanValidationError(
+                    f"{base}.tool",
+                    "must not contain '|' — separador reservado do carimbo",
+                )
+
+    # BLOQUEIO: fronteira de escopo da sessao (issue #96).
+    _validate_session_scope(plan)
 
     # AVISO: todos os 5 eixos sobem simultaneamente entre secoes consecutivas.
     for i in range(len(plan.sections) - 1):
@@ -1096,6 +1454,15 @@ def _brief_ref_to_dict(ref: BriefRef) -> dict[str, Any]:
     }
 
 
+def _session_to_dict(s: PlanSession) -> dict[str, Any]:
+    return {
+        "id": s.id,
+        "intent": s.intent,
+        "families_in_scope": list(s.families_in_scope),
+        "created_at": s.created_at,
+    }
+
+
 def _section_to_dict(s: PlanSection) -> dict[str, Any]:
     return {
         "label": s.label,
@@ -1108,8 +1475,31 @@ def _section_to_dict(s: PlanSection) -> dict[str, Any]:
     }
 
 
-def _element_to_dict(e: Element) -> dict[str, Any]:
+def _source_annotation_to_dict(sa: SourceAnnotation) -> dict[str, Any]:
     return {
+        "text": sa.text,
+        "tick": int(sa.tick),
+        "bar": int(sa.bar),
+        "track": sa.track,
+        "event_type": sa.event_type,
+    }
+
+
+def _plan_annotation_to_dict(a: PlanAnnotation) -> dict[str, Any]:
+    return {
+        "text": a.text,
+        "tick": int(a.tick),
+        "bar": int(a.bar),
+        "track": a.track,
+        "event_type": a.event_type,
+        "status": a.status,
+        "element_id": a.element_id,
+        "reason": a.reason,
+    }
+
+
+def _element_to_dict(e: Element) -> dict[str, Any]:
+    data: dict[str, Any] = {
         "id": e.id,
         "role": e.role,
         "sections": list(e.sections),
@@ -1125,6 +1515,9 @@ def _element_to_dict(e: Element) -> dict[str, Any]:
         "rationale": e.rationale,
         "is_protagonist": e.is_protagonist,
     }
+    if e.source_annotation is not None:
+        data["source_annotation"] = _source_annotation_to_dict(e.source_annotation)
+    return data
 
 
 def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
@@ -1135,6 +1528,8 @@ def _edit_to_dict(e: PlanEdit) -> dict[str, Any]:
     }
     if e.suggested_instrument is not None:
         data["suggested_instrument"] = dict(e.suggested_instrument)
+    if e.tool is not None:
+        data["tool"] = e.tool
     return data
 
 
@@ -1182,6 +1577,7 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
         "elements": [_element_to_dict(e) for e in plan.elements],
         "transitions": [_transition_to_dict(t) for t in plan.transitions],
         "edits": [_edit_to_dict(ed) for ed in plan.edits],
+        "annotations": [_plan_annotation_to_dict(a) for a in plan.annotations],
     }
     if plan.style is not None:
         data["style"] = {
@@ -1190,6 +1586,8 @@ def to_dict(plan: ArrangementPlan) -> dict[str, Any]:
         }
     if plan.brief_ref is not None:
         data["brief_ref"] = _brief_ref_to_dict(plan.brief_ref)
+    if plan.session is not None:
+        data["session"] = _session_to_dict(plan.session)
     return data
 
 
@@ -1213,6 +1611,26 @@ def _brief_ref_from_dict(data: Any) -> BriefRef:
     )
 
 
+def _session_from_dict(data: Any) -> PlanSession:
+    if not isinstance(data, dict):
+        raise PlanValidationError(
+            "session", f"must be object, got {type(data).__name__}",
+        )
+    _reject_unknown_keys(data, SESSION_FIELDS, "session")
+    families = _require_field(data, "families_in_scope", "session")
+    if not isinstance(families, list):
+        raise PlanValidationError(
+            "session.families_in_scope",
+            f"must be list, got {type(families).__name__}",
+        )
+    return PlanSession(
+        id=_require_field(data, "id", "session"),
+        intent=_require_field(data, "intent", "session"),
+        families_in_scope=list(families),
+        created_at=_require_field(data, "created_at", "session"),
+    )
+
+
 def _section_from_dict(data: dict[str, Any]) -> PlanSection:
     return PlanSection(
         label=data["label"],
@@ -1225,7 +1643,37 @@ def _section_from_dict(data: dict[str, Any]) -> PlanSection:
     )
 
 
+def _source_annotation_from_dict(data: Any, path: str) -> SourceAnnotation:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, SOURCE_ANNOTATION_FIELDS, path)
+    return SourceAnnotation(
+        text=_require_field(data, "text", path),
+        tick=_require_field(data, "tick", path),
+        bar=_require_field(data, "bar", path),
+        track=_require_field(data, "track", path),
+        event_type=_require_field(data, "event_type", path),
+    )
+
+
+def _plan_annotation_from_dict(data: Any, path: str) -> PlanAnnotation:
+    if not isinstance(data, dict):
+        raise PlanValidationError(path, f"must be object, got {type(data).__name__}")
+    _reject_unknown_keys(data, PLAN_ANNOTATION_FIELDS, path)
+    return PlanAnnotation(
+        text=_require_field(data, "text", path),
+        tick=_require_field(data, "tick", path),
+        bar=_require_field(data, "bar", path),
+        track=_require_field(data, "track", path),
+        event_type=_require_field(data, "event_type", path),
+        status=_require_field(data, "status", path),
+        element_id=data.get("element_id"),
+        reason=data.get("reason"),
+    )
+
+
 def _element_from_dict(data: dict[str, Any], path: str) -> Element:
+    sa_raw = data.get("source_annotation")
     return Element(
         id=data["id"],
         role=data["role"],
@@ -1241,6 +1689,10 @@ def _element_from_dict(data: dict[str, Any], path: str) -> Element:
         instrument=data.get("instrument"),
         rationale=_require_field(data, "rationale", path),
         is_protagonist=data.get("is_protagonist", False),
+        source_annotation=(
+            _source_annotation_from_dict(sa_raw, f"{path}.source_annotation")
+            if sa_raw is not None else None
+        ),
     )
 
 
@@ -1251,6 +1703,7 @@ def _edit_from_dict(data: dict[str, Any]) -> PlanEdit:
         profile=data["profile"],
         intensity=float(data["intensity"]),
         suggested_instrument=dict(suggested) if suggested is not None else None,
+        tool=data.get("tool"),
     )
 
 
@@ -1341,6 +1794,11 @@ def from_dict(data: dict[str, Any]) -> ArrangementPlan:
         edits=[_edit_from_dict(ed) for ed in data.get("edits", [])],
         style=_style_from_dict(data["style"]) if "style" in data else None,
         brief_ref=_brief_ref_from_dict(data["brief_ref"]) if "brief_ref" in data else None,
+        annotations=[
+            _plan_annotation_from_dict(a, f"annotations[{i}]")
+            for i, a in enumerate(data.get("annotations", []))
+        ],
+        session=_session_from_dict(data["session"]) if "session" in data else None,
     )
 
 

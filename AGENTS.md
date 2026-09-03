@@ -119,6 +119,32 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   aplicadas e, quando declarada, `suggested_plugin`/`suggested_preset`/`suggested_verified`. O
   formato é `midi-arranger v1|chave=valor|...`, ASCII puro, com `|` proibido nos valores. Track de
   origem não declarada em `plan.edits` NÃO recebe carimbo — sai byte-idêntica.
+- `instrument.preset`/`suggested_instrument.preset` nunca é nome de preset inventado, mesmo marcado
+  `verified: false` — mesma regra que já rejeitou `_identity_apply` e a atribuição falsa a
+  `cmuse.org`: chute marcado como chute continua sendo chute apresentado como fato. `presets.scan`
+  (`tools/presets.py`, só roda em sessão local com acesso ao filesystem do usuário) faz **sweep
+  genérico** de locais canônicos macOS (`~/Library/Audio/Presets`, `/Library/Audio/Presets`,
+  `~/Music/Audio Music Apps/Plug-In Settings`, `~/Library/Application Support/<Vendor>`,
+  `~/Documents/<Vendor>`, `/Users/Shared/<Vendor>`), com whitelist de vendors conhecidos e
+  whitelist de extensões de preset — funciona em qualquer Mac, não hardcoded no filesystem do
+  autor. Antes do sweep, resolve automaticamente ponteiros locais de library (por exemplo, symlink
+  `~/Library/Application Support/Spectrasonics/STEAM` para volume externo) e relata
+  `searched_roots`, `discovered_roots` e `unresolved_roots`. O fluxo normal nunca pede que o usuário
+  configure path/env; `extra_roots`, `MIDI_ARRANGER_PRESET_ROOTS` e `SPECTRASONICS_STEAM_ROOT` são
+  apenas escape hatches de diagnóstico/compatibilidade. O harness compara `plugins.scan` com o
+  inventário, inspeciona configs/symlinks/aliases locais de forma read-only quando faltar library e
+  repete `presets.scan` com `extra_roots`; só pede ação ao usuário quando o recurso está realmente
+  inacessível (volume desmontado/permissão). Preset achado lá é o único que pode virar nome exato
+  com `verified: true`. Sem preset
+  real, a sugestão cai para a categoria do instrumento (ex.: "Synth Piano — escolha o preset na
+  sua biblioteca"), nunca um nome plausível inventado. Libraries em DB binário proprietário
+  (Toontrack Superior3, EZdrummer, EZbass) aparecem em `opaque_libraries` com motivo — o harness
+  deve avisar que existe conteúdo, mas jamais inventar nome de preset a partir delas. `._*`
+  (AppleDouble) e diretórios de sample/cache/log são ignorados na varredura.
+  DBs da Spectrasonics não entram nessa categoria opaca: começam com manifesto `FileSystem` legível;
+  leia apenas esse manifesto para obter nomes reais e pare antes do payload concatenado. Ao varrer
+  STEAM, limite a descida a `<Produto>/Settings Library/{Patches,Multis}` — nunca atravesse
+  `Soundsources`, samples ou wavetables.
 - NUNCA acrescentar exclusão a `tests/test_palette_integration.py::test_all_target_roles_are_covered`
   para o teste passar. A única exclusão permitida é `choir` (compartilha gerador com strings). Role
   que não gera de verdade sai de `_ROLE_RENDERERS`, não vira exceção do teste.
@@ -147,13 +173,21 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
-  bateria de andaime). Hoje estão nessa situação as técnicas de baixo `bass.slide`, `bass.vibrato`,
-  `bass.string_selection` e `bass.harmonic` (fora do escopo da issue #47). Inventário canônico do
+  bateria de andaime). Hoje estão nessa situação as técnicas de baixo `bass.slide`, `bass.vibrato`
+  e `bass.harmonic` (fora do escopo da issue #47). Inventário canônico do
   motor em `docs/arquitetura.md` (§4, "Inventário de técnicas do motor"); o teste
   `test_supported_techniques_is_derived_from_the_registry` em `tests/test_techniques_engine.py`
   afirma a tupla exata e quebra o build se um registro fantasma aparecer. Inventário atual de
   bateria: `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`,
   `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes` e `drums.microtiming`.
+- `bass.string_selection` força a corda em que cada nota estrutural do baixo soa, via keyswitch
+  momentâneo do MODO BASS (manual §5.9): agrupa notas consecutivas na mesma corda (a mais grave que
+  alcança o pitch dentro de `max_fret`, default 24) num run só, segura o keyswitch pressionado
+  (par note_on/note_off) do início ao fim do run — o LATCH do plugin vem desligado de fábrica — e é
+  NO-OP em qualquer ferramenta que não seja `modo_bass` (a própria receita `generic` do manual diz
+  que a intenção de corda não pode ser honrada nela). Afinação vem de `context.parameters["tuning"]`
+  com fallback no default físico de 4 cordas; contagem de cordas fora de 4/5/6 também é NO-OP, pois
+  não há convenção documentada de ordem de corda para esses casos.
 - `drums.accent_hierarchy` foi reintroduzida na issue #50 com detecção determinística de virada
   (`tools/techniques/_fill_detection.py`, mesmo padrão de `roll_sequences` do `drums.accented_roll`)
   e invariante de pressão em duas camadas: (a) piso `soft_ceiling+1` impede que nota escrita no

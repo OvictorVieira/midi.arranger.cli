@@ -58,6 +58,39 @@ Contrato de `style` no plano:
 Todo elemento do plano precisa ter `rationale` nao vazio, justificado pela persona, pelo brief ou
 pelo estilo pesquisado. Nao use `rationale` decorativo; escreva a razao verificavel daquele elemento.
 
+## Anotacoes textuais do MIDI
+
+O `analyze` devolve `annotations`: cada evento textual do MIDI de origem (marker nao-secao, text,
+cue_point) que sobreviveu ao filtro de ruido, com texto exato, tick, compasso, segundo, track,
+tipo e escopo (ate a proxima anotacao dentro da mesma secao OU ate o fim da secao, o que vier
+primeiro). Anotacoes descartadas aparecem em `discarded_annotations` com o padrao que as
+excluiu — filtro silencioso esconderia anotacao real classificada errado.
+
+A interpretacao do texto e SUA, nao do maquinario. A tool nao faz parser de linguagem natural.
+Voce le a anotacao, combina com o brief e a persona, e decide o que fazer com ela.
+
+**Precedencia inviolavel:**
+
+1. **Anotacao e local e mais especifica: dentro do escopo dela, ela prevalece sobre a preferencia
+   geral do brief.** Se o brief prefere pad em `sustained` e a anotacao pede "pluck curto aqui",
+   siga a anotacao dentro do escopo declarado.
+2. **Restricao do brief e veto, nao preferencia, e nao cede.** Familia/instrumento vetado no brief
+   nao entra mesmo que a anotacao peca. Guitarra vetada nao vira elemento porque uma anotacao pediu
+   riff — o conflito e reportado, nao resolvido em silencio.
+3. **Conflito entre anotacao e veto vira aviso explicito** no `progress_file` e a anotacao entra em
+   `plan.annotations[]` com `status: "conflict"` e `reason` nomeando os dois lados (o que a
+   anotacao pediu e o que o brief veta).
+
+Toda anotacao lida deve aparecer em `plan.annotations[]`:
+
+- `status: "actioned"` para as que viraram elemento; `element_id` aponta o elemento gerado, e o
+  elemento carrega `source_annotation` com o texto/posicao originais.
+- `status: "declined"` para as que voce leu e decidiu nao acionar; `reason` explica por que.
+- `status: "conflict"` para as que colidem com veto do brief; `reason` nomeia os dois lados.
+
+Elemento com `source_annotation` DEVE citar o texto da anotacao no `rationale` (substring literal).
+A validacao exige — autoria da anotacao rastreavel sem isso vira decorativa.
+
 Uma iteracao e uma unidade de trabalho. Como a proxima roda com contexto limpo, deixe o estado em
 disco consistente antes de terminar: plano escrito, resultados de tool lidos, problemas registrados
 e `progress_file` atualizado.
@@ -109,6 +142,7 @@ Tools disponiveis:
   a decisao musical e sua.
 - `plan.validate`: use sempre antes de `render`. Nao pule validacao para economizar iteracao.
 - `plugins.scan`: use antes de sugerir plugin ou preset. Nao use para justificar decisao musical.
+- `presets.scan`: use JUNTO com `plugins.scan` antes de sugerir preset. Rode primeiro sem overrides: a tool descobre roots canonicos e ponteiros locais de libraries automaticamente. Compare plugins instalados com presets e `opaque_libraries`; para plugin instalado sem resultado, leia `searched_roots`, `discovered_roots` e `unresolved_roots`, inspecione de forma read-only symlinks/aliases e configuracoes locais do plugin e repita com os caminhos encontrados em `extra_roots`. Nao peca ao usuario para definir env var nem path; so solicite acao quando a propria maquina bloquear acesso (volume desmontado/permissao). Preset achado no disco e o unico que pode virar nome exato (`verified: true`); sem preset real, sugira so a categoria do instrumento, nunca um nome inventado.
 - `render`: use depois de plano valido para gerar o MIDI e obter o relatorio dos validadores. Nao
   use se o `output_path` apontar para o MIDI de origem.
 - `techniques.describe`: use antes de escrever a receita de execucao de uma tecnica no plano. Nao
