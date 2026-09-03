@@ -98,6 +98,157 @@ Contexto limpo a cada iteração significa que **todo estado vive em arquivo**.
 de ser consumido em memória: o render fica determinístico, auditável e re-executável sem refazer
 pesquisa.
 
+### Bloco `session` (issue #96)
+
+`session` é a **fronteira de trabalho**: identifica uma rodada focada com um `intent` (o que o
+usuário está fazendo nessa passada) e um recorte de famílias em jogo. Vive no brief e é herdado
+pelo plano — nunca inventado pelo agente no meio do caminho. O bloco é **opcional**: brief e plano
+sem `session` continuam válidos e byte-idênticos ao que sempre foram (modo monolítico).
+
+Campos:
+
+- `id`: string não vazia (o brief usa UUID; o plano só exige não-vazio — o brief é a fonte).
+- `intent`: vocabulário FECHADO — `edit`, `create`, `layer`, `transition`, `mixed`.
+- `families_in_scope`: subconjunto sem duplicatas de `bass`/`drums`/`guitar`/`keys`.
+- `created_at`: ISO-8601 UTC — `YYYY-MM-DDTHH:MM:SS[.fff]Z`, data real do calendário.
+
+**Fronteira de escopo do plano.** Quando `session.families_in_scope` está declarado:
+
+- nenhum `plan.style.<outra-família>.techniques[]` pode aparecer com item — validado por
+  `tools.plan.validate` em `_validate_session_scope`;
+- nenhum `plan.elements[]` cujo `role` mapeie para família fora do escopo entra (o mapeamento
+  role→família reusa `ROLE_STYLE_FAMILIES` de `tools/plan.py`, o mesmo que o render já usa);
+- `plan.edits[]` fica livre: track do MIDI que não entra no escopo sai byte-idêntica, sem receber
+  técnica. É a mesma regra que já vale para família sem entrada em `plan.style` no render.
+
+**Persistência append-only.** Quando o consumidor (harness/CLI) decide arquivar a sessão, chama
+`tools.sessions.archive_session(plan, base_dir)`. O arquivo vai em
+`<base>/.midiarranger/sessions/<id>-<intent>-<famílias-com-dash>.json` — nome determinístico, sem
+timestamp (o `created_at` do plano já carrega o momento). Se o arquivo já existir, é erro
+(`SessionArchiveError`): colisão aponta bug de id duplicado, nunca sobrescreve histórico. O módulo
+NÃO é chamado por `tools/render.py` — a ordem inviolável do pipeline não muda por causa desta
+issue, e o consumidor é quem invoca a persistência explicitamente.
+
+### Bloco `influence` (perfil por música)
+
+`InfluenceProfile` é o contrato entre a **pesquisa** feita pela IA do usuário e o **dicionário de
+técnicas** consumido pelo maquinário. Vive por música, em memória ou serializado, e nunca vira
+persona persistente de artista nem base de conhecimento em `knowledge/`. O módulo é
+`tools/influence.py`; a validação é determinística (sem relógio, sem rede, sem aleatoriedade) e
+exposta como `tools.influence.validate(profile)`. Erros carregam `code`, `path` do finding e
+`hint` acionável.
+
+Estrutura de `InfluenceProfile` v1:
+
+- `version` (const `1`)
+- `project_ref: str | None` — identificador local; **jamais** identidade de artista.
+- `sources[]`: `{id, url, title, retrieved_at}` (data ISO curta `YYYY-MM-DD`).
+- `findings[]`: achados que o motor sabe executar hoje ou que informam parametrização do plano.
+- `unmapped_findings[]`: achados válidos que o motor **ainda não** sabe executar — ficam registrados
+  para não se perder, mas nunca viram técnica aplicada. Mesmas regras estruturais dos findings.
+
+Cada `InfluenceFinding` carrega:
+
+- `id`, `family` (⊂ `STYLE_FAMILIES`), `dimension` (vocabulário fechado abaixo),
+- `intensity` ∈ `{off, subtle, medium, strong}`,
+- `confidence` ∈ `{high, medium, low, default}` (reusa `CONFIDENCE_LEVELS` do brief),
+- `semantic_value: str` — descrição parafraseada do comportamento,
+- `source_ids: tuple[str, ...]` referenciando `sources[].id`,
+- `user_stated: bool` — `True` quando é preferência explícita do usuário (sem fonte),
+- `summary: str` — resumo parafraseado.
+
+Vocabulário fechado de `dimension` (`INFLUENCE_DIMENSIONS`, snake_case inglês para casar com o
+resto do maquinário):
+
+`timing_feel`, `dynamics`, `articulation`, `density`, `arrangement_function`, `register`,
+`section_behavior`, `execution_technique`.
+
+Regras invioláveis embutidas no validador:
+
+1. **Vocabulário fechado, não texto livre**: `family`, `dimension`, `intensity`, `confidence` fora
+   dos valores aceitos é erro (`E_INFLUENCE_UNKNOWN_*`), nunca aceito em silêncio.
+2. **Fonte obrigatória, exceto preferência do usuário**: finding sem `source_ids` só passa com
+   `user_stated=True` (`E_INFLUENCE_FINDING_NO_SOURCE`). Finding com `source_ids` **e**
+   `user_stated=True` é contradição (`E_INFLUENCE_FINDING_SOURCE_AND_USER`) — o validador não
+   adivinha qual dos dois vale.
+3. **Confiança declarada por finding**, não pela família inteira.
+4. **Barreira anticópia estrutural** compartilhada com `style`: `find_style_musical_content`
+   (`tools/style_schema.py`) é reusada sobre o payload — chaves de conteúdo musical (`notes`,
+   `pattern`, `riff`, `melody`, ...), sequências de números em faixa MIDI, arrays de eventos com
+   pitch+time, arrays de nomes de nota são erro em qualquer profundidade
+   (`E_INFLUENCE_MUSICAL_CONTENT`).
+5. **Barreira anticópia semântica** sobre `semantic_value` e `summary`: string com 3+ tokens em
+   sequência batendo `NOTE_NAME_RE` (ex. `"C4 D4 E4"`) ou 3+ inteiros em faixa MIDI
+   (ex. `"60 64 67"`) é erro. Menção isolada em prosa (`"tônica em C"`, `"pedal em 40"`) passa.
+6. **Sem números exatos de MIDI** inventados pela IA: o perfil registra **comportamento**, não
+   **conteúdo**. Números vêm dos manuais em `knowledge/tecnicas/` e do motor.
+
+Exemplos mínimos:
+
+Bateria (achado com fonte):
+
+```json
+{
+  "id": "f_drums_ghost",
+  "family": "drums",
+  "dimension": "articulation",
+  "semantic_value": "usa ghost notes como articulacao de dinamica",
+  "intensity": "medium",
+  "confidence": "high",
+  "source_ids": ["src_1"],
+  "user_stated": false,
+  "summary": "A referencia articula pressao com ghost notes em vez de acentuar"
+}
+```
+
+Baixo (feel de timing):
+
+```json
+{
+  "id": "f_bass_feel",
+  "family": "bass",
+  "dimension": "timing_feel",
+  "semantic_value": "atrasa levemente contra a bateria em versos",
+  "intensity": "subtle",
+  "confidence": "medium",
+  "source_ids": ["src_2"],
+  "user_stated": false,
+  "summary": "Push-pull sutil de timing contra o backbeat"
+}
+```
+
+Teclas (preferência explícita do usuário, sem fonte):
+
+```json
+{
+  "id": "f_keys_preference",
+  "family": "keys",
+  "dimension": "arrangement_function",
+  "semantic_value": "teclas ficam de pad, nao respondem melodia",
+  "intensity": "strong",
+  "confidence": "default",
+  "source_ids": [],
+  "user_stated": true,
+  "summary": "Preferencia declarada pelo usuario"
+}
+```
+
+Guitarra em `unmapped_findings` (comportamento válido, motor ainda não executa):
+
+```json
+{
+  "id": "u_guitar_whammy",
+  "family": "guitar",
+  "dimension": "execution_technique",
+  "semantic_value": "uso de whammy bar com pitch bend profundo",
+  "intensity": "strong",
+  "confidence": "high",
+  "source_ids": ["src_1"],
+  "user_stated": false,
+  "summary": "Tecnica levantada mas ainda nao executada pelo motor"
+}
+```
+
 ### Bloco `style`
 
 `style` é o recorte do perfil pesquisado que o maquinário determinístico pode auditar e aplicar.
@@ -253,7 +404,7 @@ Estado atual do motor:
 | Família | Executadas pelo motor | Documentadas, ainda sem aplicador |
 |---|---|---|
 | `drums` | `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes`, `drums.microtiming` | — |
-| `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.string_selection`, `bass.harmonic` |
+| `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.string_selection`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.harmonic` |
 | `keys` | `keys.damper_pedal`, `keys.expression`, `keys.modulation`, `keys.pitch_bend` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`, `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`, `keys.human_articulation` |
 | `guitar` | — | tudo documentado |
 

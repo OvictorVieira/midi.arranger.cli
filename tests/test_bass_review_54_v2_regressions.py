@@ -84,27 +84,53 @@ def test_hammer_pull_continua_idempotente_apos_reconhecer_ligado_natural():
     assert snapshot(once) == snapshot(twice)
 
 
-def test_palm_mute_falha_alto_em_modo_bass_sem_cc_declarado():
-    """Achado 4: MODO BASS nao tem CC de fabrica para palm mute. Pedir
-    tool='modo_bass' sem declarar `parameters.cc` caia no comportamento
-    generic em silencio — o usuario acharia que ganhou o mute continuo do
-    plugin e recebeu outra coisa.
-    """
-    events = [(0, 480, 40, 100)]
-    with pytest.raises(ValueError, match="cc"):
-        apply_technique(
-            "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-            parameters={"density": 1.0},
-        )
-
-
-def test_palm_mute_aceita_modo_bass_com_cc_declarado():
+def test_palm_mute_modo_bass_emite_cc9_sem_fallback_generico():
+    """MODO recebe a automacao real de muting, nao gate/velocity generico."""
     events = [(0, 480, 40, 100)]
     out = apply_technique(
         "bass.palm_mute", _bass_track(events), seed=1, tool="modo_bass",
-        parameters={"density": 1.0, "cc": 11},
+        parameters={"density": 1.0, "amount": [28, 28]},
     )
-    assert out is not None
+    cc9 = [
+        msg.value
+        for track in out.tracks for msg in track
+        if msg.type == "control_change" and msg.control == 9
+    ]
+    assert cc9 == [28, 0]
+
+
+def test_palm_mute_density_zero_e_noop_antes_da_guarda_modo_bass():
+    """Tecnica desligada nao altera a linha nem exige mapeamento MODO."""
+    events = [(0, 480, 40, 100)]
+    source = _bass_track(events)
+    out = apply_technique(
+        "bass.palm_mute", source, seed=1, tool="modo_bass",
+        parameters={"density": 0.0},
+    )
+    out_notes = [
+        (msg.note, msg.velocity)
+        for track in out.tracks for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert out_notes == [(40, 100)]
+
+
+def test_palm_mute_applicator_does_not_capture_global_state():
+    """`_apply_bass_palm_mute` levanta `TechniqueRecipeError` pro caminho
+    MODO Bass sem CC — a excecao mora em `tools/techniques/errors.py`, um
+    modulo DIFERENTE de `engine.py` (onde o aplicador esta definido), pra
+    que o import local dentro da funcao seja uma dependencia de verdade,
+    nao uma referencia disfarcada ao global do proprio modulo (mesmo
+    padrao/achado de `bass.string_selection` na PR #94)."""
+    import inspect
+
+    from tools.techniques.engine import _apply_bass_palm_mute
+
+    closure = inspect.getclosurevars(_apply_bass_palm_mute)
+    unexpected = set(closure.globals) - {"mido"}
+    assert not unexpected, (
+        f"bass.palm_mute captura estado global inesperado: {unexpected}"
+    )
 
 
 def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():
@@ -156,6 +182,25 @@ def test_attack_style_e_alcancavel_pelo_plano_e_render_reais():
     out_path = tmp / "out.mid"
     render(reloaded, out_path)  # nao levanta
     assert out_path.exists()
+
+
+def test_attack_style_density_zero_e_noop():
+    """Achado do Codex na PR: `bass.attack_style` nao olhava `density` em
+    lugar nenhum, entao `density=0.0` (que deveria desligar a tecnica,
+    mesma convencao de `bass.palm_mute`/`bass.ghost_notes`) nao impedia o
+    keyswitch de ser inserido quando `tool='modo_bass'` resolvia a receita
+    especifica."""
+    events = [(0, 480, 40, 100)]
+    out = apply_technique(
+        "bass.attack_style", _bass_track(events), seed=1, tool="modo_bass",
+        parameters={"style": "dedo", "density": 0.0},
+    )
+    out_notes = [
+        (msg.note, msg.velocity)
+        for track in out.tracks for msg in track
+        if msg.type == "note_on" and msg.velocity > 0
+    ]
+    assert out_notes == [(40, 100)]
 
 
 def test_attack_style_recusa_string_fora_do_vocabulario_fechado():
