@@ -382,6 +382,60 @@ def test_render_does_not_warn_for_high_or_medium_style_confidence(
     assert not any("confidence" in w for w in report.warnings)
 
 
+def test_render_warns_when_conventional_brief_exists_but_is_not_referenced(tmp_path):
+    """Codex P1 (issue #17 PR #105): `excluded_families` so tem efeito quando
+    `plan.brief_ref` aponta pro brief. Um plano sem `brief_ref` nunca falha
+    por isso, mas se `arrangement-brief.json` existe bem ao lado do plano
+    (a convencao de `run`, docs/arquitetura.md) e ninguem referenciou, o
+    gap agora fica visivel como aviso em vez de mudo."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}}), encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    warning = next(w for w in report.warnings if "W_BRIEF_NOT_REFERENCED" in w)
+    assert "arrangement-brief.json" in warning
+    assert "brief_ref" in warning
+
+
+def test_render_does_not_warn_when_no_brief_file_exists_at_all(tmp_path):
+    """Sessao legitimamente sem brief (edit-only, ou nenhuma pesquisa feita)
+    nunca deve disparar o aviso — so dispara quando o brief REALMENTE
+    existe na convencao e foi ignorado."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    assert not (tmp_path / "arrangement-brief.json").exists()
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    assert not any("W_BRIEF_NOT_REFERENCED" in w for w in report.warnings)
+
+
+def test_render_does_not_warn_when_brief_ref_already_points_at_the_brief(tmp_path):
+    """Plano que ja referencia o brief corretamente nao repete o aviso,
+    mesmo com o arquivo presente na convencao."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps({"style": {}}), encoding="utf-8")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    assert not any("W_BRIEF_NOT_REFERENCED" in w for w in report.warnings)
+
+
 def test_render_applies_style_techniques_to_generated_tracks(
     tmp_path,
     monkeypatch,

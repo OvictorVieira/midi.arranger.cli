@@ -437,6 +437,39 @@ def _style_confidence_warnings(plan: ArrangementPlan) -> list[str]:
     return warnings
 
 
+# Nome convencional do brief ao lado do plano (docs/arquitetura.md, skills/
+# midi-brief/SKILL.md): `run` sempre escreve os dois na raiz do projeto.
+_CONVENTIONAL_BRIEF_FILENAME = "arrangement-brief.json"
+
+
+def _brief_not_referenced_warning(
+    plan: ArrangementPlan, plan_dir: Path | None,
+) -> str | None:
+    """Detecta brief presente na convencao que o plano nao referencia.
+
+    Issue #105 (P1 do Codex no PR do #17): `excluded_families` e um veto
+    OPT-IN — so tem efeito quando `plan.brief_ref` aponta pro brief. Um
+    plano sem `brief_ref` nunca falha por causa disso (edit-only, ou
+    sessao legitimamente sem brief, continuam funcionando), mas se existe
+    `arrangement-brief.json` bem ao lado do plano e ninguem referenciou,
+    o gap fica mudo hoje: familia vetada pode ser criada sem que o veto
+    jamais seja carregado. Isso vira aviso (nunca erro) para o gap ficar
+    visivel no relatorio em vez de silencioso.
+    """
+    if plan.brief_ref is not None or plan_dir is None:
+        return None
+    candidate = plan_dir / _CONVENTIONAL_BRIEF_FILENAME
+    if not candidate.is_file():
+        return None
+    return (
+        f"W_BRIEF_NOT_REFERENCED: existe {candidate} mas plan.brief_ref "
+        "nao aponta pra ele; sem brief_ref, excluded_families do brief nao "
+        "tem efeito nenhum sobre este plano (veto e opt-in). Se este plano "
+        "deveria respeitar o brief, defina plan.brief_ref (path + sha256 "
+        "via tools.brief_ref.brief_sha256())."
+    )
+
+
 def _style_family_for_role(role: str) -> str | None:
     """Mapeia role renderizavel para a familia de `style` correspondente."""
 
@@ -1817,6 +1850,9 @@ def render(
 
     source_hash = sha256_of_file(src)
     warnings: list[str] = _style_confidence_warnings(plan)
+    brief_gap_warning = _brief_not_referenced_warning(plan, plan_dir)
+    if brief_gap_warning is not None:
+        warnings.append(brief_gap_warning)
     if plan.source_midi.sha256 and plan.source_midi.sha256 != source_hash:
         warnings.append(
             f"source_midi.sha256 mismatch (plan={plan.source_midi.sha256[:12]}..., "

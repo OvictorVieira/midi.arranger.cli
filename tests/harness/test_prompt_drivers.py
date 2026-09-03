@@ -46,7 +46,15 @@ def _strip_ordered_flow(text: str) -> str:
 
 def _numeric_constants(text: str) -> set[str]:
     stripped = _strip_ordered_flow(_strip_fenced_code(text))
-    return set(re.findall(r"(?<![A-Za-z_])\d+(?:[.,]\d+)?(?:[–-]\d+(?:[.,]\d+)?)?%?", stripped))
+    # O lookbehind exclui digito colado em letra/underscore (identificador,
+    # nao numero solto). Sem `0-9` na classe, um identificador como
+    # `brief_sha256` ainda vazava um falso "56": a posicao logo antes do
+    # '2' e bloqueada (precedida por letra 'a'), mas a posicao antes do '5'
+    # so era precedida por outro digito, entao a mesma corrida de digitos
+    # virava um match espurio a partir do meio. Incluir `0-9` bloqueia
+    # tambem essa posicao intermediaria, sem afetar numero solto real (que
+    # sempre comeca numa posicao nao precedida por letra/digito/underscore).
+    return set(re.findall(r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?(?:[–-]\d+(?:[.,]\d+)?)?%?", stripped))
 
 
 def _knowledge_numeric_constants() -> set[str]:
@@ -110,6 +118,18 @@ def test_claude_driver_carries_required_agent_contract() -> None:
     assert "Nunca extraia, transcreva, copie ou recrie conteudo musical" in text
     assert "Escreva em `progress_file` antes de encerrar" in text
     assert "Uma iteracao e uma unidade de trabalho" in text
+
+
+def test_all_drivers_require_brief_ref_on_the_plan() -> None:
+    """Codex P1 (issue #17 PR #105): `excluded_families` e opt-in via
+    `plan.brief_ref` — o driver de `run` precisa mandar o agente preencher
+    isso explicitamente, ja que `plan.skeleton` nao faz sozinho."""
+    for name in DRIVER_NAMES:
+        text = _driver_text(name)
+
+        assert "plan.brief_ref" in text, f"{name}: nao instrui brief_ref"
+        assert "tools.brief_ref.brief_sha256()" in text, f"{name}: nao cita brief_sha256()"
+        assert "excluded_families" in text, f"{name}: nao explica o efeito de faltar brief_ref"
 
 
 def test_all_drivers_document_the_full_arrangement_flow() -> None:
