@@ -1344,13 +1344,27 @@ def _apply_drums_ghost_notes(
         )
         return any(a in selected_ticks and b in selected_ticks for a, b in triples)
 
+    # Cota por compasso (`bar_counts`/`bar_targets`) e compartilhada por
+    # TODA a chamada — nao reiniciada a cada track fisica. Achado do Codex
+    # no PR #107: um `edit.track` cujo nome bate com MULTIPLAS tracks
+    # fisicas do MIDI de origem e uma UNIDADE so (AGENTS.md: "nomes
+    # repetidos de DAW sao tratados como uma unidade"), e cada chamada desta
+    # funcao ja e uma unica unidade de edicao — mas o loop abaixo chama
+    # `select_candidates` uma vez POR TRACK FISICA. Sem cota compartilhada,
+    # duas tracks fisicas com backbeat no MESMO compasso podiam somar o
+    # dobro do teto anunciado (`max_per_bar`) nesse compasso, porque cada
+    # track reiniciava `bar_counts`/`bar_targets` do zero. `interval_counts`
+    # continua por track: as regras de ONDE dentro de um intervalo entre
+    # backbeats (`violates_position_rules`) sao sobre candidatos da MESMA
+    # track fisica, que e onde o intervalo existe fisicamente.
+    bar_counts: dict[int, int] = {}
+    bar_targets: dict[int, int] = {}
+
     def select_candidates(candidates):
         shuffled = list(candidates)
         rng.shuffle(shuffled)
         selected = []
         interval_counts = {}
-        bar_counts = {}
-        bar_targets = {}
         for candidate in shuffled:
             # Chave de agrupamento e o TICK DE INICIO DO COMPASSO REAL (nao
             # mais `tick // ticks_per_bar`) — em 3/4, 5/4 ou com troca de
@@ -1390,6 +1404,27 @@ def _apply_drums_ghost_notes(
             continue
 
         candidates = []
+        # Contador de posicao GEOMETRICO — avanca a cada semicolcheia
+        # candidata CONSIDERADA (elegivel ou nao), nunca a cada uma
+        # ACRESCENTADA a `candidates`. Achado do Codex no PR #107 (P1,
+        # idempotencia quebrada): a versao anterior usava `len(candidates)`
+        # (a contagem de candidatas ja ELEGIVEIS) para escolher o pitch —
+        # isso acopla o pitch de uma semicolcheia ao conjunto de notas JA
+        # PRESENTES no MIDI. Na reaplicacao, uma ghost do passe anterior
+        # muda a elegibilidade de OUTRAS semicolcheias na mesma passada
+        # (via `overlaps_same_pitch`/`note_exists`, que leem `existing`), o
+        # que desloca `len(candidates)` e, com ele, o pitch de toda
+        # semicolcheia seguinte — a mesma seed entao sorteia sobre um
+        # candidato de pitch DIFERENTE do passe anterior, e o
+        # deduplicador central (`TechniqueRegistry.apply`) nao reconhece a
+        # assinatura nova como a mesma ghost. `candidate_index`, em vez
+        # disso, e uma funcao pura da GEOMETRIA (par de backbeat + offset em
+        # semicolcheias) — nunca do que ja existe no MIDI — entao o alvo
+        # (tick, pitch) de cada semicolcheia e IDENTICO em toda reaplicacao,
+        # e so a elegibilidade (que ja se auto-exime pra ghost com a MESMA
+        # assinatura exata, ver `overlaps_same_pitch`) decide se ela entra
+        # em `candidates`.
+        candidate_index = 0
         for current, following in zip(backbeats, backbeats[1:], strict=False):
             if following - current > max_groove_interval:
                 continue
@@ -1397,7 +1432,8 @@ def _apply_drums_ghost_notes(
             while tick < following:
                 if tick != following - sixteenth:
                     channel = 9
-                    pitch = int(notes[len(candidates) % len(notes)])
+                    pitch = int(notes[candidate_index % len(notes)])
+                    candidate_index += 1
                     end_tick = tick + gate
                     if not overlaps_same_pitch(
                         existing, channel, pitch, tick, end_tick

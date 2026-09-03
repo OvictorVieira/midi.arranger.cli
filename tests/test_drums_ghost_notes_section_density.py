@@ -249,6 +249,150 @@ def test_missing_section_falls_back_to_documented_default_density():
     assert ghosts, "default sem sections nao pode zerar a tecnica"
 
 
+# --- regressao Codex PR #107 (issue #45, terceira rodada) -----------------
+
+def test_reapplication_with_section_derived_density_is_byte_identical():
+    """Achado P1 do Codex no PR #107: com `density` omitido (fracao vinda da
+    secao, < 1), reaplicar a tecnica com a MESMA seed sobre a SAIDA da
+    primeira passada nao pode acrescentar ghost em tick novo. O pitch de
+    cada semicolcheia candidata tinha que deixar de depender de
+    `len(candidates)` (contagem de candidatas JA elegiveis, que muda quando
+    o MIDI ja carrega ghost de uma passada anterior) — ver comentario de
+    `candidate_index` em `_apply_drums_ghost_notes`."""
+
+    bars = 16
+    source = _drums_with_backbeats(bars)
+    sections = ({"start_tick": 0, "end_tick": TICKS_PER_BAR * bars, "kind": "verse", "densidade": 5},)
+
+    first_pass = apply_technique(
+        "drums.ghost_notes", source, seed=11, parameters={"sections": sections},
+    )
+    assert _ghost_starts(source, first_pass), "fixture precisa gerar ghost pra teste valer"
+
+    second_pass = apply_technique(
+        "drums.ghost_notes", first_pass, seed=11, parameters={"sections": sections},
+    )
+
+    assert _midi_bytes(first_pass) == _midi_bytes(second_pass), (
+        "reaplicar drums.ghost_notes com a mesma seed sobre a propria saida "
+        "tem que ser byte-identico — o deduplicador central so descarta "
+        "duplicata de assinatura EXATA, entao o aplicador precisa regerar o "
+        "MESMO alvo (tick, pitch) a cada passada"
+    )
+
+
+def test_render_does_not_report_default_assumption_with_explicit_density_override():
+    """Achado do Codex no PR #107: com `style.drums.techniques[].density`
+    explicito, `bar_fraction` consulta o override ANTES de qualquer janela
+    de secao — o caminho de default (densidade=5/10) nunca e alcancado,
+    entao o aviso de cobertura de secao nao pode disparar mesmo quando o
+    MIDI de origem tem material fora de toda janela declarada."""
+
+    from tools.analyze import analyze
+
+    analysis = analyze(str(DEIXE_IR))
+    total_bars = len(analysis.bars)
+    partial_end = total_bars // 2
+
+    # reaproveita o padrao de `_render_deixe_ir_with_sections`, mas escrito
+    # aqui porque esse teste precisa de `density` explicito na tecnica, algo
+    # que o helper nao aceita.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        brief_path = tmp_path / "brief_explicit_density.json"
+        brief_path.write_text(
+            json.dumps({"style": {"drums": {"authorized_techniques": ["drums.ghost_notes"]}}}),
+            encoding="utf-8",
+        )
+        plan = ArrangementPlan(
+            version=1,
+            seed=13,
+            source_midi=SourceMidi(path=str(DEIXE_IR), sha256=_sha256_of_file(DEIXE_IR)),
+            route="cinematica_emocional",
+            sections=[
+                PlanSection(
+                    label="VERSE", kind="verse", start_bar=0, end_bar=partial_end,
+                    source="marker", protagonist="texture",
+                    energy={
+                        "densidade": 6, "impacto": 5, "largura": 5,
+                        "altura": 5, "instabilidade": 3,
+                    },
+                ),
+            ],
+            elements=[],
+            edits=[PlanEdit(track="MIDI", profile="drums", intensity=0.0)],
+            style={
+                "drums": FamilyStyle(
+                    reference="Research", researched_at="2026-08-24",
+                    sources=["https://example.test/drums"], confidence="high",
+                    techniques=[StyleTechnique(name="drums.ghost_notes", density=0.4)],
+                    parameters={},
+                ),
+            },
+            brief_ref=BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path)),
+        )
+        out_path = tmp_path / "out_explicit_density.mid"
+        report = render(plan, out_path)
+
+    assert not any("drums.ghost_notes" in w and "default" in w for w in report.warnings), (
+        "density explicito na tecnica desliga o caminho de default por "
+        f"secao — nao pode disparar o aviso; warnings={report.warnings}"
+    )
+
+
+def test_per_bar_cap_is_shared_across_physical_tracks_of_the_same_edit_unit():
+    """Achado do Codex no PR #107: quando um `edit.track` do plano resolve
+    para MULTIPLAS tracks fisicas do MIDI de origem com o mesmo nome (a
+    mesma unidade de edicao, AGENTS.md: "nomes repetidos de DAW sao
+    tratados como uma unidade"), `_apply_style_techniques_to_edit_tracks`
+    combina as tracks fisicas num unico `mido.MidiFile` e chama a tecnica
+    UMA VEZ sobre ele — o teto por compasso tem que valer pra SOMA das duas
+    tracks, nunca pra cada uma isolada."""
+
+    bars = 8
+    notes = []
+    for bar in range(bars):
+        bar_tick = bar * 480 * 4
+        notes.append((bar_tick + 480, bar_tick + 480 + 60, 38, 108))
+        notes.append((bar_tick + 3 * 480, bar_tick + 3 * 480 + 60, 38, 108))
+
+    track_a = _midi_with_notes("Drums", 9, notes)
+    track_b = _midi_with_notes("Drums", 9, notes)
+    combined = mido.MidiFile(ticks_per_beat=480)
+    combined.tracks.append(track_a.tracks[0])
+    combined.tracks.append(track_a.tracks[1])
+    combined.tracks.append(track_b.tracks[1])
+
+    sections = ({"start_tick": 0, "end_tick": TICKS_PER_BAR * bars, "kind": "verse", "densidade": 10},)
+    result = apply_technique(
+        "drums.ghost_notes", combined, seed=17, parameters={"sections": sections},
+    )
+
+    before = set()
+    for physical in (track_a.tracks[1], track_b.tracks[1]):
+        tick = 0
+        for msg in physical:
+            tick += msg.time
+            if msg.type == "note_on" and msg.velocity > 0:
+                before.add(tick)
+
+    per_bar = Counter()
+    for track in result.tracks[1:]:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.type == "note_on" and msg.velocity > 0 and tick not in before:
+                per_bar[tick // TICKS_PER_BAR] += 1
+
+    assert per_bar, "fixture precisa gerar ghost combinado pra teste valer"
+    assert max(per_bar.values()) <= GHOST_NOTES_MAX_PER_BAR, (
+        f"soma das duas tracks fisicas ultrapassou o teto de "
+        f"{GHOST_NOTES_MAX_PER_BAR}/compasso — {per_bar}"
+    )
+
+
 # --- nivel render: corpus real, cenario da issue --------------------------
 
 def _sha256_of_file(path: Path) -> str:

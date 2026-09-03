@@ -414,6 +414,29 @@ def _drums_ghost_notes_authorized(plan: ArrangementPlan) -> bool:
     )
 
 
+def _drums_ghost_notes_has_explicit_density(plan: ArrangementPlan) -> bool:
+    """`True` quando a entrada `drums.ghost_notes` de
+    `plan.style.drums.techniques[]` declara `density` explicito.
+
+    Achado do Codex no PR #107: `bar_fraction` em
+    `_apply_drums_ghost_notes` consulta `context.parameters["density"]`
+    (que vem de `StyleTechnique.density`) ANTES de qualquer janela de
+    secao — com override explicito, o caminho de default por secao
+    (`densidade=5/10`) nunca e alcancado, entao o aviso de cobertura de
+    secao seria falso nesse caso. So chamada depois que
+    `_drums_ghost_notes_authorized` ja confirmou que a tecnica esta
+    declarada, entao aqui so falta achar a entrada e checar `density`."""
+    if not plan.style:
+        return False
+    drums_style = plan.style.get("drums")
+    if drums_style is None:
+        return False
+    return any(
+        t.name in ("ghost_notes", "drums.ghost_notes") and t.density is not None
+        for t in drums_style.techniques
+    )
+
+
 def _element_seed(plan_seed: int, element_id: str, section_label: str) -> int:
     """Seed determinstica por (plano, elemento, secao). Evita correlacao
     de stagger entre secoes de um mesmo elemento e entre elementos que
@@ -1972,13 +1995,18 @@ def render(
     # contrario do bucket `ticks_per_beat*4` que o motor usava antes so pra
     # 4/4. Mesmo canal de `context.parameters`, chave separada (`bars`).
     bar_windows = _analysis_bar_windows(analysis, pm)
-    if _drums_ghost_notes_authorized(plan):
+    if _drums_ghost_notes_authorized(plan) and not _drums_ghost_notes_has_explicit_density(
+        plan
+    ):
         # `drums.ghost_notes` cai no default declarado (densidade=5/10,
         # `tools/techniques/engine.py::_apply_drums_ghost_notes`) sempre que
         # um tick nao esta coberto por nenhuma janela de `plan.sections` —
         # cauda antes da 1a secao, depois da ultima, OU BURACO NO MEIO entre
         # duas secoes nao adjacentes. A suposicao so importa relatar quando
-        # a tecnica de fato foi autorizada nesta musica.
+        # a tecnica de fato foi autorizada nesta musica E o plano nao
+        # declara `density` explicito — `bar_fraction` consulta o override
+        # explicito ANTES de qualquer janela de secao, entao o default nunca
+        # e alcancado nesse caso (achado do Codex no PR #107).
         total_ticks = int(round(pm.time_to_tick(pm.get_end_time())))
         if not _section_windows_cover_range(section_windows, total_ticks):
             warnings.append(
