@@ -162,6 +162,21 @@ Fontes: [Toontrack](https://www.toontrack.com/blog/how-to-program-drums/) (regra
 
 Densidade por gênero: `[NÃO VERIFICADO — sem fonte; derive do perfil de estilo pesquisado]`.
 
+> **RESOLUÇÃO (issue #45).** Nenhuma fonte publica um número de ghost/compasso — isso continua
+> `[NÃO VERIFICADO]` e este manual não inventa um. O que existe é o eixo `densidade` (0–10) de cada
+> `plan.sections[].energy` (`tools/plan.py` `ENERGY_AXES`), e a issue #45 mediu o defeito de tratar
+> quantidade como constante fixa por música inteira: 86% dos compassos com ghost, chorus com MAIS
+> ghost que verse, verse 2 zerado sem critério. `_apply_drums_ghost_notes`
+> (`tools/techniques/engine.py`) agora deriva a cota de ghost por compasso do eixo `densidade` da
+> seção que cobre aquele compasso (`tools.render._section_energy_windows` converte
+> `plan.sections[].energy` em janelas de tick e injeta em `context.parameters["sections"]`, canal
+> separado de `style.parameters`, mesmo padrão de `tuning`), com teto nomeado por compasso e
+> multiplicador de `kind` (chorus/breakdown pesam menos — refrão é peso/clareza, ghost é textura de
+> verso). O mapeamento eixo→cota, o teto e o multiplicador são CONVENÇÃO do motor, comentados em
+> `_apply_drums_ghost_notes` — não entram como `parameters` deste bloco porque não são um número
+> pesquisado, são uma decisão de engenharia sobre um eixo que já existe no plano. A regra de ONDE
+> (passos 1–8 acima) não mudou.
+
 ### 2.4 Passo 3 — diferenciar articulação
 
 Levada chapada costuma usar uma nota só por peça. Diferenciar é ganho grande e barato.

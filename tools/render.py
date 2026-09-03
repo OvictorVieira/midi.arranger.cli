@@ -296,6 +296,61 @@ def _section_by_label(plan: ArrangementPlan, label: str) -> PlanSection | None:
     return None
 
 
+def _section_energy_windows(
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+) -> tuple[dict[str, Any], ...]:
+    """Converte `plan.sections[].energy` em janelas de tick (issue #45).
+
+    `plan.validate()` ja garante `energy` presente em toda secao (5 eixos,
+    0-10) — este helper so traduz `start_bar`/`end_bar` para ticks (mesmo
+    caminho de `bars_in_section`, reusado pelos tres geradores eletronicos e
+    aqui) e extrai o eixo `densidade`. E o unico consumidor de
+    `plan.sections[].energy` no motor de tecnicas: `drums.ghost_notes` le o
+    resultado via `context.parameters["sections"]`, canal separado de
+    `style.<familia>.parameters` (mesmo padrao ja usado por `tuning`) —
+    nunca passa pelo schema fechado a numero/par de `tools/style_schema.py`.
+    Secao sem bar nenhum coberto por `analysis.bars` (janela vazia) fica de
+    fora: o aplicador cai no default declarado quando nenhuma janela cobre
+    um tick.
+    """
+    windows: list[dict[str, Any]] = []
+    for section in plan.sections:
+        if section.energy is None:
+            continue
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        start_tick = int(round(pm.time_to_tick(bars[0].start)))
+        end_tick = int(round(pm.time_to_tick(bars[-1].end)))
+        if end_tick <= start_tick:
+            continue
+        windows.append({
+            "start_tick": start_tick,
+            "end_tick": end_tick,
+            "kind": section.kind,
+            "densidade": section.energy["densidade"],
+        })
+    return tuple(windows)
+
+
+def _drums_ghost_notes_authorized(plan: ArrangementPlan) -> bool:
+    """`True` quando `plan.style.drums.techniques` declara `ghost_notes`.
+
+    So usado para decidir se vale a pena checar cobertura de secao e emitir
+    o aviso de default (issue #45) — plano que nunca vai rodar a tecnica nao
+    precisa do aviso."""
+    if not plan.style:
+        return False
+    drums_style = plan.style.get("drums")
+    if drums_style is None:
+        return False
+    return any(
+        t.name in ("ghost_notes", "drums.ghost_notes") for t in drums_style.techniques
+    )
+
+
 def _element_seed(plan_seed: int, element_id: str, section_label: str) -> int:
     """Seed determinstica por (plano, elemento, secao). Evita correlacao
     de stagger entre secoes de um mesmo elemento e entre elementos que
@@ -485,10 +540,17 @@ def _style_technique_parameters(
     density: float | None,
     style: str | None = None,
     tuning: tuple[int, ...] | None = None,
+    sections: tuple[dict[str, Any], ...] | None = None,
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = dict(style_parameters)
     if density is not None:
         parameters["density"] = float(density)
+    if sections:
+        # Mesmo canal separado de `tuning` logo abaixo: janelas de tick de
+        # `plan.sections[].energy` (issue #45), consumidas hoje so por
+        # `drums.ghost_notes`. Nunca vem de `style.parameters` (schema
+        # fechado a numero/par).
+        parameters["sections"] = sections
     if style is not None:
         # `style` (dedo/palheta/slap) e a UNICA excecao numerica-only de
         # `style.parameters` — vem do vocabulario fechado de
@@ -563,6 +625,7 @@ def _run_style_pipeline(
     index: TechniqueIndex,
     edit_track: str | None = None,
     tuning: tuple[int, ...] | None = None,
+    section_windows: tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[mido.MidiFile, list[str], tuple[str, ...]]:
     """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
 
@@ -589,6 +652,11 @@ def _run_style_pipeline(
     warnings: list[str] = []
     applied_names: list[str] = []
     warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
+    # `sections` so interessa a tecnicas de bateria (hoje, so
+    # `drums.ghost_notes` le `context.parameters["sections"]`); nas demais
+    # familias fica de fora do dict de parametros pra nao poluir o contexto
+    # de tecnicas que nunca vao olhar pra isso.
+    family_section_windows = section_windows if family == "drums" else None
     # Cacheia a serializacao pra nao rodar `_midi_bytes` duas vezes por
     # despacho (uma vez como "before" da tecnica seguinte, outra como
     # "after" da tecnica anterior) — `current` so muda dentro deste loop.
@@ -610,6 +678,7 @@ def _run_style_pipeline(
                     technique.density,
                     technique.style,
                     tuning,
+                    family_section_windows,
                 ),
                 tool=tool_target,
                 index=index,
@@ -646,6 +715,7 @@ def _apply_style_techniques_to_tracks(
     midi_type: int,
     index: TechniqueIndex | None,
     tuning_by_family: dict[str, tuple[int, ...]] | None = None,
+    section_windows: tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[list[mido.MidiTrack], list[str], bool, tuple[str, ...]]:
     """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
 
@@ -678,6 +748,7 @@ def _apply_style_techniques_to_tracks(
         tool_target=tool_target,
         index=index,
         tuning=(tuning_by_family or {}).get(family),
+        section_windows=section_windows,
     )
     return list(current.tracks), warnings, True, applied_names
 
@@ -688,6 +759,7 @@ def _apply_style_techniques_to_edit_tracks(
     plan: ArrangementPlan,
     index: TechniqueIndex | None,
     tuning_by_family: dict[str, tuple[int, ...]] | None = None,
+    section_windows: tuple[dict[str, Any], ...] | None = None,
 ) -> tuple[list[str], dict[str, tuple[str, ...]]]:
     """Aplica `style.<family>` sobre as tracks da origem nomeadas em `plan.edits`.
 
@@ -747,6 +819,7 @@ def _apply_style_techniques_to_edit_tracks(
             index=index,
             edit_track=edit.track,
             tuning=(tuning_by_family or {}).get(family),
+            section_windows=section_windows,
         )
         warnings.extend(edit_warnings)
         applied_by_track[edit.track] = applied_names
@@ -1811,6 +1884,32 @@ def render(
     # `known=false` ou brief sem `instruments` devolvem dict vazio e o
     # motor de tecnicas cai no default fisico de `physical.py`, igual antes.
     tuning_by_family = load_brief_instrument_tuning(plan, plan_dir)
+    # Janelas de tick de `plan.sections[].energy` (issue #45) — canal
+    # separado de `style.parameters`, mesmo padrao de `tuning_by_family`
+    # acima. Unico consumidor hoje e `drums.ghost_notes`, mas o calculo e
+    # generico o bastante pra qualquer tecnica futura que precise de
+    # energia por secao.
+    section_windows = _section_energy_windows(plan, analysis, pm)
+    if _drums_ghost_notes_authorized(plan):
+        # `drums.ghost_notes` cai no default declarado (densidade=5/10,
+        # `tools/techniques/engine.py::_apply_drums_ghost_notes`) sempre que
+        # um tick nao esta coberto por nenhuma janela de `plan.sections` —
+        # cauda antes da 1a secao, depois da ultima, ou plano sem secao
+        # nenhuma cobrindo compasso reconhecido. A suposicao so importa
+        # relatar quando a tecnica de fato foi autorizada nesta musica.
+        total_ticks = int(round(pm.time_to_tick(pm.get_end_time())))
+        gap = (
+            not section_windows
+            or section_windows[0]["start_tick"] > 0
+            or section_windows[-1]["end_tick"] < total_ticks
+        )
+        if gap:
+            warnings.append(
+                "drums.ghost_notes: trecho do MIDI de origem fora de "
+                "plan.sections declaradas — densidade de ghost assumida no "
+                "default (densidade=5/10, sem multiplicador de kind) nesse "
+                "trecho"
+            )
     # Ordem: primeiro `apply_edits` (humanizacao por profile), depois o motor
     # de tecnicas nas mesmas tracks da origem. Assim as tecnicas de estilo
     # alcancam a bateria real do usuario — sem esse passo, `style.<familia>`
@@ -1819,6 +1918,7 @@ def render(
         _apply_style_techniques_to_edit_tracks(
             out_mid, plan=plan, index=style_index,
             tuning_by_family=tuning_by_family,
+            section_windows=section_windows,
         )
     )
     warnings.extend(edit_technique_warnings)
@@ -1858,6 +1958,7 @@ def render(
                 midi_type=out_mid.type,
                 index=style_index,
                 tuning_by_family=tuning_by_family,
+                section_windows=section_windows,
             )
             warnings.extend(technique_warnings)
             _stamp_element_tracks(midi_tracks, e, techniques=element_techniques)
