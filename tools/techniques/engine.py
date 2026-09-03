@@ -1155,9 +1155,17 @@ def _apply_drums_ghost_notes(
     # ghost no vazio — foi o que apareceu nos compassos 53-54 de DEIXE IR,
     # com a nota estrutural mais proxima a 18 tempos de distancia.
     max_groove_interval = ticks_per_beat * 4
-    # Mesma suposicao de 4/4 do intervalo de groove acima — usada so para
-    # agrupar candidatos por compasso na decisao de QUANTOS (energia da
-    # secao), nunca na decisao de ONDE (regras de posicao mais abaixo).
+    # `ticks_per_bar` so serve de FALLBACK — suposicao de 4/4 usada apenas
+    # quando `context.parameters["bars"]` nao chega (chamada direta da
+    # tecnica fora do pipeline de `tools.render`, ex. testes unitarios do
+    # motor). Quando `bars` chega, o agrupamento por compasso usa as
+    # fronteiras REAIS de `analysis.bars` (achado do Codex no PR #107): em
+    # 3/4, 5/4 ou com troca de compasso no meio da musica, um bucket fixo de
+    # `ticks_per_beat*4` pode atravessar um compasso real (a cota do
+    # `max_per_bar` estoura) ou partir um compasso real em dois buckets (a
+    # densidade da secao errada e aplicada a metade dele). Nunca usada para
+    # a decisao de ONDE (regras de posicao mais abaixo, que continuam
+    # baseadas no intervalo de groove entre backbeats).
     ticks_per_bar = max_groove_interval
     rng = context.rng("positions")
     velocity_rng = context.rng("velocity")
@@ -1228,6 +1236,34 @@ def _apply_drums_ghost_notes(
     windows = (
         tuple(sections_param) if isinstance(sections_param, (list, tuple)) else ()
     )
+
+    # Fronteiras REAIS de compasso (`analysis.bars`, o mesmo mapa de downbeat
+    # que `_section_energy_windows` ja usa) — canal irmao de `sections`,
+    # tambem via `context.parameters` (nunca `style.parameters`, schema
+    # fechado a numero/par). Corrige o achado do Codex no PR #107: agrupar
+    # candidatos por `ticks_per_beat*4` so vale em 4/4 constante.
+    bars_param = context.parameters.get("bars")
+    real_bars = (
+        tuple(bars_param) if isinstance(bars_param, (list, tuple)) else ()
+    )
+
+    def bar_start_for_tick(tick):
+        """Tick de inicio do compasso REAL que contem `tick`.
+
+        Usa `real_bars` (fronteiras vindas de `analysis.bars`) quando
+        disponivel — cobre qualquer compasso, mesmo com troca de compasso no
+        meio da musica. Cai no bucket `ticks_per_beat*4` (suposicao 4/4) so
+        quando nao ha `bars` no contexto (chamada direta do motor, fora do
+        pipeline de `tools.render`) ou quando o tick cai fora de toda janela
+        de `real_bars` (cauda antes do 1o/depois do ultimo bar analisado)."""
+        for bar in real_bars:
+            if not isinstance(bar, dict):
+                continue
+            start = bar.get("start_tick")
+            end = bar.get("end_tick")
+            if isinstance(start, int) and isinstance(end, int) and start <= tick < end:
+                return start
+        return (tick // ticks_per_bar) * ticks_per_bar
 
     def section_for_tick(tick):
         for window in windows:
@@ -1316,10 +1352,14 @@ def _apply_drums_ghost_notes(
         bar_counts = {}
         bar_targets = {}
         for candidate in shuffled:
-            bar_index = candidate["tick"] // ticks_per_bar
+            # Chave de agrupamento e o TICK DE INICIO DO COMPASSO REAL (nao
+            # mais `tick // ticks_per_bar`) — em 3/4, 5/4 ou com troca de
+            # compasso no meio da musica, o bucket fixo de `ticks_per_beat*4`
+            # nao identifica compasso nenhum de verdade.
+            bar_index = bar_start_for_tick(candidate["tick"])
             target = bar_targets.get(bar_index)
             if target is None:
-                target = bar_target(bar_index * ticks_per_bar)
+                target = bar_target(bar_index)
                 bar_targets[bar_index] = target
             # Teto do COMPASSO checado ANTES de acrescentar — nao mais um
             # teto global do arquivo inteiro. Checar depois deixava
