@@ -3117,59 +3117,76 @@ def _apply_bass_attack_style(
         # plena pedida. E o mesmo principio matematico do "piso" em
         # `drums.accent_hierarchy` (nunca inverte a intencao da origem),
         # so que aqui resolvido de forma otima em vez de um piso fixo.
+        # Achado do Codex na PR #104, quinta rodada, achado 1: dividir o
+        # contraste pedido em uma metade UNICA (`abs(diff) // 2`) descartava
+        # o resto pra diferenca IMPAR — `picked_downstroke_velocity=86` e
+        # `picked_upstroke_velocity=85` (diferenca 1) davam `half_delta=0`,
+        # entao um contraste explicitamente pedido (nao-zero) virava shift
+        # zero. Agora o contraste total e distribuido SEM descartar resto:
+        # `down_shift + up_shift == abs(diff)` sempre — o lado "down" recebe
+        # o arredondamento pra cima quando a diferenca e impar (convencao
+        # arbitraria, mas simetrica quando a diferenca e par).
         original_velocities = [msg.velocity for _start, msg in structural]
-        half_delta = abs(downstroke_vel - upstroke_vel) // 2
+        total_delta = abs(downstroke_vel - upstroke_vel)
         direction = 1 if downstroke_vel >= upstroke_vel else -1
+        down_shift = total_delta - total_delta // 2
+        up_shift = total_delta // 2
 
         targets = []
         for idx, velocity in enumerate(original_velocities):
-            shift = direction * half_delta if idx % 2 == 0 else -direction * half_delta
+            shift = direction * down_shift if idx % 2 == 0 else -direction * up_shift
             targets.append(float(velocity + shift))
 
-        # Agrupa por velocity ORIGINAL EXATA — notas empatadas na origem nao
-        # tem ordem NENHUMA pra preservar entre si (so entre grupos de
-        # valor DIFERENTE). Tratar empate como ordem total via desempate
-        # por indice (a forma ingenua de regressao isotonica) sobre-restringe:
-        # forcaria as notas empatadas a ficar sempre no mesmo valor final
-        # mesmo sem conflito real entre elas, exatamente o "poola a track
-        # inteira" que o achado 2 pede pra evitar.
-        groups_by_value: dict[int, list[int]] = {}
-        for idx, velocity in enumerate(original_velocities):
-            groups_by_value.setdefault(velocity, []).append(idx)
+        # Achado do Codex na PR #104, quinta rodada, achado 2: representar
+        # cada grupo de velocity original EMPATADA so pela MEDIA dos alvos
+        # dos membros nao garante a ordem entre os MEMBROS individuais —
+        # so garante entre as medias. Origem [80, 80, 81, 81] com alvos
+        # [88, 72, 89, 73]: as medias (80 e 81) ja saiam ordenadas (nenhum
+        # merge de grupo acontecia), mas o membro individual da nota 0
+        # (alvo 88, grupo 80) saia MAIS FORTE que o da nota 3 (alvo 73,
+        # grupo 81) — inversao entre INDIVIDUOS que a comparacao por media
+        # nao pegava.
+        #
+        # A correcao correta e' regressao isotonica de verdade sobre CADA
+        # NOTA individual (nao sobre medias de grupo) — a garantia de PAVA
+        # ("orig[i] antes de orig[j] na ordem de processamento implica
+        # novo[i] <= novo[j]") vale pra QUALQUER ordem de processamento que
+        # respeite a ordem exigida pela velocity original; so o DESEMPATE
+        # entre notas empatadas e livre (elas nao tem ordem nenhuma pra
+        # preservar entre si). Desempatar pelo proprio ALVO (nao por
+        # indice) maximiza a diferenciacao preservada dentro do empate, mas
+        # QUALQUER desempate seria igualmente correto — a garantia de nao
+        # inverter vale antes de qualquer escolha de desempate.
+        order = sorted(
+            range(len(structural)),
+            key=lambda i: (original_velocities[i], targets[i], i),
+        )
+        sorted_targets = [targets[i] for i in order]
 
-        # Regressao isotonica no nivel de GRUPO (um "bloco" PAVA por valor
-        # original distinto, representado pela media dos alvos dos seus
-        # membros) garante `orig[i] < orig[j] implica novo[i] <= novo[j]`
-        # para TODO par de grupos DIFERENTES, vizinhos ou nao — nunca
-        # inverte. Cada bloco carrega os grupos originais que ele contem;
-        # bloco com um UNICO grupo (nunca precisou fundir com vizinho) nao
-        # teve conflito nenhum — os membros usam o proprio alvo individual,
-        # diferenciando plenamente entre si (empate nao e ordem, entao
-        # `direction`/`half_delta` continua valendo dentro do grupo). Bloco
-        # com MULTIPLOS grupos fundidos e onde o conflito de fato existiu —
-        # so ali todo mundo cai no mesmo valor pooled, o minimo necessario
-        # pra nao inverter a ordem entre os grupos que colidiram.
-        stack: list[list] = []
-        for value in sorted(groups_by_value):
-            indices = groups_by_value[value]
-            rep = sum(targets[i] for i in indices) / len(indices)
-            stack.append([rep, float(len(indices)), [indices]])
+        # Pool Adjacent Violators (PAVA) sobre os alvos individuais, na
+        # ordem acima. Pilha de blocos (valor medio, peso) — cada novo alvo
+        # que violar a ordem com o bloco anterior e fundido (media
+        # ponderada) ate a pilha voltar a ser nao-decrescente. So funde o
+        # que precisa: um alvo que ja bate com a ordem nunca e tocado, e um
+        # empate cujos membros ficaram em blocos separados continua
+        # diferenciado.
+        stack: list[list[float]] = []
+        for value in sorted_targets:
+            stack.append([value, 1.0])
             while len(stack) > 1 and stack[-2][0] > stack[-1][0]:
-                rep2, w2, groups2 = stack.pop()
-                rep1, w1, groups1 = stack.pop()
+                v2, w2 = stack.pop()
+                v1, w1 = stack.pop()
                 merged_w = w1 + w2
-                merged_rep = (rep1 * w1 + rep2 * w2) / merged_w
-                stack.append([merged_rep, merged_w, groups1 + groups2])
+                stack.append([(v1 * w1 + v2 * w2) / merged_w, merged_w])
+
+        isotonic_sorted: list[float] = []
+        for value, weight in stack:
+            isotonic_sorted.extend([value] * int(round(weight)))
 
         new_velocities = [0] * len(structural)
-        for rep_value, _weight, constituent_groups in stack:
-            if len(constituent_groups) == 1:
-                for i in constituent_groups[0]:
-                    new_velocities[i] = max(1, min(127, int(round(targets[i]))))
-            else:
-                for indices in constituent_groups:
-                    for i in indices:
-                        new_velocities[i] = max(1, min(127, int(round(rep_value))))
+        for position, original_index in enumerate(order):
+            resolved = int(round(isotonic_sorted[position]))
+            new_velocities[original_index] = max(1, min(127, resolved))
 
         if all(
             new == msg.velocity

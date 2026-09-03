@@ -470,6 +470,59 @@ def test_generic_picked_local_conflict_does_not_disable_whole_track():
     )
 
 
+def test_generic_picked_preserves_one_point_stroke_contrast():
+    # Achado do Codex na PR #104, quinta rodada: dividir o contraste
+    # pedido numa metade UNICA (`abs(diff) // 2`) descartava o resto pra
+    # diferenca IMPAR — picked_downstroke_velocity=86 e
+    # picked_upstroke_velocity=85 (diferenca 1) davam half_delta=0, entao
+    # um contraste explicitamente pedido (nao-zero) virava shift zero.
+    source = _make_midi([80, 80])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 86,
+            "picked_upstroke_velocity": 85,
+        },
+    )
+
+    after = _structural_note_ons(out)
+    velocities = [v for _t, _c, _p, v in after]
+    assert velocities[0] != velocities[1], (
+        "diferenca de 1 ponto entre os parametros pedidos tem que "
+        f"produzir contraste nao-zero: {velocities!r}"
+    )
+    assert velocities[0] > velocities[1], "downstroke ainda mais forte"
+
+
+def test_generic_picked_enforces_order_across_individual_group_members():
+    # Achado do Codex na PR #104, quinta rodada: representar cada grupo de
+    # velocity original empatada so pela MEDIA dos alvos dos membros nao
+    # garante a ordem entre os MEMBROS individuais. Origem [80, 80, 81, 81]
+    # com os alvos default: as medias dos grupos (80 e 81) ja saiam
+    # ordenadas (nenhum merge de grupo acontecia), mas a nota 0
+    # (originalmente 80) saia mais forte que a nota 3 (originalmente 81) —
+    # inversao entre individuos que a comparacao por media nao pegava.
+    source = _make_midi([80, 80, 81, 81])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    after = _structural_note_ons(out)
+    velocities = [v for _t, _c, _p, v in after]
+    assert velocities[0] <= velocities[3], (
+        "nota 0 (origem 80) nao pode ficar mais forte que a nota 3 "
+        f"(origem 81): {velocities!r}"
+    )
+    assert velocities[1] <= velocities[2], (
+        "nota 1 (origem 80) nao pode ficar mais forte que a nota 2 "
+        f"(origem 81): {velocities!r}"
+    )
+
+
 def test_generic_picked_saturated_velocity_is_not_reported_as_applied():
     # Origem ja saturada no clamp [1, 127] (127 alternando com 1): o shift
     # relativo nao produz nenhuma mudanca audivel de velocity. Achado do
