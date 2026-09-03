@@ -484,8 +484,16 @@ Modo rapido default:
   `techniques: []`, `authorized_techniques: []`, `suggested_techniques: []`.
   Modo rapido nao autoriza tecnica em silencio — o default seguro e nao
   aplicar nenhuma.
-- `excluded_families`: `[]`. Modo rapido nao pergunta veto de
-  familia inteira, entao nao inventa nenhum.
+- `excluded_families`: modo rapido **nao pergunta** a pergunta 5, mas nao descarta um veto
+  que o usuario ja deu no proprio pedido inicial —
+  *"vai logo, mas nao crie guitarra"* pede modo rapido e veta guitarra na
+  mesma frase, e o brief tem que carregar as duas coisas. Aplique a MESMA
+  regra de traducao da pergunta 5 sobre o que o usuario ja disse: veto de
+  familia inteira ("nao quero X gerada/criada", "sem X do zero", "nao crie
+  X") declarado no pedido vira `excluded_families[]` mesmo sem pergunta
+  formulada. So use `[]` quando o pedido inicial realmente nao contem veto
+  de familia inteira nenhum — nao pergunte, mas tambem nao apague o que
+  o usuario ja falou.
 - `assumptions`: uma linha por decisao, sempre comecando com "Modo rapido
   —" para o usuario reconhecer.
 

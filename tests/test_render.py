@@ -436,6 +436,52 @@ def test_render_does_not_warn_when_brief_ref_already_points_at_the_brief(tmp_pat
     assert not any("W_BRIEF_NOT_REFERENCED" in w for w in report.warnings)
 
 
+def test_render_rejects_missing_brief_ref_when_conventional_brief_has_excluded_families(
+    tmp_path,
+):
+    """Codex P1 (segunda rodada, PR #105): um aviso nao basta — o harness
+    (nao-deterministico) pode ignorar a instrucao do prompt e gerar a
+    familia vetada mesmo assim. Quando o brief convencional REALMENTE
+    declara `excluded_families` nao-vazio e `plan.brief_ref` nunca foi
+    setado, o gap e consequente e vira erro estrutural, nao so aviso."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}, "excluded_families": ["guitar"]}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    with pytest.raises(RenderError, match="excluded_families"):
+        render(plan, out, plan_dir=tmp_path)
+
+    assert not out.exists()
+
+
+def test_render_only_warns_when_conventional_brief_excluded_families_is_empty(
+    tmp_path,
+):
+    """Regressao: brief convencional presente mas sem veto nenhum
+    (`excluded_families` ausente/vazio) nao pode virar erro — nada esta
+    sendo de fato ignorado, entao o aviso nao-bloqueante continua sendo
+    suficiente (mesmo comportamento da rodada anterior)."""
+    src = _build_synthetic_source(tmp_path)
+    plan = _build_plan(src)
+    plan.brief_ref = None
+    (tmp_path / "arrangement-brief.json").write_text(
+        json.dumps({"style": {}, "excluded_families": []}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.mid"
+
+    report = render(plan, out, plan_dir=tmp_path)
+
+    assert out.exists()
+    warning = next(w for w in report.warnings if "W_BRIEF_NOT_REFERENCED" in w)
+    assert "arrangement-brief.json" in warning
+
+
 def test_render_applies_style_techniques_to_generated_tracks(
     tmp_path,
     monkeypatch,

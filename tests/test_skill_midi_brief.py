@@ -231,6 +231,13 @@ def test_referenced_tools_are_registered():
         # a criacao de verdade.
         "excluded_families",
         "nao quero guitarra gerada",
+        # Achado do Codex na PR #105 (segunda rodada) — modo rapido nao
+        # pergunta a pergunta 5, mas nao pode descartar um veto de familia
+        # que o usuario ja deu no proprio pedido inicial ("vai logo, mas
+        # nao crie guitarra"); so cai pra `[]` quando o pedido nao tinha
+        # veto nenhum.
+        "nao descarta um veto",
+        "nao crie guitarra",
     ],
 )
 def test_body_carries_required_clauses(clause):
