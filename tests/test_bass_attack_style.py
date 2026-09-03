@@ -303,6 +303,68 @@ def test_generic_picked_reapplication_is_byte_identical():
     assert _structural_note_ons(twice) == _structural_note_ons(once)
 
 
+def test_generic_picked_upstroke_atraso_ms_is_rejected():
+    # Achado do Codex na PR #104, segunda rodada: so corrigir a prosa da
+    # receita `generic` no manual nao bastava — `upstroke_atraso_ms`
+    # continuava sendo aceito e resolvido (via _range/_midrange) sem nunca
+    # afetar o resultado no generic. plan.validate nao pode recusar isso
+    # sozinho porque o mesmo style.bass.parameters vale para tracks com
+    # tool diferente; a rejeicao acontece aqui, no despacho, quando o tool
+    # de fato resolvido e generic.
+    from tools.techniques.errors import TechniqueRecipeError
+
+    source = _make_midi([80, 90, 100, 110])
+
+    try:
+        apply_technique(
+            "bass.attack_style", source, seed=1, tool="generic",
+            parameters={"style": "picked", "upstroke_atraso_ms": 8},
+        )
+    except TechniqueRecipeError as exc:
+        assert "upstroke_atraso_ms" in str(exc)
+        assert "generic" in str(exc)
+    else:
+        raise AssertionError("esperava TechniqueRecipeError")
+
+
+def test_generic_picked_upstroke_atraso_ms_is_accepted_for_modo_bass():
+    # O mesmo parametro continua valendo normalmente quando o tool
+    # resolvido de fato usa keyswitch (onde o atraso desloca o keyswitch
+    # auxiliar, nao a nota estrutural).
+    source = _make_midi([80, 90, 100, 110])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="modo_bass",
+        parameters={"style": "picked", "upstroke_atraso_ms": 8},
+    )
+    assert any(
+        msg.type == "note_on" and msg.note == STYLE_KS["palheta"]
+        for _t, msg in _iter_notes(out)
+    )
+
+
+def test_generic_picked_close_velocities_does_not_invert_dynamics():
+    # Achado do Codex na PR #104, segunda rodada: velocities vizinhas
+    # proximas ([90, 100], diferenca 10) inverteriam com o shift fixo
+    # antigo (half_delta~8 -> [98, 92], a nota mais forte da origem saia
+    # mais fraca). O shift agora e limitado pela metade da diferenca com
+    # cada vizinho, entao a ordem original nunca inverte (empate e o
+    # pior caso aceitavel).
+    source = _make_midi([90, 100])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    after = _structural_note_ons(out)
+    velocities = [v for _t, _c, _p, v in after]
+    assert velocities[1] >= velocities[0], (
+        "nota que a origem escreveu mais forte (100) nao pode virar mais "
+        f"fraca que a vizinha (90): {velocities!r}"
+    )
+
+
 def test_generic_picked_saturated_velocity_is_not_reported_as_applied():
     # Origem ja saturada no clamp [1, 127] (127 alternando com 1): o shift
     # relativo nao produz nenhuma mudanca audivel de velocity. Achado do

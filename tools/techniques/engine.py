@@ -2877,6 +2877,32 @@ def _apply_bass_attack_style(
         # (issue #57) — documentado, nao bug.
         return mid
 
+    if not has_keyswitch and is_picked and "upstroke_atraso_ms" in context.parameters:
+        # Achado do Codex na PR #104, segunda rodada: so corrigir o texto da
+        # receita `generic` no manual nao bastava — `plan.validate` ainda
+        # aceitava `style.bass.parameters.upstroke_atraso_ms` (declarado
+        # pelo aplicador do proprio `bass.attack_style`, sem saber qual
+        # `tool` vai reger cada track) e o motor continuava resolvendo o
+        # valor em `atraso_ms`/`atraso_ticks` sem usa-lo aqui embaixo —
+        # parametro validado e depois ignorado e "parametro mentiroso"
+        # (AGENTS.md). `plan.validate` nao pode recusar isso: o mesmo
+        # `style.bass.parameters` vale para tracks com `tool` diferentes,
+        # resolvido soo em render. Falha aqui, no despacho, quando o `tool`
+        # de fato resolvido e generic — mesmo padrao de
+        # `TechniqueRecipeError` ja usado pelo restante deste modulo para
+        # receita incompativel com o tool-alvo.
+        from .errors import TechniqueRecipeError
+
+        raise TechniqueRecipeError(
+            f"tecnica {context.canonical!r}: upstroke_atraso_ms nao tem "
+            "efeito com tool='generic' — sem keyswitch reservado, aplicar "
+            "o atraso na propria nota estrutural violaria o contrato de "
+            "posicao do nivel technique (start_tick e identidade "
+            "estrutural, sem excecao registrada para bass.attack_style). "
+            "Declare upstroke_atraso_ms so quando a track for renderizada "
+            "com tool='modo_bass', ou remova o parametro do plano."
+        )
+
     forcar_primeiro = recipe.get("keyswitch_forcar_primeiro") if recipe else None
     forcar_segundo = recipe.get("keyswitch_forcar_segundo") if recipe else None
 
@@ -3043,10 +3069,45 @@ def _apply_bass_attack_style(
         # aplicada ao usuario sem nenhuma nota ter mudado — achado do Codex
         # na PR #104. Sem mudanca real, nao ha nada pra tornar idempotente:
         # pula a track inteira, sem marcador e sem escrita.
+        # Achado do Codex na PR #104, segunda rodada: shift fixo por
+        # posicao pode INVERTER a ordem que a origem escreveu entre notas
+        # vizinhas quando a diferenca original e menor que o dobro do
+        # shift — ex.: origem [90, 100] (diferenca 10) com half_delta=8
+        # virava [98, 92], e a nota que a origem escreveu MAIS FORTE saia
+        # mais fraca. Mesmo defeito, categoria, que ja tirou
+        # `drums.accent_hierarchy` do motor uma vez.
+        #
+        # Por posicoes consecutivas SEMPRE alternarem downstroke/upstroke
+        # (paridade de indice), o par adjacente sempre recebe shifts de
+        # sinal oposto — o pior caso de inversao acontece exatamente na
+        # fronteira entre duas notas vizinhas, nunca entre notas distantes.
+        # Por isso basta limitar a MAGNITUDE de cada nota pela metade da
+        # diferenca original com cada vizinho imediato (arredondado pra
+        # baixo — `2 * cap <= gap` garante que o shift somado nunca
+        # ultrapassa a diferenca original, entao o sinal de
+        # `novo[i] - novo[i+1]` nunca inverte o de `orig[i] - orig[i+1]`).
+        # Vizinhos com a MESMA velocity original (gap=0) nao tem ordem
+        # nenhuma pra inverter — a diferenciacao plena continua ali, e e
+        # exatamente o caso testado em
+        # `test_generic_picked_alternates_downstroke_upstroke_by_relative_delta`
+        # (origem toda igual a 80).
         half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
+        original_velocities = [msg.velocity for _start, msg in structural]
+        magnitudes = [half_delta] * len(structural)
+        for i in range(len(structural) - 1):
+            gap = abs(original_velocities[i] - original_velocities[i + 1])
+            if gap == 0:
+                continue
+            cap = gap // 2
+            if cap < magnitudes[i]:
+                magnitudes[i] = cap
+            if cap < magnitudes[i + 1]:
+                magnitudes[i + 1] = cap
+
         new_velocities = []
         for idx, (_start, msg) in enumerate(structural):
-            shift = half_delta if idx % 2 == 0 else -half_delta
+            magnitude = magnitudes[idx]
+            shift = magnitude if idx % 2 == 0 else -magnitude
             new_velocities.append(max(1, min(127, msg.velocity + shift)))
 
         if all(
