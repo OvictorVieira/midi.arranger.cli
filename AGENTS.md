@@ -147,13 +147,21 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
 - Técnica documentada no manual mas **não implementada** fica fora de `SUPPORTED_TECHNIQUES`, e o
   plano que a declara recebe `PlanValidationError` explícito. Nunca aceitar e ignorar — no-op
   silencioso é o vício que esta base já rejeitou duas vezes (`_identity_apply` e o gerador de
-  bateria de andaime). Hoje estão nessa situação as técnicas de baixo `bass.slide`, `bass.vibrato`,
-  `bass.string_selection` e `bass.harmonic` (fora do escopo da issue #47). Inventário canônico do
+  bateria de andaime). Hoje estão nessa situação as técnicas de baixo `bass.slide`, `bass.vibrato`
+  e `bass.harmonic` (fora do escopo da issue #47). Inventário canônico do
   motor em `docs/arquitetura.md` (§4, "Inventário de técnicas do motor"); o teste
   `test_supported_techniques_is_derived_from_the_registry` em `tests/test_techniques_engine.py`
   afirma a tupla exata e quebra o build se um registro fantasma aparecer. Inventário atual de
   bateria: `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`,
   `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes` e `drums.microtiming`.
+- `bass.string_selection` força a corda em que cada nota estrutural do baixo soa, via keyswitch
+  momentâneo do MODO BASS (manual §5.9): agrupa notas consecutivas na mesma corda (a mais grave que
+  alcança o pitch dentro de `max_fret`, default 24) num run só, segura o keyswitch pressionado
+  (par note_on/note_off) do início ao fim do run — o LATCH do plugin vem desligado de fábrica — e é
+  NO-OP em qualquer ferramenta que não seja `modo_bass` (a própria receita `generic` do manual diz
+  que a intenção de corda não pode ser honrada nela). Afinação vem de `context.parameters["tuning"]`
+  com fallback no default físico de 4 cordas; contagem de cordas fora de 4/5/6 também é NO-OP, pois
+  não há convenção documentada de ordem de corda para esses casos.
 - `drums.accent_hierarchy` foi reintroduzida na issue #50 com detecção determinística de virada
   (`tools/techniques/_fill_detection.py`, mesmo padrão de `roll_sequences` do `drums.accented_roll`)
   e invariante de pressão em duas camadas: (a) piso `soft_ceiling+1` impede que nota escrita no

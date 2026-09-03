@@ -63,7 +63,7 @@ def test_bass_palm_mute_is_registered_as_supported():
     assert "bass.palm_mute" in SUPPORTED_TECHNIQUES
     entry = get_technique("bass.palm_mute")
     assert entry.canonical == "bass.palm_mute"
-    assert entry.level == "humanize"
+    assert entry.level == "technique"
 
 
 def test_bass_palm_mute_without_density_is_no_op():
@@ -181,3 +181,44 @@ def test_bass_palm_mute_reads_gate_range_from_context_parameters():
     assert all(115 <= dur <= 125 for _, dur, _ in after), (
         f"gate_pct=25 devia dar duracao ~120 ticks: {after}"
     )
+
+
+def _cc_events(mid: mido.MidiFile, control: int) -> list[tuple[int, int, int]]:
+    events: list[tuple[int, int, int]] = []
+    for track in mid.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.type == "control_change" and msg.control == control:
+                events.append((tick, msg.channel, msg.value))
+    return events
+
+
+def test_bass_palm_mute_modo_bass_emits_cc9_and_resets_it():
+    source = _make_midi([100, 100], duration=480)
+    before = _note_pairs(source)
+
+    out = apply_technique(
+        "bass.palm_mute", source, seed=11, tool="modo_bass",
+        parameters={"density": 1.0, "amount": [35, 35]},
+    )
+
+    events = _cc_events(out, 9)
+    assert [value for _tick, _channel, value in events] == [35, 0, 35, 0]
+    assert events[0][0] == 0
+    assert all(channel == 1 for _tick, channel, _value in events)
+    assert _note_pairs(out) == before
+
+
+def test_bass_palm_mute_modo_bass_is_idempotent_for_cc9():
+    source = _make_midi([100, 100], duration=480)
+    once = apply_technique(
+        "bass.palm_mute", source, seed=17, tool="modo_bass",
+        parameters={"density": 1.0, "amount": [28, 28]},
+    )
+    twice = apply_technique(
+        "bass.palm_mute", once, seed=17, tool="modo_bass",
+        parameters={"density": 1.0, "amount": [28, 28]},
+    )
+
+    assert _cc_events(twice, 9) == _cc_events(once, 9)

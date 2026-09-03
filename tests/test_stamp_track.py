@@ -156,6 +156,94 @@ def test_generated_element_track_carries_both_name_and_stamp(tmp_path):
     assert "verified=true" in stamp
 
 
+def test_edit_track_stamp_reflects_tool_as_plugin(tmp_path):
+    """Achado do Codex na PR: `edit.tool` determinava a receita de tecnica
+    de fato aplicada (ex.: keyswitch do MODO BASS gravado nas notas), mas o
+    carimbo continuava com `plugin=None` — a track carregava dado
+    estrutural amarrado a uma ferramenta que o carimbo nao mencionava."""
+    src = _build_source(tmp_path)
+    plan = _base_plan(src)
+    plan.edits = [PlanEdit(
+        track="Bass", profile="bass", intensity=0.5, tool="MODO Bass",
+    )]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com fingers", researched_at="2026-08-24",
+            sources=["https://example.test/bass"], confidence="high",
+            techniques=[
+                StyleTechnique(name="bass.attack_style", style="dedo"),
+            ],
+            parameters={},
+        ),
+    }
+    _attach_authorized_brief(plan, tmp_path)
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    texts = _iter_text_meta(out, "Bass")
+    assert len(texts) == 1
+    stamp = texts[0]
+    assert "plugin=MODO Bass" in stamp
+    assert "verified=false" in stamp
+
+
+def test_edit_track_stamp_omits_tool_when_no_technique_pipeline_ran(tmp_path):
+    """Achado de auto-revisao: `edit.tool` so descreve a ferramenta-alvo pra
+    resolucao de receita de `style.<familia>.techniques[]` (ver docstring de
+    `PlanEdit.tool` em tools/plan.py) — profile `generic` nao tem familia, e
+    o pipeline de tecnicas nunca chega a olhar `edit.tool` pra essa track.
+    Antes deste fix, o carimbo estampava `plugin=edit.tool` incondicionalmente
+    mesmo assim, alegando que uma ferramenta foi usada quando nada a
+    consultou."""
+    src = _build_source(tmp_path)
+    plan = _base_plan(src)
+    plan.edits = [PlanEdit(
+        track="Bass", profile="generic", intensity=0.5, tool="Kontakt",
+    )]
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    texts = _iter_text_meta(out, "Bass")
+    assert len(texts) == 1
+    stamp = texts[0]
+    assert "plugin=" not in stamp
+
+
+def test_edit_track_stamp_omits_tool_when_every_technique_density_gated_off(tmp_path):
+    """Achado de auto-revisao (rodada 2): com TODA tecnica declarada em
+    `style.<familia>.techniques[]` desligada por `density<=0.0`,
+    `_run_style_pipeline` nunca chega a chamar `apply_technique_with_warnings`
+    — `edit.tool` nunca e consultado por ninguem. Antes deste fix,
+    `_apply_style_techniques_to_edit_tracks` ainda registrava a track em
+    `applied_by_track` (com tupla vazia), o que bastava pra `_stamp_edit_tracks`
+    achar que o pipeline tinha rodado e estampar `plugin=edit.tool` mesmo
+    assim."""
+    src = _build_source(tmp_path)
+    plan = _base_plan(src)
+    plan.edits = [PlanEdit(
+        track="Bass", profile="bass", intensity=0.5, tool="Kontakt",
+    )]
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="Baixo com fingers desligado", researched_at="2026-08-24",
+            sources=["https://example.test/bass"], confidence="high",
+            techniques=[
+                StyleTechnique(name="bass.attack_style", style="dedo", density=0.0),
+            ],
+            parameters={},
+        ),
+    }
+    _attach_authorized_brief(plan, tmp_path)
+    out = tmp_path / "out.mid"
+    render(plan, out)
+
+    texts = _iter_text_meta(out, "Bass")
+    assert len(texts) == 1
+    stamp = texts[0]
+    assert "plugin=" not in stamp
+    assert "techniques=" not in stamp
+
+
 def test_edit_track_stamp_includes_applied_techniques(tmp_path):
     src = _build_source(tmp_path)
     plan = _base_plan(src)
