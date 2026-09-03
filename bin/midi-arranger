@@ -22,6 +22,8 @@ Usage:
   midi-arranger brief [options] <input.mid>
   midi-arranger run [options] [max_iterations]
   midi-arranger tool [options] <tool-name> [tool-args...]
+  midi-arranger doctor [options]
+  midi-arranger test-drive [options]
   midi-arranger --list-models [options]
   midi-arranger --help
 
@@ -29,6 +31,8 @@ Subcommands:
   brief          Interview the user and write arrangement-brief.json.
   run            Run the autonomous arrangement loop.
   tool           Invoke the deterministic MIDI tool layer.
+  doctor         Diagnose the local environment (Python, deps, provider, tools).
+  test-drive     Run the analyze/plan/render/validate flow on a mocked profile.
   --list-models  Show models and effort levels announced by installed AI CLIs.
   --help         Show this help message.
 
@@ -43,15 +47,27 @@ Common options:
   --cwd=DIR       Same as above.
   -h, --help      Show this help message.
 
+test-drive options:
+  --fixture PATH  MIDI to test-drive with (default: the bundled corpus fixture).
+  --fixture=PATH  Same as above.
+  --keep          Preserve the isolated workspace instead of deleting it.
+
 Examples:
   midi-arranger brief song.mid
   midi-arranger run --tool codex --effort high 12
   midi-arranger --cwd /path/to/project --list-models
   midi-arranger tool analyze song.mid
+  midi-arranger doctor --tool claude
+  midi-arranger test-drive --keep
 
 Run iterations:
   max_iterations defaults to 10. As a rule of thumb, use one iteration per
   instrument family to arrange, plus extra room for validation fixes.
+
+doctor and test-drive exit codes:
+  0  healthy / flow completed with no musical validation error
+  1  test-drive ran but a validator reported a musical error
+  2  environment problem (missing dependency, provider not found, etc.)
 EOF
 }
 
@@ -125,6 +141,25 @@ require_tool_installed() {
     display="$(tool_display_binary "$tool")"
     die_missing_binary "$display" "$display"
   fi
+}
+
+require_python3() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    die_unavailable "python3 not found in PATH; '$1' requires Python >= 3.11 to run."
+  fi
+}
+
+run_python_module() {
+  # `doctor`/`test-drive` sao Python puro (US-078): sem LLM, sem rede,
+  # deterministico. `bin/` so resolve o provider (aqui) e delega a
+  # introspeccao/execucao real a `tools/`, para nunca duplicar aquela logica
+  # em bash. `exec` troca o processo bash pelo python, entao o codigo de
+  # saida do modulo (0/1/2, documentado em `tools/doctor.py` e
+  # `tools/test_drive.py`) vira o codigo de saida do comando inteiro, sem
+  # passar pelos codigos sysexits do resto deste script.
+  local module="$1"
+  shift
+  PYTHONPATH="$INSTALL_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m "$module" "$@"
 }
 
 validate_effort_support() {
@@ -791,6 +826,8 @@ TOOL="codex"
 MODEL=""
 EFFORT=""
 CWD=""
+FIXTURE=""
+KEEP=0
 MAX_ITERATIONS=""
 CURRENT_ITERATION=""
 RUN_BRIEF_HASH=""
@@ -812,7 +849,7 @@ while [[ $# -gt 0 ]]; do
       COMMAND="list-models"
       shift
       ;;
-    brief|run|tool)
+    brief|run|tool|doctor|test-drive)
       if [[ -n "$COMMAND" ]]; then
         die_usage "Unexpected argument '$1' after command '$COMMAND'."
       fi
@@ -863,6 +900,20 @@ while [[ $# -gt 0 ]]; do
       require_value "--cwd" "$CWD"
       shift
       ;;
+    --fixture)
+      require_value "$1" "${2:-}"
+      FIXTURE="$2"
+      shift 2
+      ;;
+    --fixture=*)
+      FIXTURE="${1#*=}"
+      require_value "--fixture" "$FIXTURE"
+      shift
+      ;;
+    --keep)
+      KEEP=1
+      shift
+      ;;
     --*)
       die_usage "Unknown argument '$1'."
       ;;
@@ -911,6 +962,34 @@ case "$COMMAND" in
       die_usage "tool requires a tool name."
     fi
     die_unavailable "tool parsed successfully for project '$PROJECT_ROOT', but deterministic tool dispatch is not implemented yet."
+    ;;
+  doctor)
+    if [[ "${#POSITIONAL[@]}" -ne 0 ]]; then
+      die_usage "doctor does not accept positional arguments."
+    fi
+    require_python3 "doctor"
+    provider_status="not_queried"
+    provider_binary=""
+    if binary="$(tool_binary_path "$TOOL")"; then
+      provider_status="found"
+      provider_binary="$binary"
+    else
+      provider_status="absent"
+    fi
+    doctor_args=(--tool "$TOOL" --provider-status "$provider_status" --project-root "$PROJECT_ROOT")
+    [[ -n "$provider_binary" ]] && doctor_args+=(--provider-binary "$provider_binary")
+    [[ -n "$MODEL" ]] && doctor_args+=(--model "$MODEL")
+    run_python_module tools.doctor "${doctor_args[@]}"
+    ;;
+  test-drive)
+    if [[ "${#POSITIONAL[@]}" -ne 0 ]]; then
+      die_usage "test-drive does not accept positional arguments."
+    fi
+    require_python3 "test-drive"
+    test_drive_args=()
+    [[ -n "$FIXTURE" ]] && test_drive_args+=(--fixture "$FIXTURE")
+    [[ "$KEEP" -eq 1 ]] && test_drive_args+=(--keep)
+    run_python_module tools.test_drive "${test_drive_args[@]}"
     ;;
   list-models)
     if [[ "${#POSITIONAL[@]}" -ne 0 ]]; then

@@ -51,6 +51,33 @@ instalador avisa quais e dá o comando exato, mas não roda `pip` por conta pró
 Rodar de novo é idempotente. Depois de um `git pull`, rode `./install.sh` outra vez — o harness e a
 skill vêm do corpo instalado, não do checkout, justamente para nunca ficarem em versões diferentes.
 
+## Primeiro test-drive
+
+Antes de rodar `brief`/`run` de verdade com sua própria IA, valide o ambiente local em quatro
+comandos — nenhum deles fala com nenhuma IA:
+
+```bash
+git clone git@github.com:OvictorVieira/midi.arranger.cli.git
+cd midi.arranger.cli
+./bin/midi-arranger doctor --tool claude   # Python, dependências, provider, tools — tudo ok?
+./bin/midi-arranger test-drive             # analyze -> plan -> render -> validate, com perfil mockado
+```
+
+`doctor` confere Python ≥ 3.11, `mido`/`pretty_midi`, se o registro de tools importa sem erro, o
+inventário **atual** de técnicas e roles que o motor realmente executa, se o binário da CLI escolhida
+em `--tool` está no `PATH`, e permissão de escrita no projeto. Ele nunca testa acesso à internet — só
+declara que a pesquisa ao vivo durante `brief` depende das ferramentas da sua própria CLI de IA.
+
+`test-drive` copia um MIDI de bateria versionado (`tests/fixtures/corpus_drums/`, ou `--fixture
+seu.mid`) para um workspace temporário isolado — o original nunca é tocado — e roda o pipeline
+determinístico real (`analyze` → `plan.validate` → `render` → `validate`) com um perfil de estilo
+**mockado**, sem pesquisa nenhuma. Produz MIDI, plano e relatório no workspace; some ao final a menos
+que você passe `--keep`.
+
+Códigos de saída: `0` ambiente saudável / fluxo ok, `1` o `test-drive` rodou mas um validador achou
+erro musical, `2` problema de ambiente (dependência faltando, provider ausente, sem permissão de
+escrita).
+
 ## Os dois comandos
 
 ```bash
