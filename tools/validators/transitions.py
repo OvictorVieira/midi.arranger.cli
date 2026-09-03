@@ -19,6 +19,35 @@ sua `dimensions_changed` alimenta a checagem de divergencia intencao x
 realidade abaixo; sem `Transition` casando, so a checagem 1 (AC-14 em si)
 roda — nao ha intencao declarada pra comparar.
 
+## Fronteiras vem de tracks de origem tambem
+
+`rendered_tracks` que `tools.render.render()` passa pra ca inclui NAO SO as
+tracks de `plan.elements[]` recem-geradas, mas tambem as tracks de origem
+clonadas (editadas por `plan.edits` ou nao) que compoem o MIDI final —
+sem isso, um plano que so mexe no material do usuario via `plan.edits`
+(sem elemento gerado nenhum) sempre teria `events_a`/`events_b` vazios nas
+janelas e toda fronteira seria pulada, mesmo quando as duas metades do MIDI
+de saida sao musicalmente bem diferentes. Cada track de origem/edicao vira
+uma `RenderedTrack` com `element_id` sintetico `source:<nome da track>`
+(nao ha `Element` do plano pra essas tracks) — usado como entidade distinta
+em `perspectiva_espacial`/`protagonista`, igual a um `element_id` real.
+
+## Bateria e dimensoes de pitch
+
+Numero de nota MIDI de bateria e IDENTIDADE DE PECA DO KIT (kick=36,
+caixa=38, hi-hat=42, ride=51, ... convencao GM), nao altura musical. Trocar
+hi-hat por ride nao pode contar como mudanca de `registro`/`harmonia` —
+seria satisfazer as duas dimensoes de AC-14 com uma unica troca de
+articulacao de percussao, sem mudanca musical real nenhuma. Por isso
+`registro`, `largura` e `harmonia` EXCLUEM notas de tracks de bateria
+(`_drum_element_ids`: `element_id` de `plan.elements[]` cujo `role` mapeia
+pra familia `drums`, e `element_id` sintetico `source:<track>` de
+`plan.edits[]` com `profile == "drums"`). `densidade`, `subdivisao`,
+`textura`, `perspectiva_espacial` e `protagonista` continuam contando
+TODAS as notas, inclusive bateria — sao dimensoes ritmicas/texturais, nao
+de pitch, e uma virada de bateria de verdade tem que continuar contando
+pra elas.
+
 ## As oito dimensoes (nomes canonicos, PT-BR sem acento — mesma convencao
 ## de `tools.plan.ENERGY_AXES`)
 
@@ -66,7 +95,9 @@ hoje valido) mediria compassos completamente errados se usasse a cauda/
 cabeca das secoes em vez do proprio `at_bar` — ver docstring de
 `_window_bounds`. Todas as notas de TODOS os `RenderedTrack` (qualquer
 elemento) que atacam dentro da janela entram na medicao — "o que de fato
-soa naquele instante", nao so a track de um elemento.
+soa naquele instante", nao so a track de um elemento — EXCETO `registro`/
+`largura`/`harmonia`, que excluem notas de tracks de bateria (ver secao
+"Bateria e dimensoes de pitch" acima).
 
 - `densidade`: notas por segundo na janela (contagem / duracao). Metrica
   de TAXA — quantos eventos por unidade de tempo.
@@ -123,7 +154,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from ..analyze import Analysis, BarAnalysis
-from ..plan import ArrangementPlan, PlanSection, Transition
+from ..plan import ROLE_STYLE_FAMILIES, STYLE_FAMILIES, ArrangementPlan, PlanSection, Transition
 from .harmony import SEVERITY_ERROR, SEVERITY_WARNING, RenderedNote, RenderedTrack
 
 # --- vocabulario --------------------------------------------------------
@@ -311,15 +342,32 @@ def _notes_in_window(
 def _compute_metrics(
     events: list[tuple[str, RenderedNote]],
     duration_s: float,
+    *,
+    drum_element_ids: frozenset[str],
 ) -> _Metrics:
     if not events:
         return _Metrics(None, None, None, None, None, None, None, None)
 
     notes = [n for _eid, n in events]
-    pitches = [n.pitch for n in notes]
-    registro = (min(pitches), max(pitches))
-    largura = registro[1] - registro[0]
-    harmonia = frozenset(p % 12 for p in pitches)
+
+    # `registro`/`largura`/`harmonia` sao dimensoes de PITCH MUSICAL — nota
+    # de bateria e identidade de peca do kit (kick=36, caixa=38, hi-hat=42,
+    # ride=51, ...), nao altura. Trocar hi-hat por ride nao pode contar como
+    # mudanca de registro/harmonia (ver docstring do modulo, secao "Bateria
+    # e dimensoes de pitch"). `densidade`/`subdivisao`/`textura`/
+    # `perspectiva_espacial`/`protagonista` continuam usando TODAS as notas
+    # (`notes`), inclusive bateria — sao ritmicas/texturais, nao de pitch.
+    pitched_notes = [n for eid, n in events if eid not in drum_element_ids]
+    if pitched_notes:
+        pitches = [n.pitch for n in pitched_notes]
+        registro = (min(pitches), max(pitches))
+        largura = registro[1] - registro[0]
+        harmonia = frozenset(p % 12 for p in pitches)
+    else:
+        registro = None
+        largura = None
+        harmonia = None
+
     densidade = (len(notes) / duration_s) if duration_s > 0 else None
 
     bucket_s = ONSET_BUCKET_MS / 1000.0
@@ -399,6 +447,33 @@ def _changed(dimension: str, before: _Metrics, after: _Metrics) -> bool | None:
     raise AssertionError(f"unknown dimension {dimension!r}")  # pragma: no cover
 
 
+def _drum_element_ids(plan: ArrangementPlan) -> frozenset[str]:
+    """`element_id` (real, de `plan.elements`, ou sintetico `source:<track>`
+    de uma track de `plan.edits`) cuja familia de `style` e `drums` — usado
+    para excluir notas de bateria das dimensoes derivadas de pitch
+    (`registro`, `largura`, `harmonia`). Mesma logica de
+    `tools.render._style_family_for_role`/`_style_family_for_edit`,
+    reimplementada aqui em vez de importada: `tools.render` importa este
+    modulo (`validate_transitions`), entao o caminho inverso criaria
+    import circular. `source:<track>` casa com o `element_id` sintetico
+    que `tools.render` atribui as `RenderedTrack` reconstruidas a partir
+    das tracks de origem/edicao (ver docstring do modulo, secao
+    "Fronteiras vem de tracks de origem tambem")."""
+    ids: set[str] = set()
+    for element in plan.elements:
+        family = (
+            element.role
+            if element.role in STYLE_FAMILIES
+            else ROLE_STYLE_FAMILIES.get(element.role)
+        )
+        if family == "drums":
+            ids.add(element.id)
+    for edit in plan.edits:
+        if edit.profile == "drums":
+            ids.add(f"source:{edit.track}")
+    return frozenset(ids)
+
+
 # --- API publica -------------------------------------------------------------
 
 def _boundary_transition(
@@ -452,6 +527,7 @@ def validate_transitions(
     tracks = list(rendered_tracks)
     bars_by_index = _bar_lookup(analysis)
     ordered_sections = sorted(plan.sections, key=lambda s: s.start_bar)
+    drum_element_ids = _drum_element_ids(plan)
 
     transitions_by_pair: dict[tuple[str, str], Transition] = {}
     transitions_by_at_bar: dict[int, Transition] = {}
@@ -475,8 +551,12 @@ def validate_transitions(
         if not events_a or not events_b:
             continue
 
-        metrics_a = _compute_metrics(events_a, bounds_a[1] - bounds_a[0])
-        metrics_b = _compute_metrics(events_b, bounds_b[1] - bounds_b[0])
+        metrics_a = _compute_metrics(
+            events_a, bounds_a[1] - bounds_a[0], drum_element_ids=drum_element_ids,
+        )
+        metrics_b = _compute_metrics(
+            events_b, bounds_b[1] - bounds_b[0], drum_element_ids=drum_element_ids,
+        )
 
         changed: dict[str, bool] = {}
         for dim in TRANSITION_DIMENSIONS:

@@ -1147,6 +1147,52 @@ def _rendered_tracks_from_midi_tracks(
     return rendered
 
 
+def _rendered_tracks_from_source_tracks(
+    tracks: list[mido.MidiTrack],
+    *,
+    ticks_per_beat: int,
+    midi_type: int,
+) -> list[RenderedTrack]:
+    """Reconstroi `RenderedTrack` a partir das tracks de ORIGEM (clonadas de
+    `src_mid`, editadas por `plan.edits` ou nao) no MIDI final.
+
+    Existe para `validate_transitions` (issue #24 finding 1): um plano que
+    so mexe no material do usuario via `plan.edits`, sem `plan.elements[]`
+    nenhum, precisa que as duas metades da fronteira tenham dado real pra
+    medir — sem isso, `events_a`/`events_b` ficariam sempre vazios e toda
+    fronteira seria pulada, mesmo com o MIDI de saida bem diferente dos
+    dois lados. `element_id` sintetico `source:<nome da track>` identifica
+    cada track fisica de origem como entidade distinta (nao ha `Element`
+    do plano pra essas tracks) — mesmo esquema que
+    `tools.validators.transitions._drum_element_ids` usa pra casar track de
+    `plan.edits` com `profile == "drums"`.
+    """
+    temp_mid = mido.MidiFile(ticks_per_beat=ticks_per_beat, type=midi_type)
+    temp_mid.tracks.extend(tracks)
+    payload = BytesIO()
+    temp_mid.save(file=payload)
+    payload.seek(0)
+    parsed = pretty_midi.PrettyMIDI(payload)
+
+    rendered: list[RenderedTrack] = []
+    for fallback_index, instrument in enumerate(parsed.instruments):
+        track_name = instrument.name or f"source L{fallback_index + 1}"
+        rendered.append(RenderedTrack(
+            element_id=f"source:{track_name}",
+            track_name=track_name,
+            notes=tuple(
+                RenderedNote(
+                    pitch=int(note.pitch),
+                    velocity=int(note.velocity),
+                    start_s=float(note.start),
+                    end_s=float(note.end),
+                )
+                for note in instrument.notes
+            ),
+        ))
+    return rendered
+
+
 def _clone_source_tracks(src: mido.MidiFile) -> list[mido.MidiTrack]:
     """Copia cada track do source em `MidiTrack` novo com mensagens copiadas.
     Preserva ordem e conteudo — as tracks originais saem intactas."""
@@ -1879,6 +1925,11 @@ def render(
         type=src_mid.type,
     )
     out_mid.tracks.extend(_clone_source_tracks(src_mid))
+    # Numero de tracks clonadas da origem, capturado ANTES de qualquer track
+    # gerada ser anexada — usado depois (issue #24 finding 1) para fatiar
+    # `out_mid.tracks` de volta em "origem/edicao" vs "elemento gerado" na
+    # hora de montar o insumo do validador de transicao.
+    source_track_count = len(out_mid.tracks)
 
     # Edits opt-in (FR-28): humaniza tracks nomeadas em `plan.edits` in-place
     # nas tracks ja clonadas. Tracks nao nomeadas ficam byte-identicas.
@@ -2007,10 +2058,20 @@ def render(
     anticopy_issues = validate_anticopy(
         rendered_tracks, plan, analysis, corpus=corpus_sequences or None,
     )
-    # AC-14: roda sobre o `plan` (ja filtrado por `only`, se pedido) e os
-    # `rendered_tracks` de fato emitidos — ver docstring de
-    # `tools.validators.transitions`.
-    transition_issues = validate_transitions(rendered_tracks, plan, analysis)
+    # AC-14: roda sobre o `plan` (ja filtrado por `only`, se pedido) e o
+    # OUTPUT COMPLETO — `rendered_tracks` (elementos gerados) MAIS as
+    # tracks de origem/edicao (`out_mid.tracks[:source_track_count]`, ja
+    # com `apply_edits`/tecnicas de estilo aplicados in-place) — ver
+    # docstring de `tools.validators.transitions`, secao "Fronteiras vem de
+    # tracks de origem tambem" (issue #24 finding 1).
+    source_rendered_tracks = _rendered_tracks_from_source_tracks(
+        list(out_mid.tracks[:source_track_count]),
+        ticks_per_beat=out_mid.ticks_per_beat,
+        midi_type=out_mid.type,
+    )
+    transition_issues = validate_transitions(
+        rendered_tracks + source_rendered_tracks, plan, analysis,
+    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_mid.save(str(out_path))

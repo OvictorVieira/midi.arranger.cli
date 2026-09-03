@@ -1422,6 +1422,19 @@ def validate(
     # de `tools.validators.transitions._normalize_dimension_name`.
     for i, t in enumerate(plan.transitions):
         base = f"transitions[{i}]"
+        # BLOQUEIO: plano em memoria (ou via from_dict malformado) pode
+        # trazer `at_bar`/`from_section`/`to_section` fora do tipo — sem
+        # esta checagem, `tools.validators.transitions._window_bounds`
+        # (`at_bar - WINDOW_BARS`) so falharia tarde, com `TypeError` em vez
+        # de `PlanValidationError`, depois de todo o pipeline de render ja
+        # ter rodado.
+        if not isinstance(t.at_bar, int) or isinstance(t.at_bar, bool):
+            raise PlanValidationError(
+                f"{base}.at_bar",
+                f"must be int, got {type(t.at_bar).__name__}",
+            )
+        _require_nonblank_str(t.from_section, f"{base}.from_section")
+        _require_nonblank_str(t.to_section, f"{base}.to_section")
         if not isinstance(t.dimensions_changed, list):
             raise PlanValidationError(
                 f"{base}.dimensions_changed",

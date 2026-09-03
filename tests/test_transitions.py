@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from tools.analyze import Analysis, BarAnalysis
-from tools.plan import ArrangementPlan, Element, PlanSection, SourceMidi, Transition
+from tools.plan import ArrangementPlan, Element, PlanEdit, PlanSection, SourceMidi, Transition
 from tools.validators.harmony import RenderedNote, RenderedTrack
 from tools.validators.transitions import (
     MIN_DIMENSIONS_CHANGED,
     TRANSITION_DIMENSIONS,
+    _compute_metrics,
+    _drum_element_ids,
     format_issues,
     has_errors,
     validate_transitions,
@@ -40,6 +42,16 @@ def _element(id: str, section: str) -> Element:
         sync_role="sustain_through", articulation="sustained",
         harmony="follow_chords",
         rationale="Elemento fixture do validador de transicao.",
+    )
+
+
+def _drum_element(id: str, section: str) -> Element:
+    return Element(
+        id=id, role="drums", sections=[section],
+        register=[35, 59], layers=1,
+        sync_role="sustain_through", articulation="sustained",
+        harmony="follow_chords",
+        rationale="Elemento fixture de bateria do validador de transicao.",
     )
 
 
@@ -146,8 +158,12 @@ def test_strong_transition_changes_all_eight_dimensions():
     tracks = _strong_tracks()
     events_a = _t._notes_in_window(tracks, bounds_a)
     events_b = _t._notes_in_window(tracks, bounds_b)
-    metrics_a = _t._compute_metrics(events_a, bounds_a[1] - bounds_a[0])
-    metrics_b = _t._compute_metrics(events_b, bounds_b[1] - bounds_b[0])
+    metrics_a = _t._compute_metrics(
+        events_a, bounds_a[1] - bounds_a[0], drum_element_ids=frozenset(),
+    )
+    metrics_b = _t._compute_metrics(
+        events_b, bounds_b[1] - bounds_b[0], drum_element_ids=frozenset(),
+    )
 
     changed = {
         dim: _t._changed(dim, metrics_a, metrics_b) for dim in TRANSITION_DIMENSIONS
@@ -375,3 +391,129 @@ def test_window_is_anchored_to_at_bar_not_section_boundary():
     issues = validate_transitions([track_a, track_b1, track_b2], plan, analysis)
     weak = [i for i in issues if i.kind == "weak_transition"]
     assert weak == [], weak
+
+
+# --- bateria nao conta como pitch (Codex finding #2, PR #106) ---------------
+
+def _drum_swap_plan() -> ArrangementPlan:
+    """Plano com UM elemento de bateria (`drum_a`) e UM elemento pitched
+    (`pad_a`), ambos presentes nas duas secoes."""
+    sections = [
+        PlanSection(
+            label="MAIN", kind="verse", start_bar=0, end_bar=4,
+            source="marker", protagonist="texture",
+            energy={"densidade": 4, "impacto": 4, "largura": 4,
+                    "altura": 4, "instabilidade": 3},
+        ),
+        PlanSection(
+            label="NEXT", kind="chorus", start_bar=4, end_bar=8,
+            source="marker", protagonist="texture",
+            energy={"densidade": 8, "impacto": 8, "largura": 8,
+                    "altura": 8, "instabilidade": 5},
+        ),
+    ]
+    return ArrangementPlan(
+        version=1, seed=0,
+        source_midi=SourceMidi(path="/dev/null", sha256="0" * 64),
+        route="cinematica_emocional",
+        sections=sections,
+        elements=[_drum_element("drum_a", "MAIN"), _element("pad_a", "MAIN")],
+        transitions=[],
+    )
+
+
+def _hihat_ride_swap_tracks(*, extra_ghost_notes: bool = False) -> list[RenderedTrack]:
+    """`drum_a` toca hi-hat fechado (42) na janela A (t=[0,8)) e SO troca a
+    articulacao para ride (51) na janela B (t=[8,16)), mesma grade
+    ritmica/velocity — troca de peca do kit, nao mudanca musical. `pad_a` e
+    IDENTICO (mesmo pitch/onset relativo/duracao) dos dois lados — sem ele,
+    qualquer dimensao que ainda enxergasse a bateria como pitch teria como
+    unica fonte de dado a propria bateria."""
+    hits_a = [_note(42, float(i) * 0.5, duration=0.1, velocity=80) for i in range(16)]
+    if extra_ghost_notes:
+        # Mudanca ritmica GENUINA (densidade) sobre a MESMA troca de peca —
+        # tem que continuar contando, porque densidade e dimensao ritmica,
+        # nao de pitch.
+        hits_b = []
+        for i in range(16):
+            t = 8.0 + i * 0.5
+            hits_b.append(_note(51, t, duration=0.1, velocity=80))
+            hits_b.append(_note(51, t + 0.25, duration=0.05, velocity=40))
+    else:
+        hits_b = [_note(51, 8.0 + i * 0.5, duration=0.1, velocity=80) for i in range(16)]
+    drum_a = RenderedTrack(
+        element_id="drum_a", track_name="Drums",
+        notes=tuple(hits_a + hits_b),
+    )
+
+    pad_notes = [_note(60, float(i), duration=0.9, velocity=70) for i in range(8)]
+    pad_notes += [_note(60, 8.0 + i, duration=0.9, velocity=70) for i in range(8)]
+    pad_a = RenderedTrack(element_id="pad_a", track_name="Pad A", notes=tuple(pad_notes))
+    return [drum_a, pad_a]
+
+
+def test_drum_ids_include_generated_drum_elements_and_drum_edits():
+    plan = _drum_swap_plan()
+    plan.edits = [PlanEdit(track="Kit", profile="drums", intensity=0.0)]
+    ids = _drum_element_ids(plan)
+    assert ids == {"drum_a", "source:Kit"}
+
+
+def test_drum_ids_exclude_non_drum_elements_and_edits():
+    plan = _drum_swap_plan()
+    plan.edits = [PlanEdit(track="Bass", profile="bass", intensity=0.0)]
+    ids = _drum_element_ids(plan)
+    assert "pad_a" not in ids
+    assert "source:Bass" not in ids
+
+
+def test_hihat_to_ride_swap_alone_is_not_a_register_or_harmony_change():
+    """A troca de articulacao SOZINHA (hi-hat 42 -> ride 51) nao pode ser a
+    segunda dimensao que satisfaz AC-14 — com o pad pitched identico dos
+    dois lados, a fronteira inteira fica fraca."""
+    plan = _drum_swap_plan()
+    analysis = _analysis()
+    issues = validate_transitions(_hihat_ride_swap_tracks(), plan, analysis)
+    weak = [i for i in issues if i.kind == "weak_transition"]
+    assert len(weak) == 1
+    assert "registro" in weak[0].dimensions
+    assert "harmonia" in weak[0].dimensions
+    assert "largura" in weak[0].dimensions
+
+
+def test_drum_notes_excluded_from_registro_and_harmonia_metrics():
+    """Direto na unidade de medicao: com so bateria na janela (sem pad
+    pitched nenhum), `registro`/`largura`/`harmonia` ficam SEM DADO (None),
+    nao "sem mudanca" — nao ha nota pitched pra medir."""
+    drum_only = [n for n in _hihat_ride_swap_tracks() if n.element_id == "drum_a"]
+    events_a = [("drum_a", n) for n in drum_only[0].notes if n.start_s < 8.0]
+    events_b = [("drum_a", n) for n in drum_only[0].notes if n.start_s >= 8.0]
+    metrics_a = _compute_metrics(events_a, 8.0, drum_element_ids=frozenset({"drum_a"}))
+    metrics_b = _compute_metrics(events_b, 8.0, drum_element_ids=frozenset({"drum_a"}))
+    assert metrics_a.registro is None
+    assert metrics_a.largura is None
+    assert metrics_a.harmonia is None
+    assert metrics_b.registro is None
+    assert metrics_b.largura is None
+    assert metrics_b.harmonia is None
+
+
+def test_genuine_drum_density_change_still_counts_despite_pitch_swap():
+    """A MESMA troca hi-hat->ride, mas agora com o dobro de golpes (ghost
+    notes) do lado B — mudanca ritmica de verdade sobre a bateria continua
+    contando para `densidade`, mesmo com `registro`/`largura`/`harmonia`
+    excluidos da bateria (a exclusao e SO das dimensoes de pitch)."""
+    from tools.validators.transitions import _changed
+
+    tracks = _hihat_ride_swap_tracks(extra_ghost_notes=True)
+    drum = next(t for t in tracks if t.element_id == "drum_a")
+    events_a = [("drum_a", n) for n in drum.notes if n.start_s < 8.0]
+    events_b = [("drum_a", n) for n in drum.notes if n.start_s >= 8.0]
+    metrics_a = _compute_metrics(events_a, 8.0, drum_element_ids=frozenset({"drum_a"}))
+    metrics_b = _compute_metrics(events_b, 8.0, drum_element_ids=frozenset({"drum_a"}))
+
+    assert metrics_a.densidade == 2.0
+    assert metrics_b.densidade == 4.0
+    assert _changed("densidade", metrics_a, metrics_b) is True
+    # registro/largura/harmonia continuam sem dado — bateria pura na janela.
+    assert metrics_a.registro is None and metrics_b.registro is None
