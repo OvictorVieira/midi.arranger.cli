@@ -39,6 +39,8 @@ from ..analyze import Analysis, BarAnalysis, Chord
 from ..constants import TIMING_JITTER_MS, VELOCITY_RANGES
 from ..humanize import DURATION_ARTICULATIONS, DurationEngine, DurationRequest
 from ..plan import PlanSection
+from ..rng import assert_traceable_seed
+from ..style_profile import StyleProfile
 from ..techniques.physical import _BASS_DEFAULT_TUNING
 from .harmonic import _bars_in_section, _chord_degrees
 from .rhythmic import (
@@ -249,13 +251,17 @@ def _pick_contour(
     return rng.choice(candidates)
 
 
-def _velocity_for(bucket: str, rng: random.Random) -> int:
-    lo, hi = VELOCITY_RANGES[bucket]
-    return rng.randint(lo, hi)
+def _velocity_for(
+    bucket: str, rng: random.Random, velocity_ranges=VELOCITY_RANGES,
+) -> int:
+    lo, hi = velocity_ranges[bucket]
+    return rng.randint(int(lo), int(hi))
 
 
-def _jitter_s(bucket: str, rng: random.Random) -> float:
-    lo, hi = TIMING_JITTER_MS[bucket]
+def _jitter_s(
+    bucket: str, rng: random.Random, timing_jitter_ms=TIMING_JITTER_MS,
+) -> float:
+    lo, hi = timing_jitter_ms[bucket]
     sign = rng.choice((-1, 1))
     return sign * rng.uniform(lo, hi) / 1000.0
 
@@ -270,6 +276,7 @@ def generate_bass(
     articulation: str = BASS_ARTICULATION_DEFAULT,
     dynamics: dict | None = None,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Gera a linha de baixo de uma secao, do zero.
 
@@ -292,15 +299,21 @@ def generate_bass(
       articulation: mapeada para gate (GATE_RATIOS). Default 'tight'.
       dynamics: reservado (nao consumido nesta rodada).
       seed: seed deterministica.
+      profile: `StyleProfile` opcional — sobrepoe as faixas de velocity e
+        timing jitter lidas de `tools/constants.py`. Sem `profile`, usa
+        `StyleProfile.default()`, que reproduz `constants.py` byte a byte
+        (chamador antigo continua byte-identico).
 
     Raises:
       ValueError: layers < 1 ou role != 'bass'.
     """
+    assert_traceable_seed(seed, source="palette.bass.generate_bass")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if role not in BASS_ROLES:
         raise ValueError(f"role must be one of {list(BASS_ROLES)}; got {role!r}")
 
+    resolved_profile = profile or StyleProfile.default()
     bars = _bars_in_section(section, analysis)
     if not bars:
         return _empty_rhythmic_layers(layers)
@@ -359,7 +372,13 @@ def generate_bass(
                 # (o pitch foi escolhido pelo acorde deste bar; cruzar a
                 # fronteira faz o validador harmonico classificar a nota
                 # pelo acorde errado) nem para antes do tempo zero.
-                start_s = max(bar.start, 0.0, onset + _jitter_s(jitter_bucket, layer_rng))
+                start_s = max(
+                    bar.start, 0.0,
+                    onset + _jitter_s(
+                        jitter_bucket, layer_rng,
+                        timing_jitter_ms=resolved_profile.timing_jitter_ms,
+                    ),
+                )
                 start_s = min(start_s, bar.end - 1e-6)
                 if is_connector:
                     bucket_v = BASS_BASE_VELOCITY_BUCKET
@@ -367,7 +386,10 @@ def generate_bass(
                     bucket_v = BASS_ANCHOR_VELOCITY_BUCKET
                 else:
                     bucket_v = BASS_BASE_VELOCITY_BUCKET
-                velocity = _velocity_for(bucket_v, layer_rng)
+                velocity = _velocity_for(
+                    bucket_v, layer_rng,
+                    velocity_ranges=resolved_profile.velocity_ranges,
+                )
                 notes.append(RhythmicNote(
                     pitch=pitch, velocity=velocity,
                     start_s=start_s, end_s=start_s,  # end_s resolvido abaixo
@@ -378,6 +400,7 @@ def generate_bass(
             notes, articulation=articulation,
             fallback_end_s=section_end_s,
             seed=seed + (layer_idx + 1) * 1_000_009,
+            profile=resolved_profile,
         )
         result.append(RhythmicLayer(index=layer_idx, notes=tuple(notes)))
     return result
@@ -389,13 +412,14 @@ def _resolve_durations(
     articulation: str,
     fallback_end_s: float,
     seed: int,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicNote]:
     """Preenche `end_s` de cada nota a partir do gap real ate a proxima —
     garante monofonia por construcao (duracao nunca ultrapassa o gap)."""
     if not notes:
         return notes
     art = articulation if articulation in DURATION_ARTICULATIONS else BASS_ARTICULATION_DEFAULT
-    engine = DurationEngine(seed=seed)
+    engine = DurationEngine(seed=seed, profile=profile)
     result: list[RhythmicNote] = []
     for i, note in enumerate(notes):
         next_start = notes[i + 1].start_s if i + 1 < len(notes) else fallback_end_s

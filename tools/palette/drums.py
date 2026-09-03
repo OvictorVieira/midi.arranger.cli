@@ -33,6 +33,8 @@ import random
 from ..analyze import Analysis
 from ..constants import TIMING_JITTER_MS, VELOCITY_RANGES
 from ..plan import PlanSection
+from ..rng import assert_traceable_seed
+from ..style_profile import StyleProfile
 from ..techniques.physical import _DRUM_FOOT_NOTES
 from .harmonic import _bars_in_section
 from .rhythmic import STEPS_PER_BAR, RhythmicLayer, RhythmicNote, _empty_rhythmic_layers
@@ -197,13 +199,17 @@ def _hat_or_ride_velocity_bucket(impacto: int) -> str:
     )
 
 
-def _velocity_for(bucket: str, rng: random.Random) -> int:
-    lo, hi = VELOCITY_RANGES[bucket]
-    return rng.randint(lo, hi)
+def _velocity_for(
+    bucket: str, rng: random.Random, velocity_ranges=VELOCITY_RANGES,
+) -> int:
+    lo, hi = velocity_ranges[bucket]
+    return rng.randint(int(lo), int(hi))
 
 
-def _jitter_s(bucket: str, rng: random.Random) -> float:
-    lo, hi = TIMING_JITTER_MS[bucket]
+def _jitter_s(
+    bucket: str, rng: random.Random, timing_jitter_ms=TIMING_JITTER_MS,
+) -> float:
+    lo, hi = timing_jitter_ms[bucket]
     sign = rng.choice((-1, 1))
     return sign * rng.uniform(lo, hi) / 1000.0
 
@@ -271,6 +277,8 @@ def _groove_bar_notes(
     impacto: int,
     instabilidade: int,
     rng: random.Random,
+    velocity_ranges=VELOCITY_RANGES,
+    timing_jitter_ms=TIMING_JITTER_MS,
 ) -> list[RhythmicNote]:
     budget = _HitBudget()
     notes: list[RhythmicNote] = []
@@ -278,14 +286,16 @@ def _groove_bar_notes(
     hat_pitch = _hat_or_ride_pitch(impacto)
     hat_bucket = _hat_or_ride_velocity_bucket(impacto)
     for step in _hat_steps(bucket):
-        onset = bar_start + step * step_dur_s + _jitter_s("normal", rng)
+        onset = bar_start + step * step_dur_s + _jitter_s(
+            "normal", rng, timing_jitter_ms=timing_jitter_ms,
+        )
         note = _emit_hit(
             budget=budget,
             bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=hat_pitch,
             onset_s=onset,
-            velocity=_velocity_for(hat_bucket, rng),
+            velocity=_velocity_for(hat_bucket, rng, velocity_ranges=velocity_ranges),
             accent_boost=DRUMS_DOWNBEAT_ACCENT_BOOST if step in DRUMS_DOWNBEAT_STEPS else 0,
         )
         if note is not None:
@@ -296,7 +306,9 @@ def _groove_bar_notes(
         kick_steps.add(DRUMS_SYNCOPATION_STEP)
     for step in sorted(kick_steps):
         jitter_bucket = "anchor" if step in (0, 8) else "normal"
-        onset = bar_start + step * step_dur_s + _jitter_s(jitter_bucket, rng)
+        onset = bar_start + step * step_dur_s + _jitter_s(
+            jitter_bucket, rng, timing_jitter_ms=timing_jitter_ms,
+        )
         # Step 0 e literalmente o downbeat do bar (validador de
         # artificialidade mede acento contra essa posicao) — recebe o
         # bucket mais forte E um reforco fixo, para a hierarquia ritmica
@@ -309,34 +321,40 @@ def _groove_bar_notes(
             step_ordinal=step_ordinal_base + step,
             pitch=GM_KICK,
             onset_s=onset,
-            velocity=_velocity_for(kick_bucket, rng),
+            velocity=_velocity_for(kick_bucket, rng, velocity_ranges=velocity_ranges),
             accent_boost=DRUMS_DOWNBEAT_ACCENT_BOOST if step in DRUMS_DOWNBEAT_STEPS else 0,
         )
         if note is not None:
             notes.append(note)
 
     for step in DRUMS_SNARE_STEPS:
-        onset = bar_start + step * step_dur_s + _jitter_s("anchor", rng)
+        onset = bar_start + step * step_dur_s + _jitter_s(
+            "anchor", rng, timing_jitter_ms=timing_jitter_ms,
+        )
         note = _emit_hit(
             budget=budget,
             bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=GM_SNARE,
             onset_s=onset,
-            velocity=_velocity_for(DRUMS_SNARE_VELOCITY_BUCKET, rng),
+            velocity=_velocity_for(
+                DRUMS_SNARE_VELOCITY_BUCKET, rng, velocity_ranges=velocity_ranges,
+            ),
         )
         if note is not None:
             notes.append(note)
 
     if bar_pos == 0:
-        onset = bar_start + _jitter_s("anchor", rng)
+        onset = bar_start + _jitter_s("anchor", rng, timing_jitter_ms=timing_jitter_ms)
         note = _emit_hit(
             budget=budget,
             bar_start=bar_start,
             step_ordinal=step_ordinal_base,
             pitch=GM_CRASH,
             onset_s=onset,
-            velocity=_velocity_for(DRUMS_CRASH_VELOCITY_BUCKET, rng),
+            velocity=_velocity_for(
+                DRUMS_CRASH_VELOCITY_BUCKET, rng, velocity_ranges=velocity_ranges,
+            ),
             duration_s=DRUMS_HIT_DURATION_S * 3,
         )
         if note is not None:
@@ -353,6 +371,8 @@ def _fill_bar_notes(
     bucket: str,
     impacto: int,
     rng: random.Random,
+    velocity_ranges=VELOCITY_RANGES,
+    timing_jitter_ms=TIMING_JITTER_MS,
 ) -> list[RhythmicNote]:
     """Virada de toms na segunda metade do bar — linear drumming (uma peca
     por tick, nunca duas), preservando a hierarquia (bucket alto = mais
@@ -362,26 +382,34 @@ def _fill_bar_notes(
 
     hat_pitch = _hat_or_ride_pitch(impacto)
     for step in range(0, 8, 2):
-        onset = bar_start + step * step_dur_s + _jitter_s("normal", rng)
+        onset = bar_start + step * step_dur_s + _jitter_s(
+            "normal", rng, timing_jitter_ms=timing_jitter_ms,
+        )
         note = _emit_hit(
             budget=budget,
             bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=hat_pitch,
             onset_s=onset,
-            velocity=_velocity_for(DRUMS_HAT_VELOCITY_BUCKET, rng),
+            velocity=_velocity_for(
+                DRUMS_HAT_VELOCITY_BUCKET, rng, velocity_ranges=velocity_ranges,
+            ),
         )
         if note is not None:
             notes.append(note)
     for step in (0, 8):
-        onset = bar_start + step * step_dur_s + _jitter_s("anchor", rng)
+        onset = bar_start + step * step_dur_s + _jitter_s(
+            "anchor", rng, timing_jitter_ms=timing_jitter_ms,
+        )
         note = _emit_hit(
             budget=budget,
             bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=GM_KICK,
             onset_s=onset,
-            velocity=_velocity_for(DRUMS_KICK_VELOCITY_BUCKET, rng),
+            velocity=_velocity_for(
+                DRUMS_KICK_VELOCITY_BUCKET, rng, velocity_ranges=velocity_ranges,
+            ),
         )
         if note is not None:
             notes.append(note)
@@ -389,14 +417,18 @@ def _fill_bar_notes(
     fill_steps = DRUMS_FILL_TOM_STEPS if bucket != "low" else DRUMS_FILL_TOM_STEPS[::2]
     fill_pitches = DRUMS_FILL_TOMS if bucket != "low" else DRUMS_FILL_TOMS[::2]
     for step, pitch in zip(fill_steps, fill_pitches, strict=True):
-        onset = bar_start + step * step_dur_s + _jitter_s("fill", rng)
+        onset = bar_start + step * step_dur_s + _jitter_s(
+            "fill", rng, timing_jitter_ms=timing_jitter_ms,
+        )
         note = _emit_hit(
             budget=budget,
             bar_start=bar_start,
             step_ordinal=step_ordinal_base + step,
             pitch=pitch,
             onset_s=onset,
-            velocity=_velocity_for(DRUMS_TOM_VELOCITY_BUCKET, rng),
+            velocity=_velocity_for(
+                DRUMS_TOM_VELOCITY_BUCKET, rng, velocity_ranges=velocity_ranges,
+            ),
         )
         if note is not None:
             notes.append(note)
@@ -413,6 +445,7 @@ def generate_drums(
     articulation: str = "tight",
     dynamics: dict | None = None,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Gera a levada de bateria de uma secao, do zero.
 
@@ -434,15 +467,20 @@ def generate_drums(
         nao afeta a duracao (bateria usa duracao fixa curta).
       dynamics: nao consumido nesta rodada (reservado).
       seed: seed deterministica.
+      profile: `StyleProfile` opcional — sobrepoe as faixas de velocity e
+        timing jitter lidas de `tools/constants.py`. Sem `profile`, usa
+        `StyleProfile.default()` (chamador antigo continua byte-identico).
 
     Raises:
       ValueError: layers < 1 ou role != 'drums'.
     """
+    assert_traceable_seed(seed, source="palette.drums.generate_drums")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if role not in DRUMS_ROLES:
         raise ValueError(f"role must be one of {list(DRUMS_ROLES)}; got {role!r}")
 
+    resolved_profile = profile or StyleProfile.default()
     bars = _bars_in_section(section, analysis)
     if not bars:
         return _empty_rhythmic_layers(layers)
@@ -473,6 +511,8 @@ def generate_drums(
                     bucket=bucket,
                     impacto=impacto,
                     rng=layer_rng,
+                    velocity_ranges=resolved_profile.velocity_ranges,
+                    timing_jitter_ms=resolved_profile.timing_jitter_ms,
                 ))
             else:
                 notes.extend(_groove_bar_notes(
@@ -484,6 +524,8 @@ def generate_drums(
                     impacto=impacto,
                     instabilidade=instabilidade,
                     rng=layer_rng,
+                    velocity_ranges=resolved_profile.velocity_ranges,
+                    timing_jitter_ms=resolved_profile.timing_jitter_ms,
                 ))
         notes.sort(key=lambda n: (n.start_s, n.pitch))
         result.append(RhythmicLayer(index=layer_idx, notes=tuple(notes)))

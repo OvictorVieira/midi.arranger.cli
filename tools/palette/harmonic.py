@@ -31,6 +31,8 @@ from ..analyze import Analysis, BarAnalysis, Chord
 from ..constants import GATE_RATIOS, REGISTER_BANDS, VELOCITY_RANGES
 from ..humanize import DurationEngine, DurationRequest
 from ..plan import ArrangementPlan, PlanSection
+from ..rng import assert_traceable_seed
+from ..style_profile import StyleProfile
 from ..voicing import (
     C2_PITCH,
     STRINGS_GHOST_MAX_ABS_VELOCITY,
@@ -87,9 +89,9 @@ class PadLayer:
 
 # --- helpers de voicing -----------------------------------------------------
 
-def _pad_base_velocity() -> int:
-    lo, hi = VELOCITY_RANGES[PAD_BASE_VELOCITY_BUCKET]
-    return (lo + hi) // 2
+def _pad_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
+    lo, hi = velocity_ranges[PAD_BASE_VELOCITY_BUCKET]
+    return int(lo + hi) // 2
 
 
 def _chord_degrees(chord: Chord) -> list[int]:
@@ -167,6 +169,7 @@ def _velocity_for_bar(
     dynamics: dict,
     section_kind: str,
     base: int,
+    fade_in_floor: int = FADE_IN_FLOOR,
 ) -> int:
     """Velocity do pad para uma nota comecando na barra bar_index_in_section
     (0-based dentro da secao).
@@ -187,7 +190,7 @@ def _velocity_for_bar(
     if fade_bars > 0 and bar_index_in_section < fade_bars:
         # Ramp linear: bar 0 -> 1/N do caminho, bar N-1 -> N/N (base).
         frac = (bar_index_in_section + 1) / fade_bars
-        v = round(FADE_IN_FLOOR + (base - FADE_IN_FLOOR) * frac)
+        v = round(fade_in_floor + (base - fade_in_floor) * frac)
 
     if shape == "open_at_chorus" and section_kind == CHORUS_KIND:
         v += OPEN_AT_CHORUS_BONUS
@@ -205,6 +208,7 @@ def generate_pad(
     layers: int = 1,
     dynamics: dict | None = None,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[PadLayer]:
     """Gera as camadas de pad para uma secao.
 
@@ -224,10 +228,15 @@ def generate_pad(
       dynamics: dict opcional com 'entry' e 'shape'. Vazio equivale a
         {'shape': 'hold'}.
       seed: seed do RNG para reprodutibilidade do stagger entre camadas.
+      profile: `StyleProfile` opcional — sobrepoe a faixa de velocity base
+        (bucket `tied_soft`) e o piso de fade-in (bucket `ghost`) lidos de
+        `tools/constants.py`. Sem `profile`, usa `StyleProfile.default()`
+        (chamador antigo continua byte-identico).
 
     Raises:
       ValueError: se layers < 1.
     """
+    assert_traceable_seed(seed, source="palette.harmonic.generate_pad")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
 
@@ -238,7 +247,9 @@ def generate_pad(
     if not bars:
         return [PadLayer(index=i, notes=()) for i in range(layers)]
 
-    base = _pad_base_velocity()
+    resolved_profile = profile or StyleProfile.default()
+    base = _pad_base_velocity(resolved_profile.velocity_ranges)
+    fade_in_floor = resolved_profile.velocity_ranges["ghost"][0]
 
     # Pre-calcula o offset (segundos) de cada camada. Camada 0 no onset;
     # cada camada seguinte acumula um sorteio na faixa PAD_LAYER_ONSET_STAGGER_MS.
@@ -254,7 +265,7 @@ def generate_pad(
         for bar_pos, bar in enumerate(bars):
             if bar.chord is None:
                 continue
-            v = _velocity_for_bar(bar_pos, dyn, section.kind, base)
+            v = _velocity_for_bar(bar_pos, dyn, section.kind, base, fade_in_floor)
             pitches = _voice_pad_chord(bar.chord, register)
             start_s = bar.start + stagger_s
             end_s = bar.end
@@ -368,9 +379,9 @@ class KeyboardLayer:
     pedal_events: tuple[KeyboardPedal, ...] = ()
 
 
-def _keyboard_base_velocity() -> int:
-    lo, hi = VELOCITY_RANGES[KEYBOARD_BASE_VELOCITY_BUCKET]
-    return (lo + hi) // 2
+def _keyboard_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
+    lo, hi = velocity_ranges[KEYBOARD_BASE_VELOCITY_BUCKET]
+    return int(lo + hi) // 2
 
 
 def _keyboard_gate(articulation: str) -> float:
@@ -552,6 +563,7 @@ def generate_keyboard(
     dynamics: dict | None = None,
     use_sustain_cc64: bool = False,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[KeyboardLayer]:
     """Gera camadas de teclado (piano ou Rhodes) para uma secao.
 
@@ -575,10 +587,15 @@ def generate_keyboard(
         CC64 0 apos a ultima nota. Default False — spec 'usa CC64 uma
         unica vez, nao e default'.
       seed: seed determinstica.
+      profile: `StyleProfile` opcional — sobrepoe a faixa de velocity base
+        e `gate_ratios` (via `DurationEngine`) lidos de `tools/constants.py`.
+        Sem `profile`, usa `StyleProfile.default()` (chamador antigo
+        continua byte-identico).
 
     Raises:
       ValueError: se layers < 1 ou role fora de KEYBOARD_ROLES.
     """
+    assert_traceable_seed(seed, source="palette.harmonic.generate_keyboard")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if role not in KEYBOARD_ROLES:
@@ -594,7 +611,8 @@ def generate_keyboard(
             for i in range(layers)
         ]
 
-    base = _keyboard_base_velocity()
+    resolved_profile = profile or StyleProfile.default()
+    base = _keyboard_base_velocity(resolved_profile.velocity_ranges)
     # Articulacao normalizada — motor de duracao usa GATE_RATIOS diretamente e
     # exige articulacao do vocabulario (`let_ring` etc caem para tight, igual
     # a `_keyboard_gate`).
@@ -617,7 +635,9 @@ def generate_keyboard(
         # Motor de duracao independente por camada; sem isso o `note_dur`
         # ficaria constante e `_check_duration_uniform` certificaria a track
         # como duracao chapada.
-        dur_engine = DurationEngine(seed=seed + layer_idx * 1_000_009)
+        dur_engine = DurationEngine(
+            seed=seed + layer_idx * 1_000_009, profile=resolved_profile,
+        )
 
         # Passo 1: por bar, resolve onset base do acorde e pitches.
         bar_chords: list[tuple[float, list[int], int] | None] = []
@@ -652,7 +672,10 @@ def generate_keyboard(
             boundary = next_onset if next_onset is not None else bars[-1].end
             # window > 0 por construcao: onset < bar.end <= boundary (proximo
             # bar comeca em bar.end, e o guard de linha 562 assegura o resto).
-            v_bar = _velocity_for_bar(bar_pos, dyn, section.kind, base)
+            v_bar = _velocity_for_bar(
+                bar_pos, dyn, section.kind, base,
+                resolved_profile.velocity_ranges["ghost"][0],
+            )
             voiced = engine.voice(VoicingRequest(pitches=tuple(pitches), role=role))
             for vn in voiced:
                 note_onset = chord_onset + vn.onset_offset_ms / 1000.0
@@ -773,17 +796,17 @@ class StringsVoice:
     expression_events: tuple[StringsExpressionEvent, ...] = ()
 
 
-def _strings_base_velocity() -> int:
-    lo, hi = VELOCITY_RANGES[STRINGS_BASE_VELOCITY_BUCKET]
-    return (lo + hi) // 2
+def _strings_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
+    lo, hi = velocity_ranges[STRINGS_BASE_VELOCITY_BUCKET]
+    return int(lo + hi) // 2
 
 
-def _strings_ghost_velocity() -> int:
+def _strings_ghost_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
     """Velocity ghost para vozes internas. STRINGS_GHOST_MAX_ABS_VELOCITY
     (=39) e o piso do 'ghost <40'; usamos meio do bucket ghost mas trava
     em <40 para respeitar o AC literal."""
-    lo, _hi = VELOCITY_RANGES["ghost"]
-    return min(STRINGS_GHOST_MAX_ABS_VELOCITY, (lo + STRINGS_GHOST_MAX_ABS_VELOCITY) // 2)
+    lo, _hi = velocity_ranges["ghost"]
+    return min(STRINGS_GHOST_MAX_ABS_VELOCITY, (int(lo) + STRINGS_GHOST_MAX_ABS_VELOCITY) // 2)
 
 
 def _pitch_class_within(pc: int, lo: int, hi: int) -> int:
@@ -964,6 +987,7 @@ def generate_strings(
     tutti: bool = False,
     ghost_ratio: float = STRINGS_GHOST_RATIO,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[StringsVoice]:
     """Gera vozes de strings ou choir para uma secao.
 
@@ -984,10 +1008,15 @@ def generate_strings(
       ghost_ratio: fracao das NOTAS totais que recebem velocity ghost.
         Aplicado apenas as vozes internas — extremos nunca sao ghost.
       seed: seed determinstica.
+      profile: `StyleProfile` opcional — sobrepoe as faixas de velocity
+        (buckets `mid`/`ghost`) e `gate_ratios[articulation]` lidas de
+        `tools/constants.py`. Sem `profile`, usa `StyleProfile.default()`
+        (chamador antigo continua byte-identico).
 
     Raises:
       ValueError: voices < 1 ou role fora de STRINGS_ROLES.
     """
+    assert_traceable_seed(seed, source="palette.harmonic.generate_strings")
     if voices < 1:
         raise ValueError(f"voices must be >= 1; got {voices}")
     if role not in STRINGS_ROLES:
@@ -1005,9 +1034,12 @@ def generate_strings(
             for i in range(voices)
         ]
 
-    base = _strings_base_velocity()
-    ghost_vel = _strings_ghost_velocity()
-    gate_ratios = GATE_RATIOS.get(articulation, GATE_RATIOS["sustained"])
+    resolved_profile = profile or StyleProfile.default()
+    base = _strings_base_velocity(resolved_profile.velocity_ranges)
+    ghost_vel = _strings_ghost_velocity(resolved_profile.velocity_ranges)
+    gate_ratios = resolved_profile.gate_ratios.get(
+        articulation, resolved_profile.gate_ratios["sustained"],
+    )
     gate = (gate_ratios[0] + gate_ratios[1]) / 2.0
 
     # Attack offset por voz — acumulado, para diferenciar entrada de cada voz.
@@ -1071,7 +1103,10 @@ def generate_strings(
                 boundary = bars[j].start
                 break
         note_dur = (boundary - bar.start) * gate
-        v_bar = _velocity_for_bar(bar_pos, dyn, section.kind, base)
+        v_bar = _velocity_for_bar(
+            bar_pos, dyn, section.kind, base,
+            resolved_profile.velocity_ranges["ghost"][0],
+        )
         chug_active = chug_map[bar_pos]
         for vi in range(voices):
             pitch = pitches[vi]
@@ -1264,9 +1299,9 @@ def validate_drone_register(register: tuple[int, int]) -> None:
         )
 
 
-def _drone_base_velocity() -> int:
-    lo, hi = VELOCITY_RANGES[DRONE_BASE_VELOCITY_BUCKET]
-    return (lo + hi) // 2
+def _drone_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
+    lo, hi = velocity_ranges[DRONE_BASE_VELOCITY_BUCKET]
+    return int(lo + hi) // 2
 
 
 def _drone_pitch(key_root: int, register: tuple[int, int], pitch_choice: str) -> int:
@@ -1341,6 +1376,7 @@ def generate_drone(
     filter_cycle_bars: int = DRONE_DEFAULT_FILTER_CYCLE_BARS,
     modulation_bars: int = DRONE_DEFAULT_MODULATION_BARS,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[DroneLayer]:
     """Gera camadas de drone / nota-pedal para uma secao.
 
@@ -1365,6 +1401,10 @@ def generate_drone(
       modulation_bars: ciclo de CC11 em bars. Precisa ser >=
         DRONE_MODULATION_MIN_BARS = 16.
       seed: seed determinstica.
+      profile: `StyleProfile` opcional — sobrepoe a faixa de velocity base
+        (bucket `tied_soft`) lida de `tools/constants.py`. Sem `profile`,
+        usa `StyleProfile.default()` (chamador antigo continua
+        byte-identico).
 
     Raises:
       ValueError: layers < 1, pedal_pitch fora de {tonic, fifth},
@@ -1372,6 +1412,7 @@ def generate_drone(
         modulation_bars < DRONE_MODULATION_MIN_BARS, ou register cruza
         mais de uma banda (via `validate_drone_register`).
     """
+    assert_traceable_seed(seed, source="palette.harmonic.generate_drone")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if pedal_pitch not in ("tonic", "fifth"):
@@ -1396,8 +1437,9 @@ def generate_drone(
         ]
 
     rng = random.Random(seed)
+    resolved_profile = profile or StyleProfile.default()
     pitch = _drone_pitch(analysis.key_root, register, pedal_pitch)
-    velocity = _drone_base_velocity()
+    velocity = _drone_base_velocity(resolved_profile.velocity_ranges)
     start_s = bars[0].start
     end_s = bars[-1].end
     bar_dur_s = bars[0].end - bars[0].start
