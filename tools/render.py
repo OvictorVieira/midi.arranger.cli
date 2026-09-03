@@ -431,6 +431,147 @@ def _section_by_label(plan: ArrangementPlan, label: str) -> PlanSection | None:
     return None
 
 
+def _section_energy_windows(
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+) -> tuple[dict[str, Any], ...]:
+    """Converte `plan.sections[].energy` em janelas de tick (issue #45).
+
+    `plan.validate()` ja garante `energy` presente em toda secao (5 eixos,
+    0-10) — este helper so traduz `start_bar`/`end_bar` para ticks (mesmo
+    caminho de `bars_in_section`, reusado pelos tres geradores eletronicos e
+    aqui) e extrai o eixo `densidade`. E o unico consumidor de
+    `plan.sections[].energy` no motor de tecnicas: `drums.ghost_notes` le o
+    resultado via `context.parameters["sections"]`, canal separado de
+    `style.<familia>.parameters` (mesmo padrao ja usado por `tuning`) —
+    nunca passa pelo schema fechado a numero/par de `tools/style_schema.py`.
+    Secao sem bar nenhum coberto por `analysis.bars` (janela vazia) fica de
+    fora: o aplicador cai no default declarado quando nenhuma janela cobre
+    um tick.
+    """
+    windows: list[dict[str, Any]] = []
+    for section in plan.sections:
+        if section.energy is None:
+            continue
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        start_tick = int(round(pm.time_to_tick(bars[0].start)))
+        end_tick = int(round(pm.time_to_tick(bars[-1].end)))
+        if end_tick <= start_tick:
+            continue
+        windows.append({
+            "start_tick": start_tick,
+            "end_tick": end_tick,
+            "kind": section.kind,
+            "densidade": section.energy["densidade"],
+        })
+    return tuple(windows)
+
+
+def _analysis_bar_windows(
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+) -> tuple[dict[str, Any], ...]:
+    """Fronteiras REAIS de compasso (`analysis.bars`, o mapa de downbeat que
+    `analyze` ja extraiu do MIDI e que respeita troca de compasso) — canal
+    separado de `_section_energy_windows`, que so cobre os trechos com
+    `plan.sections[].energy` declarada.
+
+    Existe para consertar `drums.ghost_notes`: antes desta funcao, o motor de
+    tecnicas assumia `ticks_per_beat * 4` como tamanho de compasso pra
+    agrupar candidatos em cotas por compasso e pra escolher qual janela de
+    secao aplicar a cada compasso — suposicao de 4/4 constante que quebra em
+    3/4, 5/4 ou troca de compasso no meio da musica (bucket pode atravessar
+    um compasso real ou partir um em dois). `analysis.bars` ja e a mesma
+    fonte usada por `_section_energy_windows`/`bars_in_section`; aqui so
+    convertemos TODOS os bars (nao so os cobertos por secao) pra tick, para
+    o motor agrupar por compasso real em vez de reinventar o grid."""
+    windows: list[dict[str, Any]] = []
+    for bar in analysis.bars:
+        start_tick = int(round(pm.time_to_tick(bar.start)))
+        end_tick = int(round(pm.time_to_tick(bar.end)))
+        if end_tick <= start_tick:
+            continue
+        windows.append({
+            "start_tick": start_tick,
+            "end_tick": end_tick,
+            "index": bar.index,
+        })
+    return tuple(windows)
+
+
+def _section_windows_cover_range(
+    windows: tuple[dict[str, Any], ...],
+    total_ticks: int,
+) -> bool:
+    """`True` quando `windows` cobre `[0, total_ticks)` sem buraco.
+
+    `plan.validate()` permite `plan.sections[]` fora de ordem cronologica —
+    ordem de LISTA nao e ordem de TICK. Checar so o primeiro/ultimo item da
+    lista (ordem de declaracao) tanto falso-positiva em secoes fora de ordem
+    que cobrem o intervalo inteiro quanto deixa passar em silencio um buraco
+    NO MEIO (duas janelas nao-adjacentes com uma lacuna entre elas). Por
+    isso: ordena por `start_tick` primeiro, depois anda pelos pares
+    adjacentes procurando lacuna (proximo comeca depois do atual terminar)
+    e so então confere a ponta inicial/final pela ordem de TICK."""
+    if not windows:
+        return False
+    ordered = sorted(windows, key=lambda w: w["start_tick"])
+    if ordered[0]["start_tick"] > 0:
+        return False
+    # Merge por varredura: `covered_until` e o fim do trecho contiguo ja
+    # coberto ate aqui (nao so o fim da janela anterior por ordem de
+    # `start_tick`) — janela que comeca depois de `covered_until` e um
+    # buraco real; janela sobreposta/aninhada so estende `covered_until`.
+    covered_until = ordered[0]["end_tick"]
+    for window in ordered[1:]:
+        if window["start_tick"] > covered_until:
+            return False
+        covered_until = max(covered_until, window["end_tick"])
+    return covered_until >= total_ticks
+
+
+def _drums_ghost_notes_authorized(plan: ArrangementPlan) -> bool:
+    """`True` quando `plan.style.drums.techniques` declara `ghost_notes`.
+
+    So usado para decidir se vale a pena checar cobertura de secao e emitir
+    o aviso de default (issue #45) — plano que nunca vai rodar a tecnica nao
+    precisa do aviso."""
+    if not plan.style:
+        return False
+    drums_style = plan.style.get("drums")
+    if drums_style is None:
+        return False
+    return any(
+        t.name in ("ghost_notes", "drums.ghost_notes") for t in drums_style.techniques
+    )
+
+
+def _drums_ghost_notes_has_explicit_density(plan: ArrangementPlan) -> bool:
+    """`True` quando a entrada `drums.ghost_notes` de
+    `plan.style.drums.techniques[]` declara `density` explicito.
+
+    Achado do Codex no PR #107: `bar_fraction` em
+    `_apply_drums_ghost_notes` consulta `context.parameters["density"]`
+    (que vem de `StyleTechnique.density`) ANTES de qualquer janela de
+    secao — com override explicito, o caminho de default por secao
+    (`densidade=5/10`) nunca e alcancado, entao o aviso de cobertura de
+    secao seria falso nesse caso. So chamada depois que
+    `_drums_ghost_notes_authorized` ja confirmou que a tecnica esta
+    declarada, entao aqui so falta achar a entrada e checar `density`."""
+    if not plan.style:
+        return False
+    drums_style = plan.style.get("drums")
+    if drums_style is None:
+        return False
+    return any(
+        t.name in ("ghost_notes", "drums.ghost_notes") and t.density is not None
+        for t in drums_style.techniques
+    )
+
+
 def _element_seed(plan_seed: int, element_id: str, section_label: str) -> int:
     """Seed determinstica por (plano, elemento, secao). Evita correlacao
     de stagger entre secoes de um mesmo elemento e entre elementos que
@@ -721,10 +862,39 @@ def _style_technique_parameters(
     density: float | None,
     style: str | None = None,
     tuning: tuple[int, ...] | None = None,
+    sections: tuple[dict[str, Any], ...] | None = None,
+    bars: tuple[dict[str, Any], ...] | None = None,
+    drum_bar_quota: dict[str, dict[int, int]] | None = None,
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = dict(style_parameters)
     if density is not None:
         parameters["density"] = float(density)
+    if sections:
+        # Mesmo canal separado de `tuning` logo abaixo: janelas de tick de
+        # `plan.sections[].energy` (issue #45), consumidas hoje so por
+        # `drums.ghost_notes`. Nunca vem de `style.parameters` (schema
+        # fechado a numero/par).
+        parameters["sections"] = sections
+    if bars:
+        # Fronteiras REAIS de compasso (`analysis.bars`) — canal irmao de
+        # `sections`, tambem so consumido por `drums.ghost_notes` hoje.
+        # Existe pra parar de assumir `ticks_per_beat*4` como tamanho de
+        # compasso (so vale em 4/4 constante).
+        parameters["bars"] = bars
+    if drum_bar_quota is not None:
+        # Cota por compasso COMPARTILHADA entre TODOS os despachos de
+        # tecnica de bateria de UMA chamada de `render()` — achado do Codex
+        # no PR #107 (issue #45, segunda rodada): `_apply_drums_ghost_notes`
+        # ja compartilha `bar_counts`/`bar_targets` entre tracks fisicas
+        # DENTRO de uma so chamada (fix anterior), mas cada chamada de
+        # `_run_style_pipeline` (uma por `plan.edits[]` com profile=drums, e
+        # uma por elemento de bateria gerado) criava seu proprio dict local
+        # do zero — duas edits ou uma edit + um elemento gerado, ambos
+        # caindo no mesmo compasso, podiam somar o dobro (ou mais) do teto
+        # anunciado no arquivo final. `render()` cria UM dict por chamada
+        # (nunca global/modulo) e repassa aqui — mesmo canal separado de
+        # `sections`/`bars`, so restrito a familia `drums`.
+        parameters["drum_bar_quota"] = drum_bar_quota
     if style is not None:
         # `style` (dedo/palheta/slap) e a UNICA excecao numerica-only de
         # `style.parameters` — vem do vocabulario fechado de
@@ -799,6 +969,9 @@ def _run_style_pipeline(
     index: TechniqueIndex,
     edit_track: str | None = None,
     tuning: tuple[int, ...] | None = None,
+    section_windows: tuple[dict[str, Any], ...] | None = None,
+    bar_windows: tuple[dict[str, Any], ...] | None = None,
+    drum_bar_quota: dict[str, dict[int, int]] | None = None,
 ) -> tuple[mido.MidiFile, list[str], tuple[str, ...]]:
     """Roda cada tecnica de `style.<family>` sobre `current` em sequencia.
 
@@ -825,6 +998,15 @@ def _run_style_pipeline(
     warnings: list[str] = []
     applied_names: list[str] = []
     warning_prefix = f"edit {edit_track!r}: " if edit_track is not None else ""
+    # `sections`/`bars` so interessam a tecnicas de bateria (hoje, so
+    # `drums.ghost_notes` le `context.parameters["sections"]`/`["bars"]`);
+    # nas demais familias ficam de fora do dict de parametros pra nao poluir
+    # o contexto de tecnicas que nunca vao olhar pra isso.
+    family_section_windows = section_windows if family == "drums" else None
+    family_bar_windows = bar_windows if family == "drums" else None
+    # Mesma restricao de familia de `sections`/`bars` acima: a cota
+    # compartilhada so importa a `drums.ghost_notes` hoje.
+    family_drum_bar_quota = drum_bar_quota if family == "drums" else None
     # Cacheia a serializacao pra nao rodar `_midi_bytes` duas vezes por
     # despacho (uma vez como "before" da tecnica seguinte, outra como
     # "after" da tecnica anterior) — `current` so muda dentro deste loop.
@@ -846,6 +1028,9 @@ def _run_style_pipeline(
                     technique.density,
                     technique.style,
                     tuning,
+                    family_section_windows,
+                    family_bar_windows,
+                    family_drum_bar_quota,
                 ),
                 tool=tool_target,
                 index=index,
@@ -882,6 +1067,9 @@ def _apply_style_techniques_to_tracks(
     midi_type: int,
     index: TechniqueIndex | None,
     tuning_by_family: dict[str, tuple[int, ...]] | None = None,
+    section_windows: tuple[dict[str, Any], ...] | None = None,
+    bar_windows: tuple[dict[str, Any], ...] | None = None,
+    drum_bar_quota: dict[str, dict[int, int]] | None = None,
 ) -> tuple[list[mido.MidiTrack], list[str], bool, tuple[str, ...]]:
     """Aplica tecnicas de `style.<family>` sobre tracks recem-renderizadas.
 
@@ -914,8 +1102,82 @@ def _apply_style_techniques_to_tracks(
         tool_target=tool_target,
         index=index,
         tuning=(tuning_by_family or {}).get(family),
+        section_windows=section_windows,
+        bar_windows=bar_windows,
+        drum_bar_quota=drum_bar_quota,
     )
     return list(current.tracks), warnings, True, applied_names
+
+
+def _track_name_index(tracks: Iterable[mido.MidiTrack]) -> dict[str, list[int]]:
+    """`track_name` -> lista de indices fisicos com esse nome, na ORDEM em
+    que aparecem em `tracks`. Compartilhado entre `_apply_style_techniques_to_edit_tracks`
+    e `_edit_drum_target_tracks` (aviso de cobertura de secao, achado do
+    Codex no PR #107) para nao duplicar a mesma varredura."""
+    name_to_indices: dict[str, list[int]] = {}
+    for idx, tr in enumerate(tracks):
+        name = track_name(tr)
+        if name:
+            name_to_indices.setdefault(name, []).append(idx)
+    return name_to_indices
+
+
+def _edit_drum_target_tracks(
+    out_mid: mido.MidiFile,
+    plan: ArrangementPlan,
+) -> list[mido.MidiTrack]:
+    """Tracks fisicas que `_apply_style_techniques_to_edit_tracks` de fato
+    despacharia para a familia `drums` — mesma resolucao `edit.track` ->
+    tracks fisicas por nome, sem repetir a familia/`style.techniques`
+    checagem la (aqui so interessa achar o ALVO, nao rodar a tecnica).
+    """
+    if not plan.edits:
+        return []
+    name_to_indices = _track_name_index(out_mid.tracks)
+    tracks: list[mido.MidiTrack] = []
+    for edit in plan.edits:
+        if _style_family_for_edit(edit.profile) != "drums":
+            continue
+        indices = name_to_indices.get(edit.track)
+        if not indices:
+            continue
+        tracks.extend(out_mid.tracks[i] for i in indices)
+    return tracks
+
+
+def _drum_channel9_note_on_ticks(tracks: Iterable[mido.MidiTrack]) -> list[int]:
+    """Ticks absolutos de todo `note_on` de velocity>0 no canal 9 (bateria,
+    GM) de `tracks` — usado pelo aviso de cobertura de secao de
+    `drums.ghost_notes` (achado do Codex no PR #107): a cobertura tem que
+    ser medida sobre as notas do ALVO DE FATO despachado, nunca sobre o
+    arquivo inteiro."""
+    ticks: list[int] = []
+    for track in tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if (
+                msg.type == "note_on"
+                and msg.velocity > 0
+                and getattr(msg, "channel", None) == 9
+            ):
+                ticks.append(tick)
+    return ticks
+
+
+def _drum_ticks_outside_section_windows(
+    windows: tuple[dict[str, Any], ...],
+    ticks: list[int],
+) -> bool:
+    """`True` quando algum tick de `ticks` nao cai em nenhuma janela de
+    `windows`. Checagem POR NOTA (nao por range/gap do arquivo inteiro):
+    um alvo pode ter seu range geral atravessando um buraco de secao sem
+    ter nota nenhuma DENTRO desse buraco — checar so o range falso-positiva
+    nesse caso (achado do Codex no PR #107)."""
+    return any(
+        not any(w["start_tick"] <= tick < w["end_tick"] for w in windows)
+        for tick in ticks
+    )
 
 
 def _apply_style_techniques_to_edit_tracks(
@@ -924,6 +1186,9 @@ def _apply_style_techniques_to_edit_tracks(
     plan: ArrangementPlan,
     index: TechniqueIndex | None,
     tuning_by_family: dict[str, tuple[int, ...]] | None = None,
+    section_windows: tuple[dict[str, Any], ...] | None = None,
+    bar_windows: tuple[dict[str, Any], ...] | None = None,
+    drum_bar_quota: dict[str, dict[int, int]] | None = None,
 ) -> tuple[list[str], dict[str, tuple[str, ...]]]:
     """Aplica `style.<family>` sobre as tracks da origem nomeadas em `plan.edits`.
 
@@ -946,11 +1211,7 @@ def _apply_style_techniques_to_edit_tracks(
     if not plan.edits or not plan.style:
         return [], {}
 
-    name_to_indices: dict[str, list[int]] = {}
-    for idx, tr in enumerate(out_mid.tracks):
-        name = track_name(tr)
-        if name:
-            name_to_indices.setdefault(name, []).append(idx)
+    name_to_indices = _track_name_index(out_mid.tracks)
 
     warnings: list[str] = []
     applied_by_track: dict[str, tuple[str, ...]] = {}
@@ -983,6 +1244,9 @@ def _apply_style_techniques_to_edit_tracks(
             index=index,
             edit_track=edit.track,
             tuning=(tuning_by_family or {}).get(family),
+            section_windows=section_windows,
+            bar_windows=bar_windows,
+            drum_bar_quota=drum_bar_quota,
         )
         warnings.extend(edit_warnings)
         applied_by_track[edit.track] = applied_names
@@ -2152,6 +2416,55 @@ def render(
     # `known=false` ou brief sem `instruments` devolvem dict vazio e o
     # motor de tecnicas cai no default fisico de `physical.py`, igual antes.
     tuning_by_family = load_brief_instrument_tuning(plan, plan_dir)
+    # Janelas de tick de `plan.sections[].energy` (issue #45) — canal
+    # separado de `style.parameters`, mesmo padrao de `tuning_by_family`
+    # acima. Unico consumidor hoje e `drums.ghost_notes`, mas o calculo e
+    # generico o bastante pra qualquer tecnica futura que precise de
+    # energia por secao.
+    section_windows = _section_energy_windows(plan, analysis, pm)
+    # Fronteiras REAIS de compasso (issue #45 finding do Codex no PR #107) —
+    # `analysis.bars` respeita a troca de compasso do MIDI de origem, ao
+    # contrario do bucket `ticks_per_beat*4` que o motor usava antes so pra
+    # 4/4. Mesmo canal de `context.parameters`, chave separada (`bars`).
+    bar_windows = _analysis_bar_windows(analysis, pm)
+    # `drums.ghost_notes` cai no default declarado (densidade=5/10,
+    # `tools/techniques/engine.py::_apply_drums_ghost_notes`) sempre que um
+    # tick de nota de bateria nao esta coberto por nenhuma janela de
+    # `plan.sections` — cauda antes da 1a secao, depois da ultima, OU
+    # BURACO NO MEIO entre duas secoes nao adjacentes. A suposicao so
+    # importa relatar quando a tecnica de fato foi autorizada nesta musica E
+    # o plano nao declara `density` explicito (`bar_fraction` consulta o
+    # override explicito ANTES de qualquer janela de secao, entao o default
+    # nunca e alcancado nesse caso — achado do Codex no PR #107, primeira
+    # rodada). Segunda rodada do Codex no PR #107: o aviso so pode olhar as
+    # notas dos ALVOS DE FATO despachados para a familia `drums`
+    # (`plan.edits` com `profile=drums` que casam track, mais elementos
+    # gerados que mapeiam pra familia `drums`) — nunca "o arquivo inteiro",
+    # que tanto dispara sem alvo nenhum de bateria quanto falso-positiva com
+    # uma track NAO-bateria (baixo, teclas) que se estende alem das secoes.
+    # `drum_target_ticks` acumula os ticks REAIS por familia enquanto o
+    # pipeline roda: a parte de `plan.edits` abaixo, a parte de elemento
+    # gerado dentro do loop logo a seguir.
+    ghost_notes_default_path = _drums_ghost_notes_authorized(
+        plan
+    ) and not _drums_ghost_notes_has_explicit_density(plan)
+    drum_target_ticks: list[int] = (
+        _drum_channel9_note_on_ticks(_edit_drum_target_tracks(out_mid, plan))
+        if ghost_notes_default_path
+        else []
+    )
+    # Cota por compasso COMPARTILHADA entre TODOS os despachos de tecnica de
+    # bateria de UMA chamada de `render()` — achado do Codex no PR #107
+    # (issue #45, segunda rodada): duas edits distintas de bateria, ou uma
+    # edit de bateria mais um elemento de bateria gerado, cada um caindo em
+    # `_run_style_pipeline` numa chamada SEPARADA, podiam somar mais que
+    # `max_per_bar` ghosts no mesmo compasso no arquivo final porque cada
+    # chamada recriava `bar_counts`/`bar_targets` do zero
+    # (`tools/techniques/engine.py::_apply_drums_ghost_notes`). Um dict por
+    # `render()` (nunca global/modulo — resetado a cada chamada, preserva
+    # determinismo entre renders separados) resolve isso; ver
+    # `_style_technique_parameters`.
+    drum_bar_quota: dict[str, dict[int, int]] = {}
     # Ordem: primeiro `apply_edits` (humanizacao por profile), depois o motor
     # de tecnicas nas mesmas tracks da origem. Assim as tecnicas de estilo
     # alcancam a bateria real do usuario — sem esse passo, `style.<familia>`
@@ -2160,6 +2473,9 @@ def render(
         _apply_style_techniques_to_edit_tracks(
             out_mid, plan=plan, index=style_index,
             tuning_by_family=tuning_by_family,
+            section_windows=section_windows,
+            bar_windows=bar_windows,
+            drum_bar_quota=drum_bar_quota,
         )
     )
     warnings.extend(edit_technique_warnings)
@@ -2185,6 +2501,14 @@ def render(
             midi_tracks, rendered = role_renderer.render(
                 e, plan, analysis, pm, role_renderer.channel,
             )
+            element_style_family = _style_family_for_role(e.role)
+            if ghost_notes_default_path and element_style_family == "drums":
+                # Notas do elemento gerado ANTES do despacho de tecnica —
+                # exatamente o que `drums.ghost_notes` vai receber como
+                # "notas ja existentes" nessa track.
+                drum_target_ticks.extend(
+                    _drum_channel9_note_on_ticks(midi_tracks)
+                )
             (
                 midi_tracks,
                 technique_warnings,
@@ -2193,12 +2517,15 @@ def render(
             ) = _apply_style_techniques_to_tracks(
                 midi_tracks,
                 plan=plan,
-                family=_style_family_for_role(e.role),
+                family=element_style_family,
                 tool_target=_tool_target_for_element(e),
                 ticks_per_beat=out_mid.ticks_per_beat,
                 midi_type=out_mid.type,
                 index=style_index,
                 tuning_by_family=tuning_by_family,
+                section_windows=section_windows,
+                bar_windows=bar_windows,
+                drum_bar_quota=drum_bar_quota,
             )
             warnings.extend(technique_warnings)
             _stamp_element_tracks(midi_tracks, e, techniques=element_techniques)
@@ -2223,6 +2550,16 @@ def render(
             report_entry.note = msg
             warnings.append(f"{e.id}: {msg}")
         element_reports.append(report_entry)
+
+    if drum_target_ticks and _drum_ticks_outside_section_windows(
+        section_windows, drum_target_ticks
+    ):
+        warnings.append(
+            "drums.ghost_notes: trecho do MIDI de origem fora de "
+            "plan.sections declaradas — densidade de ghost assumida no "
+            "default (densidade=5/10, sem multiplicador de kind) nesse "
+            "trecho"
+        )
 
     # Carimba as tracks de `plan.edits` com role, tecnicas aplicadas e
     # (quando declarada) sugestao de plugin/preset. Depois de `apply_edits` e

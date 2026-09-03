@@ -1096,7 +1096,6 @@ def _apply_drums_ghost_notes(
         overlaps_same_pitch,
         rebuild_track,
         recipe_from_context,
-        target_count,
         technique_from_manual,
     )
 
@@ -1156,9 +1155,155 @@ def _apply_drums_ghost_notes(
     # ghost no vazio — foi o que apareceu nos compassos 53-54 de DEIXE IR,
     # com a nota estrutural mais proxima a 18 tempos de distancia.
     max_groove_interval = ticks_per_beat * 4
+    # `ticks_per_bar` so serve de FALLBACK — suposicao de 4/4 usada apenas
+    # quando `context.parameters["bars"]` nao chega (chamada direta da
+    # tecnica fora do pipeline de `tools.render`, ex. testes unitarios do
+    # motor). Quando `bars` chega, o agrupamento por compasso usa as
+    # fronteiras REAIS de `analysis.bars` (achado do Codex no PR #107): em
+    # 3/4, 5/4 ou com troca de compasso no meio da musica, um bucket fixo de
+    # `ticks_per_beat*4` pode atravessar um compasso real (a cota do
+    # `max_per_bar` estoura) ou partir um compasso real em dois buckets (a
+    # densidade da secao errada e aplicada a metade dele). Nunca usada para
+    # a decisao de ONDE (regras de posicao mais abaixo, que continuam
+    # baseadas no intervalo de groove entre backbeats).
+    ticks_per_bar = max_groove_interval
     rng = context.rng("positions")
     velocity_rng = context.rng("velocity")
-    density = context.parameters.get("density")
+
+    # --- issue #45: densidade por secao, nunca por constante fixa ----------
+    # O manual (tecnicas_bateria_midi.md §2.3) declara a lacuna: "Densidade
+    # por genero: [NAO VERIFICADO — sem fonte; derive do perfil de estilo
+    # pesquisado]" — nenhum numero quantitativo de ghost/compasso e publicado
+    # em fonte nenhuma, entao este bloco nao inventa um. O que existe e o
+    # eixo `densidade` (0-10) de cada `plan.sections[].energy`
+    # (`tools/plan.py` ENERGY_AXES) — QUANTOS ghosts por compasso deriva
+    # DAI, nunca de um numero fixo aplicado igual em toda a musica. A regra
+    # de ONDE (backbeats, semicolcheias, `violates_position_rules` abaixo)
+    # continua intocada — sao decisoes separadas.
+    #
+    # O defeito medido na issue (86% dos compassos com ghost, mediana 4,
+    # maximo 9; chorus com MAIS ghost que verse) vinha de tratar a antiga
+    # `density` como fracao do total de candidatos do ARQUIVO INTEIRO: quase
+    # qualquer fracao > 0 saturava as regras de posicao (que ja limitam a no
+    # maximo 2 candidatos por intervalo entre backbeats), entao a musica
+    # inteira convergia para quase-maximo independente da secao.
+    #
+    # Mapeamento eixo -> cota por compasso, tudo CONVENCAO do motor (nao do
+    # manual, que nao declara numero nenhum aqui):
+    energy_axis_max = 10  # mesma escala 0-10 de tools.plan.ENERGY_MAX/MIN
+    default_section_densidade = 5  # meio da escala 0-10; usado so quando o
+    # tick do candidato cai fora de toda janela de secao declarada (cauda
+    # antes da 1a secao ou depois da ultima) ou quando nenhuma informacao de
+    # secao chegou ate aqui (chamada direta da tecnica, fora do pipeline de
+    # `tools.render`) — fecha a lacuna do manual sem inventar numero de
+    # genero.
+    max_per_bar = 3  # teto por compasso. O material da issue chegava a
+    # 9/compasso (atulhamento em qualquer leitura); o proprio manual
+    # recomenda "uma ghost isolada ou um par" por intervalo entre backbeats
+    # (§2.3, passo 5), e um compasso 4/4 tipico tem dois desses intervalos —
+    # um teto de 3 ja fica acima desse conselho e ainda evita o atulhamento
+    # medido.
+    kind_density_multiplier = {"chorus": 0.5, "breakdown": 0.5}
+    # Refrao quer peso/clareza — ghost e textura de groove estavel
+    # (verso/intro), nao coisa de topo de energia; breakdown do manual de
+    # secoes (`tools/sections.py`) segue o sentido de metal (parte pesada),
+    # mesma logica de "menos textura, mais peso". Fora dessas duas, cota
+    # cheia (multiplicador 1.0) — inclui verse, intro, pre, bridge,
+    # interlude, outro e a ausencia de `kind` conhecido.
+    default_kind_multiplier = 1.0
+
+    # `style.<familia>.techniques[].density` (0.0-1.0, `tools/plan.py`)
+    # continua aceita como OVERRIDE explicito e direto da fracao por
+    # compasso — mesmo contrato que as demais tecnicas deste motor ja
+    # davam a `density` (`density<=0.0` desliga por completo, escala
+    # monotonica). Quando o plano NAO declara `density`, a fracao passa a
+    # ser 100% derivada do eixo `densidade` da secao (o caminho default
+    # descrito abaixo) — e isso, no caminho sem override, que fecha o
+    # defeito da issue #45 (quantidade vinha de uma constante fixa por
+    # musica inteira, nunca da secao).
+    density_param = context.parameters.get("density")
+    explicit_density = density_param is not None
+    explicit_fraction = (
+        max(0.0, min(1.0, float(density_param))) if explicit_density else 0.0
+    )
+
+    # `sections` chega em `context.parameters` — nao em `style.parameters`
+    # (schema fechado a numero/par, `tools/style_schema.py`) — exatamente
+    # como `tuning` ja chega por um canal separado (ver
+    # `render._style_technique_parameters`): e o render que sabe converter
+    # `plan.sections[].energy` em janelas de tick, esta funcao so consome.
+    sections_param = context.parameters.get("sections")
+    windows = (
+        tuple(sections_param) if isinstance(sections_param, (list, tuple)) else ()
+    )
+
+    # Fronteiras REAIS de compasso (`analysis.bars`, o mesmo mapa de downbeat
+    # que `_section_energy_windows` ja usa) — canal irmao de `sections`,
+    # tambem via `context.parameters` (nunca `style.parameters`, schema
+    # fechado a numero/par). Corrige o achado do Codex no PR #107: agrupar
+    # candidatos por `ticks_per_beat*4` so vale em 4/4 constante.
+    bars_param = context.parameters.get("bars")
+    real_bars = (
+        tuple(bars_param) if isinstance(bars_param, (list, tuple)) else ()
+    )
+
+    def bar_start_for_tick(tick):
+        """Tick de inicio do compasso REAL que contem `tick`.
+
+        Usa `real_bars` (fronteiras vindas de `analysis.bars`) quando
+        disponivel — cobre qualquer compasso, mesmo com troca de compasso no
+        meio da musica. Cai no bucket `ticks_per_beat*4` (suposicao 4/4) so
+        quando nao ha `bars` no contexto (chamada direta do motor, fora do
+        pipeline de `tools.render`) ou quando o tick cai fora de toda janela
+        de `real_bars` (cauda antes do 1o/depois do ultimo bar analisado)."""
+        for bar in real_bars:
+            if not isinstance(bar, dict):
+                continue
+            start = bar.get("start_tick")
+            end = bar.get("end_tick")
+            if isinstance(start, int) and isinstance(end, int) and start <= tick < end:
+                return start
+        return (tick // ticks_per_bar) * ticks_per_bar
+
+    def section_for_tick(tick):
+        for window in windows:
+            if not isinstance(window, dict):
+                continue
+            start = window.get("start_tick")
+            end = window.get("end_tick")
+            if isinstance(start, int) and isinstance(end, int) and start <= tick < end:
+                return window
+        return None
+
+    def bar_fraction(bar_start_tick):
+        if explicit_density:
+            return explicit_fraction
+        window = section_for_tick(bar_start_tick)
+        densidade_axis = default_section_densidade
+        kind = None
+        if window is not None and isinstance(window.get("densidade"), int):
+            densidade_axis = window["densidade"]
+            kind = window.get("kind")
+        multiplier = kind_density_multiplier.get(kind, default_kind_multiplier)
+        return max(0.0, min(1.0, (densidade_axis / energy_axis_max) * multiplier))
+
+    def bar_target(bar_start_tick):
+        fraction = bar_fraction(bar_start_tick)
+        if fraction <= 0.0:
+            return 0
+        # Duas decisoes, nao uma so. (1) ATIVACAO: o compasso participa desta
+        # passada com probabilidade `fraction` — sorteio seedado, nao
+        # `round()`/`floor()` deterministico. Sem isso, um compasso elegivel
+        # (com candidatos disponiveis) SEMPRE ganhava ghost sempre que a
+        # fracao era positiva — nenhum baterista real toca ghost em todo
+        # compasso elegivel de uma secao inteira, e era exatamente esse o
+        # defeito medido na issue (86% dos compassos com ghost). (2) COTA:
+        # so decide QUANTAS depois de decidir SE — escalada pela mesma
+        # fracao, com piso 1 (senao "ativo" e "zero ghosts" virariam a
+        # mesma coisa) e teto `max_per_bar`.
+        if rng.random() >= fraction:
+            return 0
+        return max(1, min(max_per_bar, round(fraction * max_per_bar)))
 
     def simultaneous_count_at(existing, channel, tick):
         return sum(
@@ -1199,22 +1344,82 @@ def _apply_drums_ghost_notes(
         )
         return any(a in selected_ticks and b in selected_ticks for a, b in triples)
 
+    # Cota por compasso (`bar_counts`/`bar_targets`) e compartilhada por
+    # TODA a chamada — nao reiniciada a cada track fisica. Achado do Codex
+    # no PR #107: um `edit.track` cujo nome bate com MULTIPLAS tracks
+    # fisicas do MIDI de origem e uma UNIDADE so (AGENTS.md: "nomes
+    # repetidos de DAW sao tratados como uma unidade"), e cada chamada desta
+    # funcao ja e uma unica unidade de edicao — mas o loop abaixo chama
+    # `select_candidates` uma vez POR TRACK FISICA. Sem cota compartilhada,
+    # duas tracks fisicas com backbeat no MESMO compasso podiam somar o
+    # dobro do teto anunciado (`max_per_bar`) nesse compasso, porque cada
+    # track reiniciava `bar_counts`/`bar_targets` do zero. `interval_counts`
+    # continua por track: as regras de ONDE dentro de um intervalo entre
+    # backbeats (`violates_position_rules`) sao sobre candidatos da MESMA
+    # track fisica, que e onde o intervalo existe fisicamente.
+    #
+    # Segunda rodada do Codex no PR #107: o fix acima so cobre "multiplas
+    # tracks fisicas DENTRO de uma so chamada desta funcao" — mas
+    # `tools.render.render()` chama esta funcao (via `_run_style_pipeline`)
+    # SEPARADAMENTE por edit de bateria distinta em `plan.edits[]` e mais
+    # uma vez por elemento de bateria GERADO, cada chamada com seu proprio
+    # `mid.tracks`. Duas edits de bateria (nomes de track diferentes) com
+    # backbeat no mesmo compasso, ou uma edit de bateria mais um elemento
+    # gerado, cada um caindo em chamada SEPARADA desta funcao, cada qual
+    # recriando `bar_counts`/`bar_targets` do zero, podiam somar mais que
+    # `max_per_bar` ghosts no mesmo compasso no ARQUIVO FINAL (o que um
+    # ouvinte de fato escuta junto) — a cota local so protegia uma unidade
+    # de edicao por vez, nunca o render inteiro.
+    #
+    # `context.parameters["drum_bar_quota"]` (canal separado de
+    # `style.parameters`, mesmo padrao ja usado por `sections`/`bars`/
+    # `tuning`) e um dict MUTAVEL criado UMA VEZ por chamada de
+    # `tools.render.render()` (nunca global/modulo — resetado a cada
+    # render, preserva determinismo entre renders separados) e repassado a
+    # TODO despacho de tecnica de bateria dessa chamada. Quando presente,
+    # `bar_counts`/`bar_targets` mutam DENTRO dele em vez de dicts locais
+    # novos — a cota entao e compartilhada nao so entre tracks fisicas de
+    # uma chamada, mas entre TODAS as chamadas desta funcao dentro do mesmo
+    # `render()`. Chamada direta da tecnica fora do pipeline de
+    # `tools.render` (testes unitarios do motor, por exemplo) nao passa
+    # esse parametro e cai no dict local de sempre — retrocompatibilidade
+    # preservada, e a funcao continua autocontida (o estado compartilhado
+    # chega por `context.parameters`, nunca por global/nonlocal capturado).
+    quota_state = context.parameters.get("drum_bar_quota")
+    if isinstance(quota_state, dict):
+        bar_counts: dict[int, int] = quota_state.setdefault("counts", {})
+        bar_targets: dict[int, int] = quota_state.setdefault("targets", {})
+    else:
+        bar_counts = {}
+        bar_targets = {}
+
     def select_candidates(candidates):
         shuffled = list(candidates)
         rng.shuffle(shuffled)
         selected = []
         interval_counts = {}
-        wanted = target_count(len(shuffled), density)
         for candidate in shuffled:
-            # Teto checado ANTES de acrescentar. Checar depois deixava
-            # `wanted == 0` passar sempre por uma nota: a primeira candidata
-            # entrava e so entao o loop parava, entao `density=0.0` ainda
-            # escrevia uma ghost no MIDI.
-            if len(selected) >= wanted:
-                break
+            # Chave de agrupamento e o TICK DE INICIO DO COMPASSO REAL (nao
+            # mais `tick // ticks_per_bar`) — em 3/4, 5/4 ou com troca de
+            # compasso no meio da musica, o bucket fixo de `ticks_per_beat*4`
+            # nao identifica compasso nenhum de verdade.
+            bar_index = bar_start_for_tick(candidate["tick"])
+            target = bar_targets.get(bar_index)
+            if target is None:
+                target = bar_target(bar_index)
+                bar_targets[bar_index] = target
+            # Teto do COMPASSO checado ANTES de acrescentar — nao mais um
+            # teto global do arquivo inteiro. Checar depois deixava
+            # `target == 0` passar sempre por uma nota: a primeira candidata
+            # do compasso entrava e so entao o loop parava, entao um
+            # compasso com densidade zerada (breakdown pesado, por exemplo)
+            # ainda ganhava uma ghost.
+            if bar_counts.get(bar_index, 0) >= target:
+                continue
             if violates_position_rules(candidate, selected, interval_counts):
                 continue
             selected.append(candidate)
+            bar_counts[bar_index] = bar_counts.get(bar_index, 0) + 1
             interval_start = candidate["interval_start"]
             interval_counts[interval_start] = interval_counts.get(interval_start, 0) + 1
         return sorted(selected, key=lambda item: item["tick"])
@@ -1232,6 +1437,27 @@ def _apply_drums_ghost_notes(
             continue
 
         candidates = []
+        # Contador de posicao GEOMETRICO — avanca a cada semicolcheia
+        # candidata CONSIDERADA (elegivel ou nao), nunca a cada uma
+        # ACRESCENTADA a `candidates`. Achado do Codex no PR #107 (P1,
+        # idempotencia quebrada): a versao anterior usava `len(candidates)`
+        # (a contagem de candidatas ja ELEGIVEIS) para escolher o pitch —
+        # isso acopla o pitch de uma semicolcheia ao conjunto de notas JA
+        # PRESENTES no MIDI. Na reaplicacao, uma ghost do passe anterior
+        # muda a elegibilidade de OUTRAS semicolcheias na mesma passada
+        # (via `overlaps_same_pitch`/`note_exists`, que leem `existing`), o
+        # que desloca `len(candidates)` e, com ele, o pitch de toda
+        # semicolcheia seguinte — a mesma seed entao sorteia sobre um
+        # candidato de pitch DIFERENTE do passe anterior, e o
+        # deduplicador central (`TechniqueRegistry.apply`) nao reconhece a
+        # assinatura nova como a mesma ghost. `candidate_index`, em vez
+        # disso, e uma funcao pura da GEOMETRIA (par de backbeat + offset em
+        # semicolcheias) — nunca do que ja existe no MIDI — entao o alvo
+        # (tick, pitch) de cada semicolcheia e IDENTICO em toda reaplicacao,
+        # e so a elegibilidade (que ja se auto-exime pra ghost com a MESMA
+        # assinatura exata, ver `overlaps_same_pitch`) decide se ela entra
+        # em `candidates`.
+        candidate_index = 0
         for current, following in zip(backbeats, backbeats[1:], strict=False):
             if following - current > max_groove_interval:
                 continue
@@ -1239,7 +1465,8 @@ def _apply_drums_ghost_notes(
             while tick < following:
                 if tick != following - sixteenth:
                     channel = 9
-                    pitch = int(notes[len(candidates) % len(notes)])
+                    pitch = int(notes[candidate_index % len(notes)])
+                    candidate_index += 1
                     end_tick = tick + gate
                     if not overlaps_same_pitch(
                         existing, channel, pitch, tick, end_tick
