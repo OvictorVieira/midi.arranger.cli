@@ -331,3 +331,34 @@ def test_no_bypass_flag_available():
     for issue in issues:
         assert isinstance(issue, AntiCopyIssue)
         assert issue.severity == SEVERITY_ERROR
+
+
+# --- achado P2 do Codex na PR #100 -------------------------------------------
+
+def test_melody_match_detected_despite_rhythm_shift():
+    """Achado P2 (Codex, PR #100): melodia identica com UM onset deslocado
+    para outro bucket de ritmo ainda e copia.
+
+    Antes do achado, o casamento exigia intervalos E ritmo identicos —
+    nudge de 0.75s para 0.95s no quarto onset bastava para escapar da
+    deteccao mesmo com os 6 pitches identicos. Ver docstring do modulo,
+    secao 'Melodia casa sozinha'.
+    """
+    ref = _ref("ref_song.mid", "Bass", RIFF_PITCHES, RIFF_STARTS)
+    nudged_starts = list(RIFF_STARTS)
+    nudged_starts[3] += 0.20   # 0.75 -> 0.95: muda de bucket de RHYTHM_BUCKET
+    track = _track("bass1", "Bass Gen", RIFF_PITCHES, nudged_starts)
+    issues = validate_anticopy([track], _plan(), _analysis(), corpus=[ref])
+    assert len(issues) == 1
+    assert "rhythm differs" in issues[0].message
+    assert "transposition-invariant" in issues[0].message
+
+
+def test_melody_message_notes_rhythm_match_when_both_match():
+    """Quando ritmo TAMBEM bate, a mensagem continua dizendo isso
+    explicitamente (nao regressao do texto usado antes do achado P2)."""
+    ref = _ref("ref_song.mid", "Bass", RIFF_PITCHES, RIFF_STARTS)
+    track = _track("bass1", "Bass Gen", RIFF_PITCHES, RIFF_STARTS)
+    issues = validate_anticopy([track], _plan(), _analysis(), corpus=[ref])
+    assert len(issues) == 1
+    assert "intervals and rhythm identical" in issues[0].message

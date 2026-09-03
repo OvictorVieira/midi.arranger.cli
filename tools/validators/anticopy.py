@@ -35,11 +35,23 @@ prova o extremo alto.
 
 ### Ritmo identico com pitches trocados NAO e copia
 Ritmo isolado e convencao estilistica ampla — `sincopa em colcheia + duas
-semicolcheias` aparece em milhares de musicas de generos diferentes. Copia
-real precisa de padrao melodico (intervalos) E ritmico coincidindo. O
+semicolcheias` aparece em milhares de musicas de generos diferentes. O
 teste `test_same_rhythm_different_intervals_is_not_copy` fixa essa
 decisao; qualquer futura mudanca de politica precisa remover ou reescrever
 esse teste, nao contornar em codigo.
+
+### Melodia casa sozinha; ritmo NAO e porta de entrada obrigatoria (achado
+### do Codex na PR #100)
+A primeira versao deste modulo exigia intervalos E ritmo identicos para
+disparar — um `onset` deslocado o suficiente para mudar de bucket de
+`RHYTHM_BUCKET` deixava passar uma melodia identica nota a nota. Isso
+inverte a proporcao do paragrafo acima: ritmo sozinho nunca e copia, mas
+`N` pitches consecutivos com os mesmos intervalos (a mesma melodia) SAO
+copia mesmo que o interprete/gerador altere o fraseado. Por isso o
+casamento usa so a tupla de intervalos como chave; o ritmo continua
+calculado e entra na mensagem (`rhythm identical` ou `rhythm differs`)
+como sinal informativo extra, nunca como filtro. O teste
+`test_melody_match_detected_despite_rhythm_shift` fixa essa decisao.
 
 ### Transposicao E copia
 `ii V I` em Do e `ii V I` em Fa sao a mesma cadencia (permitido — e escala),
@@ -180,17 +192,27 @@ def _window_signature(window: Sequence[RenderedNote]) -> tuple[tuple[int, ...], 
     pitches = [int(note.pitch) for note in window]
     intervals = tuple(pitches[i + 1] - pitches[i] for i in range(n - 1))
     starts = [float(note.start_s) for note in window]
+    rhythm = _rhythm_signature(starts)
+    return intervals, rhythm
+
+
+def _rhythm_signature(starts: Sequence[float]) -> tuple[int, ...]:
+    """Razoes `IOI[i+1] / IOI[0]` bucketizadas em `RHYTHM_BUCKET`.
+
+    Fatorado de `_window_signature` para virar um sinal informativo (o
+    casamento nao depende mais dele — ver docstring do modulo, secao
+    "Melodia casa sozinha").
+    """
+    n = len(starts)
+    if n < 2:
+        return ()
     iois = [starts[i + 1] - starts[i] for i in range(n - 1)]
     base = iois[0] if iois and iois[0] > 0 else 0.0
     if base <= 0.0:
         # Sem IOI base positivo (todas as notas no mesmo onset apos monofonizar
-        # nao deve acontecer, mas guarda contra divisao por zero). Assinatura
-        # ritmica degenera para tupla vazia — junto com intervalos ainda
-        # identifica sequencias identicas em posicao/velocity.
-        rhythm: tuple[int, ...] = ()
-    else:
-        rhythm = tuple(round((ratio / base) * RHYTHM_BUCKET) for ratio in iois)
-    return intervals, rhythm
+        # nao deve acontecer, mas guarda contra divisao por zero).
+        return ()
+    return tuple(round((ratio / base) * RHYTHM_BUCKET) for ratio in iois)
 
 
 def _extract_windows(
@@ -227,9 +249,11 @@ def validate_anticopy(
 
     - `corpus=None`: checagem comportamental e pulada (a estrutural, em
       `plan.validate`, sempre roda). Devolve lista vazia.
-    - Casamento: janela de N eventos consecutivos da saida com MESMA
-      assinatura `(intervalos, ritmo)` de alguma janela de qualquer
-      `ReferenceSequence`.
+    - Casamento: janela de N eventos consecutivos da saida com a MESMA
+      tupla de intervalos de alguma janela de qualquer `ReferenceSequence`
+      — o ritmo (`_rhythm_signature`) e calculado e entra na mensagem, mas
+      NAO decide o casamento (ver docstring do modulo, secao "Melodia
+      casa sozinha").
     - Determinismo: itera na ordem de `rendered_tracks` e retorna no
       maximo uma issue por track (a primeira janela casada), para nao
       soterrar o relatorio quando a copia e sistematica. `has_errors`
@@ -240,37 +264,43 @@ def validate_anticopy(
     if corpus is None:
         return []
 
-    corpus_index: dict[
-        tuple[tuple[int, ...], tuple[int, ...]],
-        tuple[str, str],
-    ] = {}
+    # Chave = so os intervalos. O ritmo do casamento do CORPUS viaja no
+    # valor so para a mensagem poder dizer se o ritmo tambem bateu.
+    corpus_index: dict[tuple[int, ...], tuple[str, str, tuple[int, ...]]] = {}
     for ref in corpus:
-        for sig, _first in _extract_windows(ref.notes, n):
+        for (intervals, rhythm), _first in _extract_windows(ref.notes, n):
+            if not intervals:
+                continue
             # Mesma assinatura em duas pecas de referencia: guardamos a
             # primeira ocorrencia estavel — o relatorio cita uma so, e a
             # ordem de iteracao do corpus e do chamador (deterministica).
-            corpus_index.setdefault(sig, (ref.source, ref.track_name))
+            corpus_index.setdefault(intervals, (ref.source, ref.track_name, rhythm))
 
     if not corpus_index:
         return []
 
     issues: list[AntiCopyIssue] = []
     for track in rendered_tracks:
-        for sig, first in _extract_windows(track.notes, n):
-            if not sig[0]:
+        for (intervals, rhythm), first in _extract_windows(track.notes, n):
+            if not intervals:
                 # Janela sem intervalos (ex.: N=1 defensivo, ja bloqueado
                 # em MIN_N — guarda contra evolucao futura).
                 continue
-            match = corpus_index.get(sig)
+            match = corpus_index.get(intervals)
             if match is None:
                 continue
-            source, source_track = match
+            source, source_track, corpus_rhythm = match
             bar = find_bar(analysis, float(first.start_s))
+            rhythm_note = (
+                "intervals and rhythm identical"
+                if rhythm == corpus_rhythm
+                else "melodic contour identical, rhythm differs"
+            )
             message = (
                 f"element {track.element_id!r}, track {track.track_name!r}, "
                 f"bar {bar_number(bar)}: {n}-event window matches "
-                f"{source!r} / track {source_track!r} (intervals and rhythm "
-                f"identical — transposition-invariant)."
+                f"{source!r} / track {source_track!r} ({rhythm_note} — "
+                f"transposition-invariant)."
             )
             issues.append(AntiCopyIssue(
                 severity=SEVERITY_ERROR,
