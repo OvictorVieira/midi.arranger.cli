@@ -315,6 +315,32 @@ def test_render_reference_corpus_missing_file_returns_error(tmp_path: Path):
     assert env["error"]["path"] == "reference_corpus"
 
 
+# --- filtro only (issue #24, parte 2) --------------------------------------
+
+def test_render_only_filters_elements_via_facade(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _pad_plan(midi)
+    out = tmp_path / "out.mid"
+    env = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out),
+        "only": "rhythmic",
+    })
+    assert env["ok"] is True, env.get("error")
+    assert env["data"]["elements"] == []
+
+
+def test_render_only_unknown_category_via_facade(tmp_path: Path):
+    midi = _synthetic_fixture()
+    plan = _pad_plan(midi)
+    out = tmp_path / "out.mid"
+    env = call("render", {
+        "midi_path": midi, "plan": plan, "output_path": str(out),
+        "only": "bogus",
+    })
+    assert env["ok"] is False
+    assert env["error"]["code"] == "E_RENDER"
+
+
 # --- validate -------------------------------------------------------------
 
 def test_validate_runs_on_rendered_file_without_rerendering(tmp_path: Path):
@@ -332,7 +358,10 @@ def test_validate_runs_on_rendered_file_without_rerendering(tmp_path: Path):
     assert out.stat().st_mtime == mtime_before
 
     d = env["data"]
-    for key in ("harmony_issues", "placement_issues", "artifice_issues", "persona_issues"):
+    for key in (
+        "harmony_issues", "placement_issues", "artifice_issues",
+        "persona_issues", "transition_issues",
+    ):
         assert isinstance(d[key], list)
         for issue in d[key]:
             assert "severity" in issue

@@ -69,6 +69,17 @@ from .placement import (
 from .placement import (
     has_errors as placement_has_errors,
 )
+from .transitions import (
+    TRANSITION_DIMENSIONS,
+    TransitionIssue,
+    validate_transitions,
+)
+from .transitions import (
+    format_issues as format_transition_issues,
+)
+from .transitions import (
+    has_errors as transition_has_errors,
+)
 
 __all__ = [
     "AntiCopyIssue",
@@ -82,6 +93,8 @@ __all__ = [
     "ReferenceSequence",
     "RenderedNote",
     "RenderedTrack",
+    "TRANSITION_DIMENSIONS",
+    "TransitionIssue",
     "anticopy_has_errors",
     "artifice_has_errors",
     "chord_pcs",
@@ -91,16 +104,19 @@ __all__ = [
     "format_harmony_issues",
     "format_persona_issues",
     "format_placement_issues",
+    "format_transition_issues",
     "harmony_has_errors",
     "key_scale_pcs",
     "load_reference_sequences",
     "persona_has_errors",
     "pitch_name",
     "placement_has_errors",
+    "transition_has_errors",
     "validate_anticopy",
     "validate_artifice",
     "validate_collisions",
     "validate_harmony",
     "validate_persona",
     "validate_placement",
+    "validate_transitions",
 ]
