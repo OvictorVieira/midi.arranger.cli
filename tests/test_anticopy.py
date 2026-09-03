@@ -13,10 +13,13 @@ import pytest
 from tools.analyze import Analysis, BarAnalysis, Chord
 from tools.plan import (
     ArrangementPlan,
+    Element,
     FamilyStyle,
     PlanSection,
     PlanValidationError,
     SourceMidi,
+)
+from tools.plan import (
     validate as validate_plan,
 )
 from tools.validators.anticopy import (
@@ -26,6 +29,7 @@ from tools.validators.anticopy import (
     ReferenceSequence,
     format_issues,
     has_errors,
+    load_reference_sequences,
     validate_anticopy,
 )
 from tools.validators.harmony import SEVERITY_ERROR, RenderedNote, RenderedTrack
@@ -90,6 +94,39 @@ def _track(element_id: str, name: str, pitches: list[int], starts: list[float]) 
 
 def _ref(source: str, name: str, pitches: list[int], starts: list[float]) -> ReferenceSequence:
     return ReferenceSequence(source=source, track_name=name, notes=_notes(pitches, starts))
+
+
+def _drum_ref(source: str, name: str, pitches: list[int], starts: list[float]) -> ReferenceSequence:
+    return ReferenceSequence(
+        source=source, track_name=name, notes=_notes(pitches, starts), is_drum=True,
+    )
+
+
+def _drum_plan(*element_ids: str) -> ArrangementPlan:
+    """Plano com um `Element(role="drums")` por id — roteia
+    `validate_anticopy` para a assinatura multi-voz de percussao via
+    `_is_drum_element`."""
+    p = _plan()
+    p.elements = [
+        Element(
+            id=eid, role="drums", sections=["MAIN"], register=[35, 81],
+            layers=1, sync_role="anchor", articulation="normal", harmony="none",
+        )
+        for eid in element_ids
+    ]
+    return p
+
+
+def _kit(pitch_layers: list[list[int]], starts: list[float]) -> tuple[list[int], list[float]]:
+    """Achata `[[36, 42], [38, 42], ...]` (pitches simultaneos por onset)
+    em listas paralelas de pitch/start para `_notes`/`_drum_ref`."""
+    pitches: list[int] = []
+    flat_starts: list[float] = []
+    for layer, start in zip(pitch_layers, starts, strict=True):
+        for pitch in layer:
+            pitches.append(pitch)
+            flat_starts.append(start)
+    return pitches, flat_starts
 
 
 # Riff sintetico de 6 notas (>= DEFAULT_N) — melodia + ritmo caracteristicos.
@@ -333,7 +370,7 @@ def test_no_bypass_flag_available():
         assert issue.severity == SEVERITY_ERROR
 
 
-# --- achado P2 do Codex na PR #100 -------------------------------------------
+# --- achados do Codex na PR #100 ---------------------------------------------
 
 def test_melody_match_detected_despite_rhythm_shift():
     """Achado P2 (Codex, PR #100): melodia identica com UM onset deslocado
@@ -362,3 +399,110 @@ def test_melody_message_notes_rhythm_match_when_both_match():
     issues = validate_anticopy([track], _plan(), _analysis(), corpus=[ref])
     assert len(issues) == 1
     assert "intervals and rhythm identical" in issues[0].message
+
+
+def test_percussion_false_positive_from_shared_cymbal_onsets():
+    """Achado P1 (Codex, PR #100): duas grooves de kick/caixa TOTALMENTE
+    diferentes com o mesmo hi-hat fechado nos mesmos onsets nao devem
+    casar so porque a reducao monofonica antiga via so o prato.
+    """
+    onsets = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
+    ref_kit = [
+        [36, 42], [42], [38, 42], [42], [36, 42], [38, 42],
+    ]
+    out_kit = [
+        [38, 42], [42], [36, 42], [42], [38, 42], [36, 42],
+    ]
+    ref_pitches, ref_starts = _kit(ref_kit, onsets)
+    out_pitches, out_starts = _kit(out_kit, onsets)
+    ref = _drum_ref("groove_A.mid", "Drums", ref_pitches, ref_starts)
+    track_notes = _notes(out_pitches, out_starts)
+    track = RenderedTrack(element_id="drums1", track_name="Drums Gen", notes=track_notes)
+    issues = validate_anticopy([track], _drum_plan("drums1"), _analysis(), corpus=[ref])
+    assert issues == []
+
+
+def test_percussion_direct_copy_still_detected():
+    """Contraparte positiva do teste acima: groove de bateria IDENTICA
+    (kick/caixa/prato, todos os onsets) continua batendo copia — a
+    assinatura multi-voz nao ficou estrita demais a ponto de nunca casar.
+    """
+    onsets = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
+    kit = [
+        [36, 42], [42], [38, 42], [42], [36, 42], [38, 42],
+    ]
+    ref_pitches, ref_starts = _kit(kit, onsets)
+    ref = _drum_ref("groove_A.mid", "Drums", ref_pitches, ref_starts)
+    out_pitches, out_starts = _kit(kit, onsets)
+    track = RenderedTrack(
+        element_id="drums1", track_name="Drums Gen", notes=_notes(out_pitches, out_starts),
+    )
+    issues = validate_anticopy([track], _drum_plan("drums1"), _analysis(), corpus=[ref])
+    assert len(issues) == 1
+    assert "simultaneous voices" in issues[0].message
+
+
+def test_percussion_kick_snare_swap_not_treated_as_copy():
+    """Achado P1 (Codex, PR #100), variante mais dura do falso positivo:
+    kick e caixa trocam de onset entre si (padrao alternado), com o MESMO
+    hi-hat fechado em todo onset dos dois lados. Sob a reducao monofonica
+    antiga, os dois lados colapsam para a mesma linha achatada (so o
+    prato, sempre pitch 42) e casariam por acidente — o pior caso do
+    achado. A assinatura multi-voz preserva kick/caixa em cada onset, e a
+    troca de posicao faz o conjunto de pitches do onset 0 divergir
+    (36+42 contra 38+42) — nao casa.
+    """
+    onsets = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
+    ref_kit = [
+        [36, 42], [38, 42], [36, 42], [38, 42], [36, 42], [38, 42],
+    ]
+    # Mesmo prato (42) nos mesmos onsets, kick/caixa trocados de posicao.
+    out_kit = [
+        [38, 42], [36, 42], [38, 42], [36, 42], [38, 42], [36, 42],
+    ]
+    ref_pitches, ref_starts = _kit(ref_kit, onsets)
+    out_pitches, out_starts = _kit(out_kit, onsets)
+    ref = _drum_ref("groove_A.mid", "Drums", ref_pitches, ref_starts)
+    track = RenderedTrack(
+        element_id="drums1", track_name="Drums Gen",
+        notes=_notes(out_pitches, out_starts),
+    )
+    issues = validate_anticopy([track], _drum_plan("drums1"), _analysis(), corpus=[ref])
+    assert issues == []
+
+
+def test_load_reference_sequences_marks_is_drum(tmp_path):
+    """`load_reference_sequences` populates `is_drum` from
+    `pretty_midi.Instrument.is_drum` (canal 10 GM) — o roteador de
+    `validate_anticopy` depende disso para o lado do corpus."""
+    import pretty_midi
+
+    pm = pretty_midi.PrettyMIDI()
+    drum_inst = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    drum_inst.notes.append(pretty_midi.Note(velocity=90, pitch=36, start=0.0, end=0.1))
+    bass_inst = pretty_midi.Instrument(program=33, is_drum=False, name="Bass")
+    bass_inst.notes.append(pretty_midi.Note(velocity=90, pitch=40, start=0.0, end=0.4))
+    pm.instruments.extend([drum_inst, bass_inst])
+    midi_path = tmp_path / "ref.mid"
+    pm.write(str(midi_path))
+
+    sequences = load_reference_sequences([midi_path])
+    by_track = {seq.track_name: seq for seq in sequences}
+    assert by_track["Drums"].is_drum is True
+    assert by_track["Bass"].is_drum is False
+
+
+def test_non_drum_track_keeps_monophonic_reduction():
+    """Elemento fora de `DRUMS_ROLES` (ou sem entrada em `plan.elements`)
+    continua usando a reducao monofonica — regressao do comportamento
+    pre-existente para instrumento melodico."""
+    ref = _ref("ref_song.mid", "Bass", RIFF_PITCHES, RIFF_STARTS)
+    voiced_notes = []
+    for pitch, start in zip(RIFF_PITCHES, RIFF_STARTS, strict=True):
+        voiced_notes.append(RenderedNote(pitch=pitch, velocity=90, start_s=start, end_s=start + 0.4))
+        voiced_notes.append(RenderedNote(pitch=pitch - 12, velocity=90, start_s=start, end_s=start + 0.4))
+    track = RenderedTrack(element_id="bass1", track_name="Voiced Bass", notes=tuple(voiced_notes))
+    # element_id "bass1" nao esta em nenhum `plan.elements` -> trata como
+    # melodico (default seguro de `_is_drum_element`).
+    issues = validate_anticopy([track], _plan(), _analysis(), corpus=[ref])
+    assert len(issues) == 1

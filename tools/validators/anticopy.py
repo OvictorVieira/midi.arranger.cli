@@ -48,10 +48,11 @@ disparar — um `onset` deslocado o suficiente para mudar de bucket de
 inverte a proporcao do paragrafo acima: ritmo sozinho nunca e copia, mas
 `N` pitches consecutivos com os mesmos intervalos (a mesma melodia) SAO
 copia mesmo que o interprete/gerador altere o fraseado. Por isso o
-casamento usa so a tupla de intervalos como chave; o ritmo continua
-calculado e entra na mensagem (`rhythm identical` ou `rhythm differs`)
-como sinal informativo extra, nunca como filtro. O teste
-`test_melody_match_detected_despite_rhythm_shift` fixa essa decisao.
+casamento MELODICO (nao-percussao) usa so a tupla de intervalos como
+chave; o ritmo continua calculado e entra na mensagem (`rhythm identical`
+ou `rhythm differs`) como sinal informativo extra, nunca como filtro. O
+teste `test_melody_match_detected_despite_rhythm_shift` fixa essa
+decisao.
 
 ### Transposicao E copia
 `ii V I` em Do e `ii V I` em Fa sao a mesma cadencia (permitido — e escala),
@@ -59,6 +60,39 @@ mas `Riff X em Mi` e `Riff X em Sol` sao a mesma coisa transposta — copia.
 A assinatura de janela usa DIFERENcAS de pitch consecutivas, entao qualquer
 transposicao (constante somada a todos os pitches) e invisivel a
 comparacao. O teste `test_transposed_copy_is_detected` prova.
+
+### Bateria preserva as vozes simultaneas (achado do Codex na PR #100)
+A reducao monofonica de `_monophonic_line` (fica so a nota mais aguda por
+onset) faz sentido para instrumento melodico: e a "linha que o ouvinte
+canta". Para bateria essa reducao destroi exatamente o que define o
+groove — kick e caixa quase sempre tem pitch MIDI menor que os pratos
+(36/38 contra 42/46/49/51), entao a linha reduzida vira, na pratica, so a
+sequencia de pratos, com kick/caixa completamente invisiveis a
+comparacao. Duas grooves de kick/caixa totalmente diferentes com o mesmo
+hi-hat fechado nos mesmos onsets colapsavam para a mesma "linha" (falso
+positivo — corrigido: `test_percussion_false_positive_from_shared_cymbal_onsets`
+prova que grooves de kick/caixa diferentes com o mesmo hi-hat NAO casam
+mais). `_percussion_events` resolve isso preservando o CONJUNTO de
+pitches que soa em cada onset (sem reduzir a um so), e a assinatura de
+janela vira uma sequencia de conjuntos de pitch — pitch absoluto, sem
+invariancia a transposicao, porque pitch de bateria e IDENTIDADE da peca
+(36 = kick), nao um grau de escala transponivel. Uma
+`ReferenceSequence`/`RenderedTrack` e tratada como bateria via
+`ReferenceSequence.is_drum` (populado por `instrument.is_drum` do
+pretty_midi em `load_reference_sequences`) e via `Element.role` do plano
+(`tools.palette.drums.DRUMS_ROLES`) para a saida renderizada — mesma
+convencao que o resto do motor usa para achar a familia de um elemento.
+
+Limitacao conhecida, fora do escopo deste achado: o casamento de
+percussao ainda exige o CONJUNTO INTEIRO de pitches identico em cada
+onset da janela (kick + caixa + prato). Uma groove de kick/caixa
+copiada nota por nota, mas com a CAMADA DE PRATO trocada (crash vira
+ride num unico onset, por exemplo), ainda pode escapar — o
+`_percussion_events` para de esconder kick/caixa atras do prato (o bug
+relatado), mas nao separa "o que define o groove" (kick/caixa) de
+"decoracao" (prato) para pesar cada um diferente na comparacao; isso
+exigiria uma classificacao de pitches GM em grupos groove-defining vs.
+decorativo, decisao de produto fora do pedido original desta PR.
 
 ### Rendered tracks apenas
 `rendered_tracks` que chega aqui contem so as tracks GERADAS pelo motor de
@@ -85,6 +119,7 @@ from pathlib import Path
 import pretty_midi
 
 from ..analyze import Analysis, bar_number, find_bar
+from ..palette.drums import DRUMS_ROLES
 from ..plan import ArrangementPlan
 from .harmony import SEVERITY_ERROR, RenderedNote, RenderedTrack
 
@@ -121,10 +156,15 @@ class ReferenceSequence:
     - track_name: nome da track dentro daquela peca; ajuda a diferenciar
       `bass` vs `lead` da mesma faixa.
     - notes: eventos da track em ordem cronologica.
+    - is_drum: track de percussao (canal 10 GM / `instrument.is_drum` do
+      pretty_midi). Roteia a comparacao para a assinatura multi-voz de
+      `_percussion_events` em vez da reducao monofonica — ver docstring
+      do modulo, secao "Bateria preserva as vozes simultaneas".
     """
     source: str
     track_name: str
     notes: tuple[RenderedNote, ...]
+    is_drum: bool = False
 
 
 @dataclass(frozen=True)
@@ -199,9 +239,10 @@ def _window_signature(window: Sequence[RenderedNote]) -> tuple[tuple[int, ...], 
 def _rhythm_signature(starts: Sequence[float]) -> tuple[int, ...]:
     """Razoes `IOI[i+1] / IOI[0]` bucketizadas em `RHYTHM_BUCKET`.
 
-    Fatorado de `_window_signature` para virar um sinal informativo (o
-    casamento nao depende mais dele — ver docstring do modulo, secao
-    "Melodia casa sozinha").
+    Fatorado de `_window_signature` para ser reaproveitado por
+    `_percussion_window_signature` — a bucketizacao de ritmo e a mesma
+    para melodia e percussao, so a fonte dos `starts` muda (uma nota por
+    evento vs. o onset de um cluster de percussao).
     """
     n = len(starts)
     if n < 2:
@@ -209,8 +250,8 @@ def _rhythm_signature(starts: Sequence[float]) -> tuple[int, ...]:
     iois = [starts[i + 1] - starts[i] for i in range(n - 1)]
     base = iois[0] if iois and iois[0] > 0 else 0.0
     if base <= 0.0:
-        # Sem IOI base positivo (todas as notas no mesmo onset apos monofonizar
-        # nao deve acontecer, mas guarda contra divisao por zero).
+        # Sem IOI base positivo (todos os eventos no mesmo onset — nao deve
+        # acontecer, mas guarda contra divisao por zero).
         return ()
     return tuple(round((ratio / base) * RHYTHM_BUCKET) for ratio in iois)
 
@@ -222,7 +263,8 @@ def _extract_windows(
     """Devolve `[(assinatura, primeira_nota_da_janela)]` para cada janela.
 
     A primeira nota volta junto para o relatorio conseguir apontar o
-    compasso (via `find_bar(analysis, first.start_s)`).
+    compasso (via `find_bar(analysis, first.start_s)`). Usa a reducao
+    monofonica — para percussao, ver `_extract_percussion_windows`.
     """
     line = _monophonic_line(notes)
     if len(line) < n:
@@ -235,11 +277,90 @@ def _extract_windows(
     return windows
 
 
+# --- extracao de eventos (percussao) -----------------------------------------
+
+def _percussion_events(notes: Sequence[RenderedNote]) -> list[tuple[float, tuple[int, ...], RenderedNote]]:
+    """Agrupa notas de bateria por bucket de onset SEM reduzir a uma so voz.
+
+    Ao contrario de `_monophonic_line` (fica so a nota mais aguda), aqui o
+    evento carrega o CONJUNTO ordenado de pitches que soam naquele onset —
+    kick + caixa + prato continuam visiveis juntos. Ver docstring do
+    modulo, secao "Bateria preserva as vozes simultaneas".
+
+    Devolve `[(onset_s, pitches_ordenados, primeira_nota_do_bucket)]`; a
+    nota volta para o relatorio apontar compasso, igual `_extract_windows`.
+    """
+    if not notes:
+        return []
+    ordered = sorted(notes, key=lambda n: (n.start_s, int(n.pitch)))
+    by_bucket: dict[int, list[RenderedNote]] = {}
+    for note in ordered:
+        bucket = round(float(note.start_s) * 1000 / ONSET_MS_BUCKET)
+        by_bucket.setdefault(bucket, []).append(note)
+    events: list[tuple[float, tuple[int, ...], RenderedNote]] = []
+    for bucket in sorted(by_bucket):
+        bucket_notes = by_bucket[bucket]
+        pitches = tuple(sorted({int(n.pitch) for n in bucket_notes}))
+        first = min(bucket_notes, key=lambda n: n.start_s)
+        events.append((float(first.start_s), pitches, first))
+    return events
+
+
+def _percussion_window_signature(
+    window: Sequence[tuple[float, tuple[int, ...], RenderedNote]],
+) -> tuple[tuple[tuple[int, ...], ...], tuple[int, ...]]:
+    """Assinatura de janela de percussao: `(vozes, ritmo)`.
+
+    - vozes: uma tupla de pitches (absolutos, sem invariancia a
+      transposicao — pitch de bateria e IDENTIDADE da peca) por onset da
+      janela.
+    - ritmo: mesma bucketizacao de `_window_signature`, calculada sobre os
+      onsets dos eventos (nao de cada nota individual).
+    """
+    n = len(window)
+    if n < 2:
+        return (), ()
+    voices = tuple(pitches for _start, pitches, _first in window)
+    starts = [start for start, _pitches, _first in window]
+    rhythm = _rhythm_signature(starts)
+    return voices, rhythm
+
+
+def _extract_percussion_windows(
+    notes: Sequence[RenderedNote],
+    n: int,
+) -> list[tuple[tuple[tuple[tuple[int, ...], ...], tuple[int, ...]], RenderedNote]]:
+    """Equivalente a `_extract_windows`, mas para tracks de percussao —
+    usa `_percussion_events`/`_percussion_window_signature` em vez da
+    reducao monofonica."""
+    events = _percussion_events(notes)
+    if len(events) < n:
+        return []
+    windows: list[tuple[tuple[tuple[tuple[int, ...], ...], tuple[int, ...]], RenderedNote]] = []
+    for i in range(len(events) - n + 1):
+        window = events[i : i + n]
+        sig = _percussion_window_signature(window)
+        windows.append((sig, window[0][2]))
+    return windows
+
+
+def _is_drum_element(plan: ArrangementPlan, element_id: str) -> bool:
+    """True quando `element_id` referencia um elemento de `plan.elements`
+    com `role` em `DRUMS_ROLES` (mesma convencao de familia usada por
+    `tools.render._style_family_for_role`). Elemento nao encontrado no
+    plano (ex.: teste que nao popula `plan.elements`) devolve `False` —
+    trata como melodico, comportamento anterior a este achado."""
+    for element in plan.elements:
+        if element.id == element_id:
+            return element.role in DRUMS_ROLES
+    return False
+
+
 # --- API publica ------------------------------------------------------------
 
 def validate_anticopy(
     rendered_tracks: Iterable[RenderedTrack],
-    plan: ArrangementPlan,   # noqa: ARG001 — assinatura simetrica; futura evolucao pode filtrar por elemento
+    plan: ArrangementPlan,
     analysis: Analysis,
     *,
     corpus: Iterable[ReferenceSequence] | None = None,
@@ -249,11 +370,15 @@ def validate_anticopy(
 
     - `corpus=None`: checagem comportamental e pulada (a estrutural, em
       `plan.validate`, sempre roda). Devolve lista vazia.
-    - Casamento: janela de N eventos consecutivos da saida com a MESMA
-      tupla de intervalos de alguma janela de qualquer `ReferenceSequence`
-      — o ritmo (`_rhythm_signature`) e calculado e entra na mensagem, mas
-      NAO decide o casamento (ver docstring do modulo, secao "Melodia
-      casa sozinha").
+    - Percussao (`ReferenceSequence.is_drum` do lado do corpus,
+      `Element.role in DRUMS_ROLES` do lado da saida — via
+      `_is_drum_element(plan, track.element_id)`) usa a assinatura
+      multi-voz de `_percussion_window_signature`: casamento exige o MESMO
+      conjunto de pitches em cada onset da janela E o mesmo ritmo — ver
+      docstring do modulo, secao "Bateria preserva as vozes simultaneas".
+    - Melodia (tudo que nao e percussao) usa `_window_signature`, mas o
+      casamento agora depende SO da tupla de intervalos — ritmo diferente
+      nao livra uma melodia identica; ver secao "Melodia casa sozinha".
     - Determinismo: itera na ordem de `rendered_tracks` e retorna no
       maximo uma issue por track (a primeira janela casada), para nao
       soterrar o relatorio quando a copia e sistematica. `has_errors`
@@ -264,55 +389,93 @@ def validate_anticopy(
     if corpus is None:
         return []
 
-    # Chave = so os intervalos. O ritmo do casamento do CORPUS viaja no
-    # valor so para a mensagem poder dizer se o ritmo tambem bateu.
-    corpus_index: dict[tuple[int, ...], tuple[str, str, tuple[int, ...]]] = {}
+    # Indice melodico: chave = so os intervalos (achado do Codex, PR #100 —
+    # ritmo deixou de ser porta de entrada obrigatoria). O ritmo do
+    # casamento do CORPUS viaja no valor so para a mensagem poder dizer se
+    # o ritmo tambem bateu.
+    melodic_index: dict[tuple[int, ...], tuple[str, str, tuple[int, ...]]] = {}
+    # Indice de percussao: chave = assinatura completa (vozes + ritmo) —
+    # aqui os dois eixos continuam obrigatorios, ver docstring.
+    percussion_index: dict[
+        tuple[tuple[tuple[int, ...], ...], tuple[int, ...]],
+        tuple[str, str],
+    ] = {}
     for ref in corpus:
-        for (intervals, rhythm), _first in _extract_windows(ref.notes, n):
-            if not intervals:
-                continue
-            # Mesma assinatura em duas pecas de referencia: guardamos a
-            # primeira ocorrencia estavel — o relatorio cita uma so, e a
-            # ordem de iteracao do corpus e do chamador (deterministica).
-            corpus_index.setdefault(intervals, (ref.source, ref.track_name, rhythm))
+        if ref.is_drum:
+            for sig, _first in _extract_percussion_windows(ref.notes, n):
+                if not sig[0]:
+                    continue
+                percussion_index.setdefault(sig, (ref.source, ref.track_name))
+        else:
+            for (intervals, rhythm), _first in _extract_windows(ref.notes, n):
+                if not intervals:
+                    continue
+                # Mesma assinatura em duas pecas de referencia: guardamos a
+                # primeira ocorrencia estavel — o relatorio cita uma so, e
+                # a ordem de iteracao do corpus e do chamador
+                # (deterministica).
+                melodic_index.setdefault(intervals, (ref.source, ref.track_name, rhythm))
 
-    if not corpus_index:
+    if not melodic_index and not percussion_index:
         return []
 
     issues: list[AntiCopyIssue] = []
     for track in rendered_tracks:
-        for (intervals, rhythm), first in _extract_windows(track.notes, n):
-            if not intervals:
-                # Janela sem intervalos (ex.: N=1 defensivo, ja bloqueado
-                # em MIN_N — guarda contra evolucao futura).
-                continue
-            match = corpus_index.get(intervals)
-            if match is None:
-                continue
-            source, source_track, corpus_rhythm = match
-            bar = find_bar(analysis, float(first.start_s))
-            rhythm_note = (
-                "intervals and rhythm identical"
-                if rhythm == corpus_rhythm
-                else "melodic contour identical, rhythm differs"
-            )
-            message = (
-                f"element {track.element_id!r}, track {track.track_name!r}, "
-                f"bar {bar_number(bar)}: {n}-event window matches "
-                f"{source!r} / track {source_track!r} ({rhythm_note} — "
-                f"transposition-invariant)."
-            )
-            issues.append(AntiCopyIssue(
-                severity=SEVERITY_ERROR,
-                element_id=track.element_id,
-                track=track.track_name,
-                bar=bar_number(bar),
-                n=n,
-                source=source,
-                source_track=source_track,
-                message=message,
-            ))
-            break   # uma issue por track — ver docstring
+        is_drum = _is_drum_element(plan, track.element_id)
+        bar = None
+        source = source_track = None
+        message = ""
+        if is_drum:
+            for sig, first in _extract_percussion_windows(track.notes, n):
+                if not sig[0]:
+                    continue
+                match = percussion_index.get(sig)
+                if match is None:
+                    continue
+                source, source_track = match
+                bar = find_bar(analysis, float(first.start_s))
+                message = (
+                    f"element {track.element_id!r}, track {track.track_name!r}, "
+                    f"bar {bar_number(bar)}: {n}-event percussion window "
+                    f"matches {source!r} / track {source_track!r} (same "
+                    f"simultaneous voices and rhythm at every onset)."
+                )
+                break
+        else:
+            for (intervals, rhythm), first in _extract_windows(track.notes, n):
+                if not intervals:
+                    # Janela sem intervalos (ex.: N=1 defensivo, ja
+                    # bloqueado em MIN_N — guarda contra evolucao futura).
+                    continue
+                match = melodic_index.get(intervals)
+                if match is None:
+                    continue
+                source, source_track, corpus_rhythm = match
+                bar = find_bar(analysis, float(first.start_s))
+                rhythm_note = (
+                    "intervals and rhythm identical"
+                    if rhythm == corpus_rhythm
+                    else "melodic contour identical, rhythm differs"
+                )
+                message = (
+                    f"element {track.element_id!r}, track {track.track_name!r}, "
+                    f"bar {bar_number(bar)}: {n}-event window matches "
+                    f"{source!r} / track {source_track!r} ({rhythm_note} — "
+                    f"transposition-invariant)."
+                )
+                break
+        if bar is None:
+            continue
+        issues.append(AntiCopyIssue(
+            severity=SEVERITY_ERROR,
+            element_id=track.element_id,
+            track=track.track_name,
+            bar=bar_number(bar),
+            n=n,
+            source=source,   # type: ignore[arg-type]
+            source_track=source_track,   # type: ignore[arg-type]
+            message=message,
+        ))   # uma issue por track — ver docstring
     return issues
 
 
@@ -367,6 +530,7 @@ def load_reference_sequences(paths: Iterable[str | Path]) -> list[ReferenceSeque
                 source=str(path),
                 track_name=track_name,
                 notes=notes,
+                is_drum=bool(instrument.is_drum),
             ))
     return sequences
 
