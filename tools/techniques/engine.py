@@ -3077,36 +3077,46 @@ def _apply_bass_attack_style(
         # mais fraca. Mesmo defeito, categoria, que ja tirou
         # `drums.accent_hierarchy` do motor uma vez.
         #
-        # Por posicoes consecutivas SEMPRE alternarem downstroke/upstroke
-        # (paridade de indice), o par adjacente sempre recebe shifts de
-        # sinal oposto — o pior caso de inversao acontece exatamente na
-        # fronteira entre duas notas vizinhas, nunca entre notas distantes.
-        # Por isso basta limitar a MAGNITUDE de cada nota pela metade da
-        # diferenca original com cada vizinho imediato (arredondado pra
-        # baixo — `2 * cap <= gap` garante que o shift somado nunca
-        # ultrapassa a diferenca original, entao o sinal de
-        # `novo[i] - novo[i+1]` nunca inverte o de `orig[i] - orig[i+1]`).
-        # Vizinhos com a MESMA velocity original (gap=0) nao tem ordem
-        # nenhuma pra inverter — a diferenciacao plena continua ali, e e
-        # exatamente o caso testado em
+        # Achado do Codex na PR #104, terceira rodada: limitar so pelo
+        # vizinho IMEDIATO nao basta. Duas notas de MESMA paridade (mesmo
+        # sinal de shift, ex. duas "down") so preservam a ordem original
+        # entre si se receberem a MESMA magnitude — capping por vizinho
+        # deixava cada nota com uma magnitude diferente dependendo de QUEM
+        # estava do lado, e duas "down" com magnitudes diferentes podiam
+        # inverter a ordem entre ELAS MESMAS mesmo sem serem vizinhas
+        # (origem [90, 90, 91]: nota 0 sem vizinho de gap>0 ficava com
+        # magnitude cheia, nota 2 ficava presa a 0 pelo gap de 1 com a
+        # nota 1 no meio — 90+cheio > 91+0, invertendo nota 0 acima da 2).
+        #
+        # A UNICA magnitude que preserva TODAS as ordens originais, entre
+        # QUAISQUER duas notas (vizinhas ou nao), e uma magnitude UNICA
+        # compartilhada por toda a track: notas de mesma paridade recebem
+        # o MESMO shift (a diferenca entre elas fica identica a original,
+        # nunca inverte, nao importa o valor da magnitude); notas de
+        # paridade oposta arriscam inverter quando o shift somado (2x a
+        # magnitude) ultrapassa a diferenca original entre elas — entao a
+        # magnitude tem que ser <= metade da MENOR diferenca original
+        # entre QUALQUER par de paridade oposta (nao so vizinhos). Par com
+        # a MESMA velocity original nao tem ordem nenhuma pra inverter e
+        # nao entra na conta — e o caso testado em
         # `test_generic_picked_alternates_downstroke_upstroke_by_relative_delta`
-        # (origem toda igual a 80).
-        half_delta = max(1, abs(downstroke_vel - upstroke_vel) // 2)
+        # (origem toda igual a 80, sem par de gap>0 em lugar nenhum).
         original_velocities = [msg.velocity for _start, msg in structural]
-        magnitudes = [half_delta] * len(structural)
-        for i in range(len(structural) - 1):
-            gap = abs(original_velocities[i] - original_velocities[i + 1])
-            if gap == 0:
-                continue
-            cap = gap // 2
-            if cap < magnitudes[i]:
-                magnitudes[i] = cap
-            if cap < magnitudes[i + 1]:
-                magnitudes[i + 1] = cap
+        half_delta = abs(downstroke_vel - upstroke_vel) // 2
+        magnitude = half_delta
+        for i in range(len(structural)):
+            for j in range(i + 1, len(structural)):
+                if i % 2 == j % 2:
+                    continue
+                gap = abs(original_velocities[i] - original_velocities[j])
+                if gap == 0:
+                    continue
+                cap = gap // 2
+                if cap < magnitude:
+                    magnitude = cap
 
         new_velocities = []
         for idx, (_start, msg) in enumerate(structural):
-            magnitude = magnitudes[idx]
             shift = magnitude if idx % 2 == 0 else -magnitude
             new_velocities.append(max(1, min(127, msg.velocity + shift)))
 

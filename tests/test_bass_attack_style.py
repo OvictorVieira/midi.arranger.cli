@@ -365,6 +365,56 @@ def test_generic_picked_close_velocities_does_not_invert_dynamics():
     )
 
 
+def test_generic_picked_preserves_order_across_non_adjacent_notes():
+    # Achado do Codex na PR #104, terceira rodada: limitar so pelo vizinho
+    # IMEDIATO nao bastava. Origem [90, 90, 91] — nota 0 e nota 1 empatam
+    # (gap=0, sem cap), nota 1 e nota 2 tem gap=1 (cap=0). Um cap por
+    # vizinho deixava a nota 0 com magnitude cheia (sem vizinho de gap>0)
+    # e a nota 2 travada em 0 — 90+cheio > 91+0, invertendo a nota 0
+    # (originalmente igual/menor) acima da nota 2 (originalmente maior),
+    # mesmo as duas nao sendo vizinhas. A magnitude agora e UNICA pra toda
+    # a track, limitada pelo menor gap entre QUALQUER par de paridade
+    # oposta (nao so vizinhos) — nota 0 (down) e nota 2 (down) tem a MESMA
+    # paridade e por isso preservam a diferenca original entre si sempre,
+    # nao importa a magnitude.
+    source = _make_midi([90, 90, 91])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={"style": "picked"},
+    )
+
+    after = _structural_note_ons(out)
+    velocities = [v for _t, _c, _p, v in after]
+    assert velocities[0] <= velocities[2], (
+        "nota 0 (originalmente <= nota 2) nao pode virar mais forte que "
+        f"a nota 2: {velocities!r}"
+    )
+
+
+def test_generic_picked_honors_equal_downstroke_upstroke_parameters():
+    # Achado do Codex na PR #104, terceira rodada: plano declarando
+    # picked_downstroke_velocity == picked_upstroke_velocity (ambos 90,
+    # valor valido nas duas faixas do manual) pede contraste ZERO entre
+    # downstroke e upstroke — mas o antigo `max(1, ...)` forcava um shift
+    # minimo de 1 mesmo assim, entao [80, 80] virava [81, 79] apesar do
+    # plano pedir explicitamente nenhuma diferenca. Dois parametros
+    # aceitos e validados que nao comandam o resultado e' parametro
+    # mentiroso (AGENTS.md).
+    source = _make_midi([80, 80])
+
+    out = apply_technique(
+        "bass.attack_style", source, seed=1, tool="generic",
+        parameters={
+            "style": "picked",
+            "picked_downstroke_velocity": 90,
+            "picked_upstroke_velocity": 90,
+        },
+    )
+
+    assert _serialize(out) == _serialize(source)
+
+
 def test_generic_picked_saturated_velocity_is_not_reported_as_applied():
     # Origem ja saturada no clamp [1, 127] (127 alternando com 1): o shift
     # relativo nao produz nenhuma mudanca audivel de velocity. Achado do
