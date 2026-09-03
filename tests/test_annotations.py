@@ -568,3 +568,31 @@ def test_plan_annotations_survive_dict_round_trip():
         ),
     ]
     assert from_dict(to_dict(plan)) == plan
+
+
+def test_plan_annotation_event_type_rejects_value_outside_closed_enum():
+    """AC: `event_type` fora de `ANNOTATION_EVENT_TYPES` (`marker`/`text`/
+    `cue_marker`) e erro de validacao mesmo em plano construido em memoria ou
+    carregado via `plan.load()` — sem isso `lyric` (ou qualquer outro valor)
+    passaria por nao rodar o schema da fachada (achado do Codex na PR #103)."""
+    plan = _minimal_plan_with_element(Element(
+        id="anything",
+        role="pad",
+        sections=["INTRO"],
+        register=[48, 72],
+        layers=1,
+        sync_role="sustain_through",
+        articulation="sustained",
+        harmony="follow_chords",
+        rationale="pad default",
+    ))
+    plan.annotations = [
+        PlanAnnotation(
+            text="algo", tick=100, bar=1, track="Piano",
+            event_type="lyric", status="declined",
+            reason="fora do escopo desta secao",
+        ),
+    ]
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "annotations[0].event_type"

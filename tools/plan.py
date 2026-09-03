@@ -1120,7 +1120,7 @@ def validate(
             )
         _require_nonblank_str(annot.text, f"{base}.text")
         _require_nonblank_str(annot.track, f"{base}.track")
-        _require_nonblank_str(annot.event_type, f"{base}.event_type")
+        _require_in(annot.event_type, ANNOTATION_EVENT_TYPES, f"{base}.event_type")
         _require_in(annot.status, ANNOTATION_STATUSES, f"{base}.status")
         if not isinstance(annot.tick, int) or isinstance(annot.tick, bool) or annot.tick < 0:
             raise PlanValidationError(f"{base}.tick", f"must be non-negative int, got {annot.tick!r}")
