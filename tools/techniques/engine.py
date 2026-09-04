@@ -4141,6 +4141,9 @@ def _apply_keys_pitch_bend(
       - `mido.Message('pitchwheel', pitch=...)` grava LSB+MSB internamente;
         a resolucao usada e a de `passos_para_(cima|baixo)`, nao 128.
       - Densidade de eventos limitada por `teto_mensagens_por_segundo_din`.
+      - Canal 9 (bateria) e ignorado: nota de kit GM e peca distinta, nao grau
+        de escala — mesma convencao ja aplicada por keys.modulation,
+        keys.expression e keys.damper_pedal.
       - Idempotente: reaplicar com a mesma seed produz eventos com a mesma
         assinatura (canal, tick, valor) e o dedup do dispatch central
         descarta duplicatas.
@@ -4183,7 +4186,12 @@ def _apply_keys_pitch_bend(
     select_rng = context.rng("pitch_bend_select")
 
     for track in mid.tracks:
-        structural = structural_notes(track)
+        # Canal 9 (bateria) e ignorado: notas de kit GM sao pecas distintas,
+        # nao graus de escala — tratar duas batidas consecutivas como um
+        # intervalo de altura e emitir "glide" entre elas nao tem sentido
+        # musical nenhum. Mesma convencao ja aplicada por keys.modulation,
+        # keys.expression e keys.damper_pedal via `iter_track_selections`.
+        structural = structural_notes(track, skip_drum_channel=True)
         if len(structural) < 2:
             continue
 
