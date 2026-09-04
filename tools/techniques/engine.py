@@ -4708,6 +4708,802 @@ def _apply_keys_damper_pedal(
     return mid
 
 
+
+@register_technique(
+    "guitar.palm_mute",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
+def _apply_guitar_palm_mute(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Palm mute / chug na guitarra — profundidade por velocity, gate curto.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity` e `gate_pct` do manual via `build_index()` (CONVENCAO,
+        `knowledge/tecnicas/tecnicas_guitarra_midi.md#1`).
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - `density` ausente ou <= 0 DESLIGA — mute geral e ausencia de intencao
+        musical, nunca default (mute continuo na track inteira nao e
+        "seguro", e ausencia de decisao musical).
+      - Ample e Shreddage 3 modulam a PROFUNDIDADE do mute pela VELOCITY, nao
+        por keyswitch fixo (manual §1): a nota selecionada sai numa faixa de
+        velocity mais baixa em vez de trocar de articulacao travada.
+      - Encurta a duracao pelo `gate_pct` do manual — chug e nota curta.
+      - Quando a receita da ferramenta declara `keyswitch` (Ample/Ample
+        Metal selecionam a articulacao Mute por keyswitch), o keyswitch e
+        segurado (par note_on/note_off) do inicio ao fim de cada nota
+        mutada — ferramentas sem `keyswitch` na receita (generic,
+        shreddage3, musiclab_reallpc) so mudam velocity/gate.
+      - Determinismo por seed via `context.rng()`.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    _technique, _range = load_range_resolver(context)
+
+    velocity_range = _range("velocity") or (30.0, 70.0)
+    velocity_lo = max(1, int(velocity_range[0]))
+    velocity_hi = max(velocity_lo, int(velocity_range[1]))
+
+    gate_range = _range("gate_pct") or (25.0, 50.0)
+    gate_lo = max(1.0, float(gate_range[0]))
+    gate_hi = max(gate_lo, float(gate_range[1]))
+
+    keyswitch_pitch: int | None = None
+    ks_raw = context.recipe.get("keyswitch") if context.recipe else None
+    if isinstance(ks_raw, int) and not isinstance(ks_raw, bool):
+        keyswitch_pitch = ks_raw
+
+    if mid.ticks_per_beat <= 0:
+        return mid
+
+    selection_rng = context.rng("selection")
+    velocity_rng = context.rng("velocity")
+    gate_rng = context.rng("gate")
+
+    for track in mid.tracks:
+        pairs = list(_iter_note_pairs(track))
+        if not pairs:
+            continue
+
+        indices = list(range(len(pairs)))
+        selection_rng.shuffle(indices)
+        wanted = max(1, min(len(pairs), int(round(len(pairs) * density))))
+        selected = set(indices[:wanted])
+        if not selected:
+            continue
+
+        new_velocity_by_idx: dict[int, int] = {}
+        new_end_by_idx: dict[int, int] = {}
+        keyswitch_events: list[tuple[int, int, mido.Message]] = []
+        for pair_index, pair in enumerate(pairs):
+            if pair_index not in selected:
+                continue
+            (
+                channel, _pitch, start_tick, end_tick, _orig_vel,
+                note_on_index, note_off_index,
+            ) = pair
+            duration = max(1, end_tick - start_tick)
+            gate_pct = gate_rng.uniform(gate_lo, gate_hi)
+            new_duration = max(1, int(round(duration * gate_pct / 100.0)))
+            new_end = start_tick + min(duration, new_duration)
+            new_velocity_by_idx[note_on_index] = velocity_rng.randint(velocity_lo, velocity_hi)
+            new_end_by_idx[note_off_index] = new_end
+
+            if keyswitch_pitch is not None:
+                keyswitch_events.append((
+                    max(0, start_tick - 1), -2,
+                    _mido.Message(
+                        "note_on", channel=channel,
+                        note=keyswitch_pitch, velocity=127,
+                    ),
+                ))
+                keyswitch_events.append((
+                    new_end, 4,
+                    _mido.Message(
+                        "note_off", channel=channel,
+                        note=keyswitch_pitch, velocity=0,
+                    ),
+                ))
+
+        if not new_velocity_by_idx:
+            continue
+
+        absolute: list[tuple[int, int, int, mido.Message]] = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            abs_tick = new_end_by_idx.get(msg_index, tick)
+            if msg_index in new_velocity_by_idx and not msg.is_meta:
+                msg = msg.copy(velocity=new_velocity_by_idx[msg_index])
+            absolute.append((abs_tick, 0, msg_index, msg))
+        order = len(absolute)
+        for event_tick, bias, ks_msg in keyswitch_events:
+            absolute.append((event_tick, bias, order, ks_msg))
+            order += 1
+
+        absolute.sort(key=lambda item: (item[0], item[1], item[2]))
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in absolute:
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
+@register_technique("guitar.dead_notes", "technique")
+def _apply_guitar_dead_notes(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Dead notes entre chugs — transiente da palheta contra corda abafada.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `velocity` e `gate_pct` do manual via `build_index()` (CONVENCAO,
+        `knowledge/tecnicas/tecnicas_guitarra_midi.md#10`).
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - `density = 0.0` DESLIGA — teto checado ANTES de acrescentar
+        candidato (mesmo cuidado de `bass.ghost_notes`/`drums.ghost_notes`).
+      - Nao semeia em silencio: intervalo entre notas estruturais > 1
+        compasso (`ticks_per_beat*4`) e borda de pausa, nao groove — a mao
+        da palheta nao continua tocando sobre um silencio de arranjo.
+      - Dead note herda o pitch da nota estrutural anterior (mesma corda em
+        que a mao ja esta) — nunca inventa altura.
+      - Idempotente: reaplicar com a mesma seed dispara o dedup central do
+        dispatch (`_drop_reapplied_notes`).
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+
+    _technique, _range = load_range_resolver(context)
+
+    velocity_range = _range("velocity") or (15.0, 35.0)
+    velocity_lo = max(1, int(velocity_range[0]))
+    velocity_hi = max(velocity_lo, int(velocity_range[1]))
+
+    gate_range = _range("gate_pct") or (8.0, 20.0)
+    gate_lo = max(1.0, float(gate_range[0]))
+    gate_hi = max(gate_lo, float(gate_range[1]))
+
+    density_raw = context.parameters.get("density")
+    density: float | None
+    if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
+        density = float(density_raw)
+    else:
+        density = None
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    sixteenth = max(1, ticks_per_beat // 4)
+    max_groove_interval = ticks_per_beat * 4
+
+    position_rng = context.rng("positions")
+    velocity_rng = context.rng("velocity")
+    gate_rng = context.rng("gate")
+
+    def target_count(size: int) -> int:
+        if density is None:
+            return size
+        if density <= 0.0:
+            return 0
+        return max(1, min(size, int(round(size * density))))
+
+    def overlaps_structural(existing, channel, pitch, start_tick, end_tick):
+        for chan, pit, start, end in existing:
+            if chan != channel or pit != pitch:
+                continue
+            if start < end_tick and end > start_tick:
+                return True
+        return False
+
+    for track in mid.tracks:
+        pairs = [
+            (channel, pitch, start_tick, end_tick)
+            for channel, pitch, start_tick, end_tick, _vel, _on, _off
+            in _iter_note_pairs(track)
+        ]
+        if len(pairs) < 2:
+            continue
+
+        by_channel: dict[int, list[tuple[int, int, int, int]]] = {}
+        for pair in pairs:
+            by_channel.setdefault(pair[0], []).append(pair)
+        for lst in by_channel.values():
+            lst.sort(key=lambda item: (item[2], item[3]))
+
+        candidates: list[dict[str, int]] = []
+        for channel_pairs in by_channel.values():
+            for current, following in zip(
+                channel_pairs, channel_pairs[1:], strict=False,
+            ):
+                cur_channel, cur_pitch, cur_start, _cur_end = current
+                _n_channel, _n_pitch, next_start, _n_end = following
+                if next_start - cur_start > max_groove_interval:
+                    continue
+                tick = cur_start + sixteenth
+                while tick < next_start:
+                    sixteenth_in_beat = (tick % ticks_per_beat) // sixteenth
+                    if sixteenth_in_beat in (1, 3):
+                        candidates.append({
+                            "tick": tick,
+                            "channel": cur_channel,
+                            "pitch": cur_pitch,
+                        })
+                    tick += sixteenth
+
+        if not candidates:
+            continue
+
+        shuffled = list(candidates)
+        position_rng.shuffle(shuffled)
+        wanted = target_count(len(shuffled))
+        selected: list[dict[str, int]] = []
+        seen_slots: set[tuple[int, int]] = set()
+        for candidate in shuffled:
+            if len(selected) >= wanted:
+                break
+            slot = (candidate["channel"], candidate["tick"])
+            if slot in seen_slots:
+                continue
+            gate_pct = gate_rng.uniform(gate_lo, gate_hi)
+            duration = max(1, int(round(sixteenth * gate_pct / 100.0)))
+            end_tick = candidate["tick"] + duration
+            if overlaps_structural(
+                pairs, candidate["channel"], candidate["pitch"],
+                candidate["tick"], end_tick,
+            ):
+                continue
+            candidate["end_tick"] = end_tick
+            candidate["velocity"] = velocity_rng.randint(velocity_lo, velocity_hi)
+            selected.append(candidate)
+            seen_slots.add(slot)
+
+        if not selected:
+            continue
+
+        selected.sort(key=lambda item: item["tick"])
+        events: list[tuple[int, int, mido.Message]] = []
+        for candidate in selected:
+            channel = candidate["channel"]
+            events.append((
+                candidate["tick"], 1,
+                _mido.Message(
+                    "note_on", channel=channel,
+                    note=candidate["pitch"], velocity=candidate["velocity"],
+                ),
+            ))
+            events.append((
+                candidate["end_tick"], 3,
+                _mido.Message(
+                    "note_off", channel=channel,
+                    note=candidate["pitch"], velocity=0,
+                ),
+            ))
+
+        absolute: list[tuple[int, int, int, mido.Message]] = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            absolute.append((tick, 0, order, msg))
+            order += 1
+        for candidate_tick, bias, msg in events:
+            absolute.append((candidate_tick, bias, order, msg))
+            order += 1
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, _order, msg in sorted(
+            absolute, key=lambda item: (item[0], item[1], item[2]),
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
+@register_technique(
+    "guitar.pinch_harmonic",
+    "technique",
+    allow_structural_velocity_change=True,
+)
+def _apply_guitar_pinch_harmonic(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Pinch harmonic — velocity 127 sequestra a articulacao em Ample.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `ample_velocity_gatilho` (127) e `ample_teto_de_acento_normal`
+        (126) do manual — numeros com fonte real (`§3`, Ample Settings &
+        CPC), nao CONVENCAO.
+      - So tem realizacao honesta em `tool: ample` ou `tool: ample_metal`:
+        a UNICA receita `generic` do manual exige transpor a nota escrita
+        pelo intervalo do parcial harmonico, o que e mudanca de pitch
+        estrutural — proibida fora da excecao de bateria
+        (`drums.articulation_diff`). Em qualquer outra ferramenta a tecnica
+        falha explicito em vez de aplicar um acento que nao e pinch
+        harmonic nenhum.
+      - `density` ausente ou <= 0 DESLIGA.
+      - Seleciona notas estruturais abaixo do gatilho e sobe a velocity
+        para exatamente 127 — nunca mexe em pitch, posicao ou duracao.
+      - Idempotente: reaplicar so pode subir velocity ja em 127 para 127
+        (no-op observavel), nunca oscila.
+    """
+
+    import mido as _mido
+
+    from ._helpers import manual_value, technique_from_manual
+    from .errors import TechniqueRecipeError
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    density = float(density_raw)
+    if density <= 0.0:
+        return mid
+
+    if context.tool not in {"ample", "ample_metal"}:
+        raise TechniqueRecipeError(
+            f"tecnica {context.canonical!r}: pinch harmonic so tem "
+            "realizacao honesta num plugin que dispara o harmonico pela "
+            "velocity 127 (ample/ample_metal); a unica receita generic do "
+            "manual exigiria transpor a nota estrutural pelo intervalo do "
+            "parcial, mudanca de pitch estrutural proibida fora da "
+            "excecao de bateria — declare tool=ample ou tool=ample_metal "
+            f"no elemento/edit para usar esta tecnica (recebido: {context.tool!r})"
+        )
+
+    technique = technique_from_manual(context)
+    gatilho = manual_value(context, technique, "ample_velocity_gatilho")
+    teto_acento = manual_value(context, technique, "ample_teto_de_acento_normal")
+    if not isinstance(gatilho, int) or isinstance(gatilho, bool) or gatilho != 127:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera "
+            f"ample_velocity_gatilho=127; manual declarou {gatilho!r}"
+        )
+    if (
+        not isinstance(teto_acento, int)
+        or isinstance(teto_acento, bool)
+        or teto_acento != 126
+    ):
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera "
+            f"ample_teto_de_acento_normal=126; manual declarou {teto_acento!r}"
+        )
+
+    select_rng = context.rng("pinch_select")
+
+    for track in mid.tracks:
+        pairs = list(_iter_note_pairs(track))
+        candidates = [
+            index for index, pair in enumerate(pairs) if pair[4] < gatilho
+        ]
+        if not candidates:
+            continue
+        shuffled = list(candidates)
+        select_rng.shuffle(shuffled)
+        wanted = max(1, min(len(candidates), int(round(len(candidates) * density))))
+        selected = set(shuffled[:wanted])
+        if not selected:
+            continue
+
+        new_velocity_by_idx: dict[int, int] = {
+            pairs[index][5]: gatilho for index in selected
+        }
+
+        absolute: list[tuple[int, int, mido.Message]] = []
+        tick = 0
+        for msg_index, msg in enumerate(track):
+            tick += msg.time
+            if msg_index in new_velocity_by_idx and not msg.is_meta:
+                msg = msg.copy(velocity=new_velocity_by_idx[msg_index])
+            absolute.append((tick, msg_index, msg))
+
+        rebuilt = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _index, msg in sorted(
+            absolute, key=lambda item: (item[0], item[1]),
+        ):
+            rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        track[:] = rebuilt
+
+    return mid
+
+
+@register_technique(
+    "guitar.hammer_pull",
+    "technique",
+    allow_structural_velocity_change=True,
+    allow_structural_duration_change=True,
+)
+def _apply_guitar_hammer_pull(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Hammer-on/pull-off de guitarra — ligado sem reataque, MESMA corda.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `reducao_de_velocity_percentual` e `overlap_ms` do manual
+        (CONVENCAO, `knowledge/tecnicas/tecnicas_guitarra_midi.md#7`).
+      - Precedencia `context.parameters` > receita > `range` do manual.
+      - RESTRICAO FISICA do manual: hammer-on/pull-off so existem na MESMA
+        corda. Par de notas so vira candidato quando existe pelo menos uma
+        corda (na afinacao de `context.parameters["tuning"]`, default E
+        padrao) que alcanca as DUAS alturas dentro de `max_fret` — usa a
+        mesma tabela de afinacoes de `tools/techniques/physical.py`.
+      - So aplica entre notas adjacentes fisicamente ligaveis: mesmo canal,
+        intervalo em semitons dentro do limite de ligado (<= 4), separacao
+        temporal curta (<= metade de uma batida).
+      - Ligada (segunda nota) sai mais fraca por `reducao_de_velocity_percentual`
+        (reducao percentual sobre a velocity original, direcao documentada
+        pela Shreddage); primeira estende note_off para sobrepor a segunda
+        por `overlap_ms` — sobreposicao e o que dispara o legato num
+        instrumento sampleado.
+      - Nao altera pitch nem posicao (start_tick) de nota estrutural.
+      - Receita com `keyswitch` declarado insere o par note_on/note_off do
+        keyswitch em volta da ligadura; sem keyswitch, sobreposicao E a
+        unica assinatura de idempotencia disponivel (mesma logica de
+        `bass.hammer_pull`).
+      - Determinismo por seed via `context.rng()`.
+    """
+
+    import mido as _mido
+
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import sort_and_flush as _sort_and_flush
+    from .physical import _GUITAR_TUNINGS
+
+    _technique, _resolve_range = load_range_resolver(context)
+    recipe = context.recipe
+
+    def _range(name: str, fallback: tuple[float, float]) -> tuple[float, float]:
+        return _resolve_range(name) or fallback
+
+    density_raw = context.parameters.get("density")
+    if isinstance(density_raw, (int, float)) and not isinstance(density_raw, bool):
+        density = float(density_raw)
+    else:
+        density = 0.0
+    if density <= 0.0:
+        return mid
+
+    reduction_pct_range = _range("reducao_de_velocity_percentual", (15.0, 35.0))
+    overlap_range = _range("overlap_ms", (5.0, 15.0))
+
+    tuning_raw = context.parameters.get("tuning")
+    if isinstance(tuning_raw, str):
+        tuning = _GUITAR_TUNINGS.get(tuning_raw, _GUITAR_TUNINGS["e_padrao"])
+    elif isinstance(tuning_raw, (list, tuple)) and tuning_raw:
+        tuning = tuple(int(p) for p in tuning_raw)
+    else:
+        tuning = _GUITAR_TUNINGS["e_padrao"]
+
+    max_fret_raw = context.parameters.get("max_fret")
+    max_fret = (
+        int(max_fret_raw)
+        if isinstance(max_fret_raw, int) and not isinstance(max_fret_raw, bool)
+        else 24
+    )
+
+    def strings_for(pitch: int) -> set[int]:
+        return {
+            s for s, open_pitch in enumerate(tuning)
+            if open_pitch <= pitch <= open_pitch + max_fret
+        }
+
+    keyswitch_pitch: int | None = None
+    ks_raw = recipe.get("keyswitch") if recipe else None
+    if isinstance(ks_raw, int) and not isinstance(ks_raw, bool):
+        keyswitch_pitch = ks_raw
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    max_gap_ticks = ticks_per_beat // 2
+    max_interval_semitones = 4
+
+    rng = context.rng("hammer_pull")
+
+    for track in mid.tracks:
+        structural: list[dict] = []
+        pending: dict[tuple[int, int], list[dict]] = {}
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta:
+                continue
+            if msg.type == "note_on" and msg.velocity > 0:
+                entry = {
+                    "channel": msg.channel, "pitch": msg.note,
+                    "start": tick, "end": None,
+                    "on_msg": msg, "off_msg": None,
+                }
+                structural.append(entry)
+                pending.setdefault((msg.channel, msg.note), []).append(entry)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                stack = pending.get((msg.channel, msg.note))
+                if stack:
+                    entry = stack.pop(0)
+                    entry["end"] = tick
+                    entry["off_msg"] = msg
+
+        structural = [e for e in structural if e["end"] is not None]
+        if len(structural) < 2:
+            continue
+
+        by_channel: dict[int, list[dict]] = {}
+        for entry in structural:
+            by_channel.setdefault(entry["channel"], []).append(entry)
+        for lst in by_channel.values():
+            lst.sort(key=lambda e: (e["start"], e["end"]))
+
+        candidate_pairs: list[tuple[dict, dict]] = []
+        for lst in by_channel.values():
+            for a, b in zip(lst, lst[1:], strict=False):
+                interval = abs(b["pitch"] - a["pitch"])
+                if interval == 0 or interval > max_interval_semitones:
+                    continue
+                gap = b["start"] - a["end"]
+                if gap > max_gap_ticks:
+                    continue
+                if b["start"] <= a["start"]:
+                    continue
+                if not (strings_for(a["pitch"]) & strings_for(b["pitch"])):
+                    # Restricao fisica do manual: hammer-on/pull-off so
+                    # existem quando as duas alturas alcancam a MESMA corda.
+                    continue
+                if a["end"] > b["start"] and keyswitch_pitch is None:
+                    continue
+                candidate_pairs.append((a, b))
+
+        candidate_pairs.sort(key=lambda pair: (pair[0]["start"], pair[0]["channel"]))
+        select_rng = context.rng("select")
+        ligatures: list[tuple[dict, dict]] = []
+        if density >= 1.0:
+            ligatures = list(candidate_pairs)
+        else:
+            for pair in candidate_pairs:
+                if select_rng.random() < density:
+                    ligatures.append(pair)
+
+        if not ligatures:
+            continue
+
+        events_to_insert: list[tuple[int, int, mido.Message]] = []
+        new_end_by_id: dict[int, int] = {}
+        for a, b in ligatures:
+            overlap_ms = rng.uniform(overlap_range[0], overlap_range[1])
+            overlap_ticks = max(1, int(round(overlap_ms * ticks_per_beat / 500.0)))
+            new_end = b["start"] + overlap_ticks
+            if new_end > a["end"] and a["off_msg"] is not None:
+                new_end_by_id[id(a["off_msg"])] = new_end
+                a["end"] = new_end
+
+            reduction_pct = rng.uniform(reduction_pct_range[0], reduction_pct_range[1])
+            b["on_msg"].velocity = max(
+                1, min(127, int(round(b["on_msg"].velocity * (1.0 - reduction_pct / 100.0)))),
+            )
+
+            if keyswitch_pitch is not None:
+                ks_start_tick = max(0, a["start"] - 1)
+                ks_end_tick = b["end"] if b["end"] is not None else b["start"] + 1
+                events_to_insert.append((
+                    ks_start_tick, -2,
+                    _mido.Message(
+                        "note_on", channel=a["channel"],
+                        note=keyswitch_pitch, velocity=127,
+                    ),
+                ))
+                events_to_insert.append((
+                    ks_end_tick, 4,
+                    _mido.Message(
+                        "note_off", channel=a["channel"],
+                        note=keyswitch_pitch, velocity=0,
+                    ),
+                ))
+
+        absolute: list[tuple[int, int, int, mido.Message]] = []
+        tick = 0
+        order = 0
+        for msg in track:
+            tick += msg.time
+            abs_tick = new_end_by_id.get(id(msg), tick)
+            absolute.append((abs_tick, 0, order, msg))
+            order += 1
+        for abs_tick, bias, msg in events_to_insert:
+            absolute.append((abs_tick, bias, order, msg))
+            order += 1
+
+        _sort_and_flush(absolute, track)
+
+    return mid
+
+
+@register_technique("guitar.double_tracking", "technique")
+def _apply_guitar_double_tracking(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Double tracking real — segunda track com offsets, nunca uma copia.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Le `offset_de_timing_convencao_ms`, `offset_de_velocity_convencao`
+        e `detune_convencao_cents` do manual (CONVENCAO,
+        `knowledge/tecnicas/tecnicas_guitarra_midi.md#13`).
+      - `density` ausente ou <= 0 DESLIGA — dobrar a track inteira sem
+        pedido explicito nao e default seguro.
+      - NUNCA duplica a track MIDI 1-para-1: cada nota da track original
+        nasce numa SEGUNDA track, num canal novo, com offset de timing e de
+        velocity sorteados por nota (`context.rng`) e um detune constante
+        de canal via pitch bend — a copia identica soaria coerente em fase
+        (manual §13), o oposto do que double tracking real produz.
+      - Marca a track nova com `meta text
+        guitar_double_tracking_of=<indice da track original>` no tick 0,
+        junto do `track_name` `<original> (Double)` — o proprio marcador e
+        o mecanismo de idempotencia: reaplicar detecta que a origem ja tem
+        par e nao cria uma terceira track, e nunca dobra uma track que ela
+        mesma e um double (evita cadeia de doubles).
+      - A track original nunca e tocada — permanece nota a nota identica.
+      - Detune fica bem abaixo de 1 semitom (100 cents), dentro do range
+        default de pitch bend (±2 semitons), sem precisar de RPN.
+    """
+
+    import mido as _mido
+
+    from ._helpers import first_tempo
+    from ._param_range import load_range_resolver
+    from .notes import _track_name
+
+    density_raw = context.parameters.get("density")
+    if not isinstance(density_raw, (int, float)) or isinstance(density_raw, bool):
+        return mid
+    if float(density_raw) <= 0.0:
+        return mid
+
+    _technique, _range = load_range_resolver(context)
+
+    timing_range = _range("offset_de_timing_convencao_ms") or (8.0, 20.0)
+    velocity_range = _range("offset_de_velocity_convencao") or (-10.0, 10.0)
+    detune_range = _range("detune_convencao_cents") or (3.0, 10.0)
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    ticks_per_ms = ticks_per_beat * 1_000_000 / first_tempo(mid) / 1000.0
+
+    marker_prefix = "guitar_double_tracking_of="
+
+    existing_marked_sources: set[int] = set()
+    for existing_track in mid.tracks:
+        for msg in existing_track:
+            if (
+                msg.is_meta and msg.type == "text"
+                and isinstance(msg.text, str)
+                and msg.text.startswith(marker_prefix)
+            ):
+                try:
+                    existing_marked_sources.add(int(msg.text[len(marker_prefix):]))
+                except ValueError:
+                    continue
+
+    timing_rng = context.rng("double_timing")
+    velocity_rng = context.rng("double_velocity")
+    detune_rng = context.rng("double_detune")
+
+    new_tracks: list[mido.MidiTrack] = []
+    original_track_count = len(mid.tracks)
+    for track_index in range(original_track_count):
+        if track_index in existing_marked_sources:
+            continue
+        track = mid.tracks[track_index]
+        is_double_track = any(
+            msg.is_meta and msg.type == "text"
+            and isinstance(msg.text, str)
+            and msg.text.startswith(marker_prefix)
+            for msg in track
+        )
+        if is_double_track:
+            continue
+
+        pairs = list(_iter_note_pairs(track))
+        if not pairs:
+            continue
+
+        original_channels = sorted({pair[0] for pair in pairs})
+        new_channel = (original_channels[0] + 1) % 16
+        if new_channel == 9:
+            new_channel = (new_channel + 1) % 16
+        if new_channel in original_channels:
+            for candidate_channel in range(16):
+                if candidate_channel != 9 and candidate_channel not in original_channels:
+                    new_channel = candidate_channel
+                    break
+
+        timing_offset_ms = timing_rng.uniform(timing_range[0], timing_range[1])
+        timing_offset_ticks = int(round(timing_offset_ms * ticks_per_ms))
+        velocity_offset = int(round(
+            velocity_rng.uniform(velocity_range[0], velocity_range[1])
+        ))
+        detune_sign = 1 if detune_rng.random() < 0.5 else -1
+        detune_cents = detune_sign * detune_rng.uniform(
+            detune_range[0], detune_range[1],
+        )
+        pitch_bend_value = int(round(8192 * (detune_cents / 100.0) / 2.0))
+        pitch_bend_value = max(-8192, min(8191, pitch_bend_value))
+
+        source_name = _track_name(track) or f"Track {track_index}"
+
+        events: list[tuple[int, int, mido.Message | mido.MetaMessage]] = [
+            (0, 0, _mido.MetaMessage(
+                "track_name", name=f"{source_name} (Double)"[:127],
+            )),
+            (0, 1, _mido.MetaMessage(
+                "text", text=f"{marker_prefix}{track_index}",
+            )),
+            (0, 2, _mido.Message(
+                "pitchwheel", channel=new_channel, pitch=pitch_bend_value,
+            )),
+        ]
+        for _channel, pitch, start, end, velocity, _on_idx, _off_idx in pairs:
+            new_start = max(0, start + timing_offset_ticks)
+            new_end = max(new_start + 1, end + timing_offset_ticks)
+            new_velocity = max(1, min(127, velocity + velocity_offset))
+            events.append((
+                new_start, 3,
+                _mido.Message(
+                    "note_on", channel=new_channel,
+                    note=pitch, velocity=new_velocity,
+                ),
+            ))
+            events.append((
+                new_end, 4,
+                _mido.Message(
+                    "note_off", channel=new_channel, note=pitch, velocity=0,
+                ),
+            ))
+
+        events.sort(key=lambda item: (item[0], item[1]))
+        new_track = _mido.MidiTrack()
+        previous_tick = 0
+        for absolute_tick, _bias, msg in events:
+            new_track.append(msg.copy(time=absolute_tick - previous_tick))
+            previous_tick = absolute_tick
+        new_track.append(_mido.MetaMessage("end_of_track", time=0))
+        new_tracks.append(new_track)
+
+    if new_tracks:
+        mid.tracks.extend(new_tracks)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

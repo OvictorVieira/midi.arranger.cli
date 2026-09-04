@@ -603,11 +603,12 @@ def test_brief_recusa_authorized_technique_de_keys_nao_implementada():
 
 
 def test_brief_recusa_authorized_technique_de_guitarra_sem_aplicador():
-    """Guitarra nao tem tecnica implementada no motor hoje; o brief nao
-    pode autorizar `guitar.palm_mute` (nem qualquer outra) enquanto isso
-    for verdade. A mensagem tem que sinalizar essa ausencia."""
+    """`guitar.natural_harmonics` nao tem aplicador no motor (exigiria
+    transpor a nota estrutural pelo intervalo do parcial, mudanca de pitch
+    estrutural proibida fora da excecao de bateria) — o brief nao pode
+    autorizar. A mensagem tem que sinalizar essa ausencia."""
     brief = _reset_family(_valid_brief(), "guitar")
-    brief["style"]["guitar"]["authorized_techniques"] = ["guitar.palm_mute"]
+    brief["style"]["guitar"]["authorized_techniques"] = ["guitar.natural_harmonics"]
 
     env = call("brief.validate", {"brief": brief})
     assert env["ok"] is False

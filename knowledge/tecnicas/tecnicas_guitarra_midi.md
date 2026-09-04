@@ -112,7 +112,9 @@ envenenada de §0.4.
     {"name": "generico_program_gm", "value": 29, "source": "CONVENCAO — Electric Guitar (muted), https://musescore.org/en/node/293227"},
     {"name": "velocity_de_chug_que_soa_humana", "source": null},
     {"name": "gate_absoluto_ms", "source": null},
-    {"name": "razao_gate_step_apertado_vs_solto", "source": null}
+    {"name": "razao_gate_step_apertado_vs_solto", "source": null},
+    {"name": "velocity", "range": [30, 70], "source": "CONVENCAO — abaixo da mediana MIDI para que a faixa fique compativel com shreddage3_velocity_mute (1-59, acima) sem colar no teto sustain (60-119); faixa escolhida para o motor, sem medicao publicada"},
+    {"name": "gate_pct", "range": [25, 50], "source": "CONVENCAO — mesma faixa de generico_fator_de_duracao (0.25-0.5) acima, expressa em percentual para casar com a convencao gate_pct ja usada em bass.palm_mute"}
   ],
   "tools": {
     "generic": {"note": "sem articulacao: encurtar a duracao soante para 1/2 ou 1/4 da escrita; GM program 29"},
@@ -313,7 +315,8 @@ alterado** — é uma gravação, não uma modulação.
     {"name": "extent_cents", "range": [20, 100], "source": "CONVENCAO — mesma fonte"},
     {"name": "cents_por_semitom", "value": 100, "source": "https://timbreandorchestration.org/writings/timbre-lingo/2022/6/27/vibrato"},
     {"name": "atraso_de_inicio_ms", "source": null},
-    {"name": "rate_e_depth_medidos_em_metal", "source": null}
+    {"name": "rate_e_depth_medidos_em_metal", "source": null},
+    {"name": "atraso_de_inicio_convencao_ms", "range": [100, 200], "source": "CONVENCAO — o mecanismo Start esta documentado pela Ample (impede vibrato em notas rapidas), mas o valor nao e publicado; janela abaixo da usada em bass (150-300ms, mesma lacuna) porque vibrato de guitarra costuma entrar mais cedo que o de baixo; faixa escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"cc": 1, "note": "CC1 e o controlador de vibrato na maioria das libs"},
@@ -403,7 +406,9 @@ CONVENÇÃO). Nenhum número específico.
     {"name": "musiclab_range_semitons", "range": [0, 48], "source": "FX 7 HammerOn, https://www.musiclab.com/assets/files/RealLPC.pdf p.101"},
     {"name": "musiclab_tapping_range_semitons", "value": 24, "source": "Tapping FX, monofonico, mesma corda, idem p.56"},
     {"name": "sobreposicao_para_disparar_ms", "source": null},
-    {"name": "reducao_de_velocity_da_nota_ligada", "source": null}
+    {"name": "reducao_de_velocity_da_nota_ligada", "source": null},
+    {"name": "reducao_de_velocity_percentual", "range": [15, 35], "source": "CONVENCAO — mesma direcao documentada pela Shreddage (reducao estatica de volume na articulacao de hammer-on), percentual dentro da mesma ordem de grandeza usada por bass.hammer_pull (velocity_relativa -30 a -15) para o mesmo gesto; faixa escolhida para o motor, sem medicao publicada"},
+    {"name": "overlap_ms", "range": [5, 15], "source": "CONVENCAO — a unica fonte diz apenas 'a few milliseconds' (VI-Control); janela abaixo do teto usado em bass.hammer_pull (10-40ms) porque a escala de tempo de guitarra e mais rapida; faixa escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"note": "sobrepor as notas; reduzir a velocity da ligada em relacao a palhetada"},
@@ -531,7 +536,9 @@ fonte** — não inventar.
   "parameters": [
     {"name": "faixa_de_velocity", "source": null},
     {"name": "gate_ms", "source": null},
-    {"name": "densidade_entre_chugs", "source": null}
+    {"name": "densidade_entre_chugs", "source": null},
+    {"name": "velocity", "range": [15, 35], "source": "CONVENCAO — abaixo da faixa de ghost note de baixo (25-50, bass.ghost_notes): dead note de guitarra e so o transiente da palheta contra corda abafada pela mao do braco, sem corpo tonal; faixa escolhida para o motor, sem medicao publicada"},
+    {"name": "gate_pct", "range": [8, 20], "source": "CONVENCAO — nota curtissima, abaixo da faixa de palm_mute (25-50): dead note e so o ataque, nao sustenta; faixa escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"note": "nota curta de baixa velocity nas subdivisoes vazias entre chugs"},
@@ -696,7 +703,10 @@ na UI da S3 em +5 semitons — "the result is the same pitch but with a more rob
     {"name": "shreddage3_truque_de_engrossar_semitons", "value": 5, "source": "Tune do Kontakt -5 e Transpose da S3 +5, https://impactsoundworks.com/docs/Shreddage%203%20Stratus%20Free%20Manual.pdf"},
     {"name": "offset_de_timing_entre_takes_reais_ms", "source": null},
     {"name": "offset_de_velocity_entre_takes", "source": null},
-    {"name": "detune_em_cents_para_doubling", "source": null}
+    {"name": "detune_em_cents_para_doubling", "source": null},
+    {"name": "offset_de_timing_convencao_ms", "range": [8, 20], "source": "CONVENCAO — sem fonte primaria para o limiar de comb filtering (secao Lacunas ja registra isso); janela escolhida para o motor ficar acima do que costuma ser citado como zona de comb filtering e abaixo de um delay audivelmente separado, sem apresentar isso como medicao"},
+    {"name": "offset_de_velocity_convencao", "range": [-10, 10], "source": "CONVENCAO — duas tomadas reais nunca tem o mesmo ataque; faixa pequena para nao caracterizar acento diferente entre as duas tracks, sem medicao publicada"},
+    {"name": "detune_convencao_cents", "range": [3, 10], "source": "CONVENCAO — bem abaixo de 100 cents (=1 semitom, cents_por_semitom acima); dentro da tolerancia de afinacao humana entre duas tomadas, sem medicao publicada"}
   ],
   "tools": {
     "generic": {"note": "sem multi-tracking na lib, o caminho honesto e duas execucoes MIDI diferentes, nao uma copia"},

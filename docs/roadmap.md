@@ -51,9 +51,9 @@ Capacidades presentes na `main`:
 
 - analyze, brief.validate, plan.skeleton, plan.validate, render, validate,
   techniques.list, techniques.describe, plugins.scan e presets.scan;
-- 19 técnicas executáveis: 8 de bateria, 7 de baixo e 4 de teclas;
-- 15 roles renderizáveis, incluindo criação de bateria e baixo, elementos harmônicos e parte do
-  eletrônico rítmico;
+- 24 técnicas executáveis: 8 de bateria, 7 de baixo, 5 de guitarra e 4 de teclas;
+- 16 roles renderizáveis, incluindo criação de bateria, baixo e guitarra, elementos harmônicos e
+  parte do eletrônico rítmico;
 - autorização explícita de técnicas;
 - schemas anticópia estruturais;
 - render determinístico e preservação de tracks não declaradas.

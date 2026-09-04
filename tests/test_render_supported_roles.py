@@ -23,6 +23,7 @@ from tests.test_render import (
 from tools.palette.bass import BASS_ROLES, DEFAULT_BASS_REGISTER
 from tools.palette.drums import DRUMS_ROLES
 from tools.palette.electronic import HAT_ELEC_ROLES, SUB_DROP_ROLES, SUB_ROLES
+from tools.palette.guitar import DEFAULT_GUITAR_REGISTER, GUITAR_ROLES
 from tools.palette.harmonic import DRONE_ROLES, KEYBOARD_ROLES, STRINGS_ROLES, PadNote
 from tools.palette.rhythmic import MOTOR_ROLES, RHYTHMIC_ROLES, SHADOW_ROLES
 from tools.plan import Element
@@ -59,6 +60,21 @@ def _drums_element() -> Element:
     )
 
 
+def _guitar_element() -> Element:
+    return Element(
+        id="guitar_main",
+        role="guitar",
+        sections=["MAIN"],
+        register=list(DEFAULT_GUITAR_REGISTER),
+        layers=1,
+        sync_role="kick_support",
+        articulation="tight",
+        harmony="follow_chords",
+        instrument={"plugin": "Shreddage 3", "preset": "Rhythm Clean", "verified": True},
+        rationale="Guitarra ritmica gerada do zero seguindo o campo harmonico.",
+    )
+
+
 def _element_for_role(role: str):
     if role == "pad":
         return None
@@ -76,6 +92,8 @@ def _element_for_role(role: str):
         return _shadow_element()
     if role in BASS_ROLES:
         return _bass_element()
+    if role in GUITAR_ROLES:
+        return _guitar_element()
     if role in DRUMS_ROLES:
         return _drums_element()
     if role in HAT_ELEC_ROLES:

@@ -466,7 +466,50 @@ Estado atual do motor:
 | `drums` | `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes`, `drums.microtiming` | — |
 | `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.string_selection`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.harmonic` |
 | `keys` | `keys.damper_pedal`, `keys.expression`, `keys.modulation`, `keys.pitch_bend` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`, `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`, `keys.human_articulation` |
-| `guitar` | — | tudo documentado |
+| `guitar` | `guitar.dead_notes`, `guitar.double_tracking`, `guitar.hammer_pull`, `guitar.palm_mute`, `guitar.pinch_harmonic` | `guitar.bend`, `guitar.chord_voicing`, `guitar.dive_bomb`, `guitar.drop_tuning`, `guitar.natural_harmonics`, `guitar.picking_direction`, `guitar.pick_scrape`, `guitar.power_chord`, `guitar.rake`, `guitar.slide`, `guitar.track_offset`, `guitar.tremolo_picking`, `guitar.vibrato` |
+
+Inventário de guitarra (issue #19): as cinco técnicas implementadas cobrem palm
+mute/chug (`guitar.palm_mute`, profundidade por velocity + gate curto, keyswitch
+opcional quando a receita da ferramenta declara um), dead notes entre chugs
+(`guitar.dead_notes`, ornamento de baixa velocity herdando o pitch da nota
+anterior), pinch harmonic (`guitar.pinch_harmonic`, sobe a velocity de notas
+selecionadas para 127 — o gatilho real documentado da Ample —, e falha
+explícito fora de `tool: ample`/`ample_metal` em vez de recorrer à única
+receita `generic` do manual, que exigiria transpor a nota estrutural),
+hammer-on/pull-off (`guitar.hammer_pull`, reduz a velocity da nota ligada e
+sobrepõe o note-off da primeira sobre o ataque da segunda, restrito a pares
+que alcançam a MESMA corda na afinação declarada) e double tracking real
+(`guitar.double_tracking`, cria uma SEGUNDA track com offset de timing e de
+velocity sorteados por nota e um detune de canal constante via pitch bend —
+nunca duplica a track 1‑para‑1; idempotente por um marcador
+`meta text guitar_double_tracking_of=<índice da track de origem>` na track
+duplicada, não pelo dedup central de notas). As treze técnicas restantes do
+manual (`guitar.bend`, `guitar.chord_voicing`, `guitar.dive_bomb`,
+`guitar.drop_tuning`, `guitar.natural_harmonics`, `guitar.picking_direction`,
+`guitar.pick_scrape`, `guitar.power_chord`, `guitar.rake`, `guitar.slide`,
+`guitar.track_offset`, `guitar.tremolo_picking`, `guitar.vibrato`) continuam
+fora de `SUPPORTED_TECHNIQUES` — `guitar.natural_harmonics` e `guitar.slide`
+pelo mesmo motivo estrutural de `bass.harmonic`/`bass.slide` (exigiriam mudar
+pitch estrutural, exceção reservada à articulação de bateria); `guitar.chord_voicing`
+e `guitar.power_chord` são regras de CONSTRUÇÃO do voicing (reusadas
+diretamente por `tools/palette/guitar.py` via
+`tools.techniques.physical.guitar_voicing_is_playable`), não ornamentos
+toggleáveis por `style.guitar.techniques[]`; `guitar.dive_bomb` fica de fora
+porque o próprio manual recusa declarar uma profundidade/duração — inventar
+um número aqui contradiria a seção "Lacunas" do manual. As demais ficaram
+fora por escopo de tempo, não por impossibilidade estrutural.
+
+`_validate_strings` (`tools/techniques/physical.py`) recebeu uma exceção
+dedicada a `*.hammer_pull` (`bass.hammer_pull` e `guitar.hammer_pull`,
+identificada pelo sufixo do nome canônico): a sobreposição que essas duas
+técnicas criam de propósito (para disparar legato no instrumento sampleado)
+é sempre explicável por UMA corda tocando as duas alturas em sequência — uma
+corda é fisicamente monofônica, então a sobreposição de ticks não representa
+dois dedos simultâneos. A exceção só vale quando existe uma corda que alcança
+TODAS as alturas ativas; para qualquer outra técnica (ornamentos
+independentes como `guitar.dead_notes`/`bass.ghost_notes`), sobreposição
+exigindo a mesma corda continua sendo erro de plausibilidade física — duas
+notas independentes não podem soar juntas de uma corda só.
 
 O teste `test_supported_techniques_is_derived_from_the_registry` em
 `tests/test_techniques_engine.py` afirma a tupla exata para que registro fantasma

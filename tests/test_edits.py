@@ -169,8 +169,8 @@ def _track_messages(mid_path: Path, name: str) -> list[str]:
 
 # --- profile params: presenca do vocabulario fechado -----------------------
 
-def test_profile_params_has_all_four_profiles():
-    assert set(PROFILE_PARAMS.keys()) == {"bass", "drums", "keys", "generic"}
+def test_profile_params_has_all_five_profiles():
+    assert set(PROFILE_PARAMS.keys()) == {"bass", "drums", "guitar", "keys", "generic"}
 
 
 def test_bass_profile_has_negative_bias():
