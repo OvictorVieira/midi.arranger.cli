@@ -596,6 +596,30 @@ Regras:
 - O formato é determinístico: mesmo plano, mesma origem, mesma seed → mesmos
   bytes.
 
+### Paleta de transições (issue #23)
+
+Os eventos que costuram uma seção na seguinte — `riser`, `downer`, `impact` e `reverse` (meia-lua) —
+são roles gerados do zero em `tools/palette/transitions.py`, no mesmo molde de `sub`/`sub_drop`/
+`hat_elec` (issue #22): cada elemento aponta a seção seguinte em `element.sections`, e o gerador
+ancora o evento no início (downbeat) do primeiro compasso daquela seção. `riser`/`downer` terminam
+ANTES do downbeat (a curva de CC74/CC11 só sobe/desce, nunca chega lá); `impact` ataca EXATAMENTE no
+downbeat, em camadas com caudas divergentes e três intensidades (soft/medium/hard) que ciclam por
+`occurrence_index`, nunca sorteio sem origem; `reverse` RESOLVE exatamente no downbeat, com CC7/CC74
+em formato de meia-lua (sobe e desce) — essa é a diferença estrutural entre riser e meia-lua que não
+pode colapsar numa implementação só. Todo número vem de
+`knowledge/tecnicas/tecnicas_transicoes_midi.md` (`transitions.riser`, `transitions.impact`,
+`transitions.reverse` — `downer` reaproveita os parâmetros de `riser`, mecânica invertida), lido via
+`tools.techniques.index.build_index()`, nunca hardcoded; a issue não trouxe medição, então todo
+parâmetro é `CONVENCAO` declarada, não `verified: true`. `impact` já cai na tabela FR-24 existente de
+`tools/tracks.py::SAMPLER_ROUTING` (plugin default `Logic Sampler`) e `riser` já estava na whitelist
+FR-14 de `SERUM_ALLOWED_ROLES` — os dois roles previstos pela issue #23 já tinham lugar reservado
+nessas tabelas antes desta rodada.
+
+`false_downbeat`, `subdivision_flip` e `half_time_magnifier` (a última seção da issue) são funções
+puras e testadas no mesmo módulo (`false_downbeat_delay_s`, `generate_subdivision_flip`,
+`half_time_drum_pattern`) — cobrem a mecânica descrita, mas NÃO ganharam role/campo de plano próprio
+nesta rodada (mesmo corte de escopo que `electronic.py` já documenta para `perc_elec`/`vox_chop`).
+
 ### Conclusão
 
 O agente emite a sentinela de conclusão no stdout quando o arranjo está pronto e validado. Ela é

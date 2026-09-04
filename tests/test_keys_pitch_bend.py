@@ -276,6 +276,27 @@ def test_keys_pitch_bend_does_not_touch_structural_notes():
     assert before == after
 
 
+def test_keys_pitch_bend_skips_drum_channel():
+    """Canal 9 (bateria) nao pode receber glide de pitch bend.
+
+    Notas de kit GM sao pecas distintas, nao graus de escala — duas batidas
+    consecutivas dentro do range/gap do detector de pares nao podem virar um
+    "glide" de altura. Regressao: `_apply_keys_pitch_bend` chamava
+    `structural_notes(track)` sem `skip_drum_channel=True`, ao contrario das
+    outras tres tecnicas de teclas (modulation/expression/damper_pedal), que
+    ja excluem canal 9 via `iter_track_selections`.
+    """
+    line = _make_line(
+        [(0, 240, 36, 96), (240, 240, 38, 96)], channel=9,
+    )
+    out = apply_technique(
+        "keys.pitch_bend", line, seed=1, parameters={"density": 1.0},
+    )
+    assert _collect_pitchwheel(out) == []
+    assert _collect_cc(out, 101) == []
+    assert _collect_cc(out, 6) == []
+
+
 def test_keys_pitch_bend_skips_intervals_beyond_range():
     # Interval 5 > default range 2 → nenhum bend.
     line = _make_line([(0, 240, 60, 96), (240, 240, 65, 96)])

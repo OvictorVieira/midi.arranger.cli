@@ -83,6 +83,9 @@ def test_index_finds_all_techniques_from_versioned_manuals():
         "keys.rolled_chord",
         "keys.syncopated_pedal",
         "keys.voice_dynamics",
+        "transitions.riser",
+        "transitions.impact",
+        "transitions.reverse",
     ])
 
 
