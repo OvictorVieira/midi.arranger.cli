@@ -14,11 +14,15 @@ Cada chamada passa pelo mesmo `tools.registry.call` que `python -m tools.cli
 tool <nome>` usaria — este modulo nao contorna o contrato de tool, ele o
 exercita, exatamente como o resto do produto exercitaria.
 
-O fixture default e `tests/fixtures/corpus_drums/ENTRE NÓS.mid` — citado em
+O fixture default e uma copia de `tests/fixtures/corpus_drums/ENTRE NÓS.mid`
+que vive em `tools/fixtures/test_drive/` (ver README la) — citado em
 `docs/objetivo.md` §4 como "o fixture mais valioso do conjunto": bateria
 100% em velocity 127, zero ghost note, zero desvio de grade. Se o motor de
 tecnicas produzir alguma coisa a partir dele, o motor funciona de verdade.
-`--fixture` sobrescreve para qualquer outro MIDI.
+A copia existe porque `install.sh` so instala `tools/` (entre outros) — nao
+`tests/` — e o comando instalado (`midi-arranger test-drive`, sem
+`--fixture`) precisa do fixture dentro do corpo instalado (AGENTS.md —
+"Instalacao"). `--fixture` sobrescreve para qualquer outro MIDI.
 
 ## Isolamento
 
@@ -43,23 +47,27 @@ com `--keep`, ele e preservado e o caminho e impresso.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .doctor import EX_ENVIRONMENT
+from .doctor import EX_ENVIRONMENT, REQUIRED_DEPENDENCIES
+from .plan import DEFAULT_STYLE_RESEARCHED_AT
 
 EX_OK = 0
 EX_MUSICAL = 1
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent
-DEFAULT_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "corpus_drums" / "ENTRE NÓS.mid"
+# Dentro de `tools/` (nao `tests/`) de proposito: `install.sh` copia `tools/`
+# inteiro para o corpo instalado, mas nunca `tests/` (AGENTS.md —
+# "Instalacao"). Ver `tools/fixtures/test_drive/README.md`.
+DEFAULT_FIXTURE = PACKAGE_ROOT / "fixtures" / "test_drive" / "ENTRE NÓS.mid"
 
 MOCKED_STYLE_TECHNIQUE = "drums.ghost_notes"
 MOCKED_STYLE_FAMILY = "drums"
@@ -117,6 +125,30 @@ def _sha256_bytes(path: Path) -> str:
     return h.hexdigest()
 
 
+def _check_dependencies() -> None:
+    """Preflight de `mido`/`pretty_midi` antes de qualquer import arriscado.
+
+    `install.sh` so AVISA quando essas dependencias faltam (AGENTS.md —
+    "Instalacao"), nunca aborta a instalacao. Sem esta checagem, o primeiro
+    `import mido`/`import pretty_midi` disparado por `analyze`/`render`/etc
+    (via `from . import contract`) levantaria `ModuleNotFoundError` fora de
+    qualquer `try/except` deste modulo, virando traceback cru e exit 1 em vez
+    do exit 2 (`EX_ENVIRONMENT`) documentado. Usa `find_spec`, nao `import`,
+    mesma escolha de `tools.doctor.check_dependencies` — nao importa
+    `pretty_midi` (custa numpy/scipy) so para perguntar se ele existe.
+    """
+    missing = [m for m in REQUIRED_DEPENDENCIES if importlib.util.find_spec(m) is None]
+    if missing:
+        raise TestDriveError(
+            "environment",
+            (
+                "dependencias faltando: "
+                + ", ".join(missing)
+                + f"; instale com: {sys.executable} -m pip install -r requirements.txt"
+            ),
+        )
+
+
 def _prepare_workspace(*, keep: bool) -> Path:
     prefix = "midi-arranger-test-drive-"
     try:
@@ -163,13 +195,24 @@ def _copy_fixture(fixture: Path, workspace: Path) -> Path:
     return dest
 
 
-def _find_drum_track_name(midi_path: Path) -> str | None:
+# Nome sintetico deterministico para uma track de bateria sem `track_name` —
+# nunca sorteado, sempre o mesmo texto (ver `_ensure_named_drum_track`).
+SYNTHETIC_DRUM_TRACK_NAME = "test-drive drums (sem nome na origem)"
+
+
+def _ensure_named_drum_track(midi_path: Path) -> str | None:
     """Primeira SMF track com nota no canal de bateria (canal 9, 0-indexado).
 
-    Devolve o `track_name` dela (string vazia se a track nao tem nome — o
-    `PlanEdit.track` ainda assim casa por nome exato, e track sem nome usa
-    string vazia por convencao do formato). `None` quando nenhuma track usa
-    o canal de bateria — nesse caso `test-drive` nao tem o que editar.
+    `plan.edits[].track` exige string nao-vazia (`tools/plan.py` —
+    `_require_nonempty_str`), entao track de bateria sem `track_name`
+    (comum em MIDI exportado de DAW) nao pode virar `""` no plano mockado —
+    isso faria `plan.validate` rejeitar o proprio plano que este modulo
+    monta. Quando a track de bateria encontrada nao tem nome, GRAVA um nome
+    sintetico deterministico (`SYNTHETIC_DRUM_TRACK_NAME`) na COPIA de
+    trabalho (`midi_path` — nunca o fixture original, que ja foi conferido
+    byte-a-byte antes desta chamada) e devolve esse nome. Devolve o nome
+    existente quando a track ja tem um. `None` quando nenhuma track usa o
+    canal de bateria — nesse caso `test-drive` nao tem o que editar.
     """
     import mido
 
@@ -183,7 +226,13 @@ def _find_drum_track_name(midi_path: Path) -> str | None:
             if not msg.is_meta and getattr(msg, "channel", None) == 9:
                 is_drum = True
         if is_drum:
-            return name or ""
+            if name:
+                return name
+            track.insert(0, mido.MetaMessage(
+                "track_name", name=SYNTHETIC_DRUM_TRACK_NAME, time=0,
+            ))
+            mid.save(str(midi_path))
+            return SYNTHETIC_DRUM_TRACK_NAME
     return None
 
 
@@ -206,7 +255,7 @@ def _build_mocked_plan(source_copy: Path) -> dict[str, Any]:
         )
     plan = env["data"]["plan"]
 
-    drum_track = _find_drum_track_name(source_copy)
+    drum_track = _ensure_named_drum_track(source_copy)
     if drum_track is None:
         raise TestDriveError(
             "environment",
@@ -236,7 +285,10 @@ def _build_mocked_plan(source_copy: Path) -> dict[str, Any]:
     plan["style"] = {
         MOCKED_STYLE_FAMILY: {
             "reference": "Perfil mockado de test-drive (sem pesquisa ao vivo)",
-            "researched_at": datetime.now(UTC).date().isoformat(),
+            # Constante fixa, nunca o relogio (AGENTS.md — "Determinismo nas
+            # tools: sem relogio"). Mesma constante que `tools/plan.py` ja usa
+            # para este exato tipo de placeholder mockado.
+            "researched_at": DEFAULT_STYLE_RESEARCHED_AT,
             "sources": ["mock://midi-arranger-test-drive"],
             "confidence": "default",
             "techniques": [{"name": MOCKED_STYLE_TECHNIQUE}],
@@ -289,6 +341,8 @@ def run(
     ciclo de vida) — existe para teste. No uso normal via CLI, `main()` cria
     o workspace com `_prepare_workspace` e decide se apaga no final.
     """
+    _check_dependencies()
+
     fixture = fixture or DEFAULT_FIXTURE
     ws = workspace or _prepare_workspace(keep=keep)
 

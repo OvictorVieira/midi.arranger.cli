@@ -1105,6 +1105,33 @@ def test_test_drive_keep_flag_preserves_workspace(tmp_path: Path) -> None:
         shutil.rmtree(workspace_path, ignore_errors=True)
 
 
+def test_doctor_loads_installed_tools_package_not_a_decoy_in_cwd(tmp_path: Path) -> None:
+    """Regressao (review PR #111, achado 3). `python3 -m tools.doctor` sem
+    protecao insere o diretorio de trabalho corrente na frente de
+    `PYTHONPATH` — rodar o comando de dentro de um diretorio que por acaso
+    tem seu proprio pacote `tools/` (por exemplo outro checkout) carregaria
+    ESSE `tools/` em vez do de `$INSTALL_ROOT`. `PYTHONSAFEPATH=1` em
+    `run_python_module` (bin/midi-arranger) impede isso."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    decoy_cwd = tmp_path / "decoy-cwd"
+    decoy_pkg = decoy_cwd / "tools"
+    decoy_pkg.mkdir(parents=True)
+    (decoy_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (decoy_pkg / "doctor.py").write_text(
+        "raise SystemExit('DECOY TOOLS PACKAGE LOADED INSTEAD OF THE INSTALLED ONE')\n",
+        encoding="utf-8",
+    )
+
+    result = run_cli("doctor", "--cwd", str(project), cwd=decoy_cwd)
+
+    assert "DECOY" not in (result.stdout + result.stderr), result.stdout + result.stderr
+    assert "midi-arranger doctor" in result.stdout
+    assert result.returncode in (0, 2), result.stdout + result.stderr
+
+
 def test_shellcheck_passes_for_bin_and_shell_scripts() -> None:
     shellcheck = shutil.which("shellcheck")
     if shellcheck is None:

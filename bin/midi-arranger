@@ -157,9 +157,17 @@ run_python_module() {
   # saida do modulo (0/1/2, documentado em `tools/doctor.py` e
   # `tools/test_drive.py`) vira o codigo de saida do comando inteiro, sem
   # passar pelos codigos sysexits do resto deste script.
+  #
+  # PYTHONSAFEPATH=1 (Python >= 3.11, o piso deste projeto) impede o
+  # interprete de inserir o diretorio de trabalho corrente na frente de
+  # PYTHONPATH ao rodar `-m`. Sem isso, `midi-arranger doctor`/`test-drive`
+  # rodado de dentro de um diretorio que por acaso tem um pacote `tools/`
+  # proprio (por exemplo outro checkout deste repositorio) carregaria ESSE
+  # `tools/` em vez do instalado em `$INSTALL_ROOT` — skew de versao ou
+  # execucao de codigo alheio, silenciosamente.
   local module="$1"
   shift
-  PYTHONPATH="$INSTALL_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m "$module" "$@"
+  PYTHONSAFEPATH=1 PYTHONPATH="$INSTALL_ROOT${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m "$module" "$@"
 }
 
 validate_effort_support() {
