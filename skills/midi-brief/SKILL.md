@@ -348,10 +348,22 @@ esmagada, reverb longo, delay dotted, saturacao de fita). Escolha de
 registro. Preferencia de dinamica.
 
 Isso entra em `style.<familia>.suggested_techniques[]` — mesma forma de
-`techniques[]` (nome canonico + `parameters`), acompanhado de uma razao
+`techniques[]`: nome canonico, `parameters` (numero escalar ou par
+`[min, max]`, so o que aquela tecnica consome — validado contra a receita
+DELA no manual, nunca contra a familia inteira), `intensity` (0.0-1.0,
+opcional) e `evidence_refs` (ids dos achados que justificaram a sugestao,
+quando houver pesquisa estruturada por tras), acompanhado de uma razao
 curta ("por que a referencia sugere essa tecnica"). **Sugerir nao autoriza.**
 `techniques[]` continua sendo o subconjunto que o usuario autorizou e o
 `run` vai aplicar — nada entra la sem passar pela etapa de autorizacao.
+
+`parameters` por tecnica e a forma preferida — pertence a tecnica que os
+consome, entao duas tecnicas da mesma familia podem usar o mesmo nome de
+parametro (ex.: `velocity`) sem colidir. O bloco antigo
+`style.<familia>.parameters` (nivel de familia, compartilhado por todas as
+tecnicas daquela familia) continua funcionando para plano ja existente;
+quando os dois niveis declaram o mesmo nome para a mesma tecnica, o nivel
+da tecnica manda e `plan.validate` avisa do conflito.
 
 Sempre cite fonte: registre `sources`, `researched_at` e `confidence` no
 `style` da familia, mesmo para o que entrou como sugestao.
