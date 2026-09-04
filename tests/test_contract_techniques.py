@@ -160,14 +160,14 @@ def test_list_default_still_returns_documented_but_unimplemented():
     assert {"bass.slide", "guitar.natural_harmonics", "keys.melody_lead"} <= canonicals
 
 
-def test_list_all_24_implemented_techniques_appear_as_implemented():
-    """As 24 tecnicas atualmente executaveis (drums 8, bass 7, guitar 5,
-    keys 4) precisam aparecer marcadas como implementadas. Regressao aqui
+def test_list_all_29_implemented_techniques_appear_as_implemented():
+    """As 29 tecnicas atualmente executaveis (drums 8, bass 7, guitar 7,
+    keys 7) precisam aparecer marcadas como implementadas. Regressao aqui
     denuncia ou um aplicador registrado sem manual ou o catalogo caido
     fora de sincronia com `SUPPORTED_TECHNIQUES`."""
     from tools.techniques import SUPPORTED_TECHNIQUES
 
-    assert len(SUPPORTED_TECHNIQUES) == 24
+    assert len(SUPPORTED_TECHNIQUES) == 29
     env = call("techniques.list", {})
     entries = {t["canonical"]: t for t in env["data"]["techniques"]}
     for canonical in SUPPORTED_TECHNIQUES:

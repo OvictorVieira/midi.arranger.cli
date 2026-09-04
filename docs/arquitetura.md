@@ -466,8 +466,8 @@ Estado atual do motor:
 |---|---|---|
 | `drums` | `drums.accent_hierarchy`, `drums.accented_roll`, `drums.articulation_diff`, `drums.buzz_roll`, `drums.cymbal_choke`, `drums.flam`, `drums.ghost_notes`, `drums.microtiming` | — |
 | `bass` | `bass.attack_style`, `bass.ghost_notes`, `bass.hammer_pull`, `bass.let_ring`, `bass.palm_mute`, `bass.string_selection`, `bass.velocity_contour` | `bass.slide`, `bass.vibrato`, `bass.harmonic` |
-| `keys` | `keys.damper_pedal`, `keys.expression`, `keys.modulation`, `keys.pitch_bend` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`, `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`, `keys.human_articulation` |
-| `guitar` | `guitar.dead_notes`, `guitar.double_tracking`, `guitar.hammer_pull`, `guitar.palm_mute`, `guitar.pinch_harmonic` | `guitar.bend`, `guitar.chord_voicing`, `guitar.dive_bomb`, `guitar.drop_tuning`, `guitar.natural_harmonics`, `guitar.picking_direction`, `guitar.pick_scrape`, `guitar.power_chord`, `guitar.rake`, `guitar.slide`, `guitar.track_offset`, `guitar.tremolo_picking`, `guitar.vibrato` |
+| `keys` | `keys.damper_pedal`, `keys.expression`, `keys.human_articulation`, `keys.modulation`, `keys.pitch_bend`, `keys.rolled_chord`, `keys.voice_dynamics` | `keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics` |
+| `guitar` | `guitar.bend`, `guitar.dead_notes`, `guitar.double_tracking`, `guitar.hammer_pull`, `guitar.palm_mute`, `guitar.pinch_harmonic`, `guitar.vibrato` | `guitar.chord_voicing`, `guitar.dive_bomb`, `guitar.drop_tuning`, `guitar.natural_harmonics`, `guitar.picking_direction`, `guitar.pick_scrape`, `guitar.power_chord`, `guitar.rake`, `guitar.slide`, `guitar.track_offset`, `guitar.tremolo_picking` |
 
 Inventário de guitarra (issue #19): as cinco técnicas implementadas cobrem palm
 mute/chug (`guitar.palm_mute`, profundidade por velocity + gate curto, keyswitch
@@ -484,21 +484,71 @@ que alcançam a MESMA corda na afinação declarada) e double tracking real
 velocity sorteados por nota e um detune de canal constante via pitch bend —
 nunca duplica a track 1‑para‑1; idempotente por um marcador
 `meta text guitar_double_tracking_of=<índice da track de origem>` na track
-duplicada, não pelo dedup central de notas). As treze técnicas restantes do
-manual (`guitar.bend`, `guitar.chord_voicing`, `guitar.dive_bomb`,
+duplicada, não pelo dedup central de notas). A rodada seguinte fechou a dívida com mais duas: `guitar.bend`
+(pré-bend no alvo ANTES do note_on e rampa monotônica de volta ao centro
+depois do ataque, exatamente a receita `generic` do manual, com o range
+declarado por RPN 0 e fechado com RPN Null) e `guitar.vibrato` (oscilação
+senoidal de pitch bend que só entra DEPOIS do atraso de início — o estágio
+"Start" que a Ample documenta para impedir que nota rápida seja vibrada — e
+termina em ciclo inteiro, no centro, antes do note_off). As duas só entram em
+nota que soa SOZINHA no canal: o manual é categórico que bend dentro de acorde
+em canal único é impossível e que vibrato de canal em power chord está errado,
+porque o guitarrista vibra UMA corda. "Sozinha no canal" é avaliado no
+`MidiFile` INTEIRO (`isolated_notes_by_file`), não track a track: canal não
+pertence a uma track — `_render_guitar_element` dá o mesmo `GUITAR_CHANNEL` a
+todas as layers e `_apply_style_techniques_to_edit_tracks` junta num só
+`MidiFile` todas as tracks físicas com o mesmo nome de DAW, então avaliar por
+track deixava passar exatamente o power chord proibido, com dois fluxos de
+pitch bend conflitantes no mesmo canal. O `guitar.vibrato` também fecha SEMPRE
+no centro: o evento de fase 1.0 é o único que vale 0 e, quando o arredondamento
+o punha em cima do `note_off`, ele era descartado e o bend ficava pendurado
+desafinando a nota seguinte. E o sorteio de `delay_ms`/`rate_hz` acontece antes
+de qualquer escrita: nota que não fecha um ciclo inteiro depois do sorteio sai
+byte-idêntica, sem RPN órfão. Nenhum número novo entrou no manual de
+guitarra para isso — os dois blocos já tinham todos os parâmetros com fonte.
+
+As onze técnicas restantes do
+manual (`guitar.chord_voicing`, `guitar.dive_bomb`,
 `guitar.drop_tuning`, `guitar.natural_harmonics`, `guitar.picking_direction`,
 `guitar.pick_scrape`, `guitar.power_chord`, `guitar.rake`, `guitar.slide`,
-`guitar.track_offset`, `guitar.tremolo_picking`, `guitar.vibrato`) continuam
-fora de `SUPPORTED_TECHNIQUES` — `guitar.natural_harmonics` e `guitar.slide`
-pelo mesmo motivo estrutural de `bass.harmonic`/`bass.slide` (exigiriam mudar
-pitch estrutural, exceção reservada à articulação de bateria); `guitar.chord_voicing`
-e `guitar.power_chord` são regras de CONSTRUÇÃO do voicing (reusadas
-diretamente por `tools/palette/guitar.py` via
-`tools.techniques.physical.guitar_voicing_is_playable`), não ornamentos
-toggleáveis por `style.guitar.techniques[]`; `guitar.dive_bomb` fica de fora
-porque o próprio manual recusa declarar uma profundidade/duração — inventar
-um número aqui contradiria a seção "Lacunas" do manual. As demais ficaram
-fora por escopo de tempo, não por impossibilidade estrutural.
+`guitar.track_offset`, `guitar.tremolo_picking`) continuam
+fora de `SUPPORTED_TECHNIQUES`, cada uma por um motivo concreto — nenhuma por
+falta de tempo:
+
+- `guitar.natural_harmonics` e `guitar.slide`: mesmo motivo estrutural de
+  `bass.harmonic`/`bass.slide` (exigiriam mudar pitch estrutural, exceção
+  reservada à articulação de bateria).
+- `guitar.chord_voicing` e `guitar.power_chord`: são regras de CONSTRUÇÃO do
+  voicing (reusadas diretamente por `tools/palette/guitar.py` via
+  `tools.techniques.physical.guitar_voicing_is_playable`), não ornamentos
+  toggleáveis por `style.guitar.techniques[]`.
+- `guitar.dive_bomb`: o próprio manual recusa declarar profundidade e duração —
+  inventar um número aqui contradiria a seção "Lacunas".
+- `guitar.picking_direction`: os TRÊS parâmetros do bloco são `source: null`, e
+  o próprio manual diz que em lib sem Picking Mode "o padrão de velocity que
+  expressa down-picking vs alternate NÃO TEM FONTE". O que o bloco recomenda é
+  escolher um MODO do plugin, que não é evento MIDI.
+- `guitar.tremolo_picking`: a única coisa que o motor poderia fazer —
+  sequenciar 32avos no lugar da nota longa — é exatamente o que o manual manda
+  NÃO fazer ("quando a lib tem articulação de tremolo real, dispare UMA NOTA
+  LONGA"), e encurtar a nota estrutural para caber a sequência é proibido.
+- `guitar.rake`: os dois números de que o aplicador precisaria
+  (`delay_entre_rake_e_nota_ms` e `velocity_das_cordas_abafadas`) são
+  `source: null`, e a receita `generic` não define QUAIS alturas as cordas
+  abafadas soam — escolhê-las seria inventar conteúdo, não parametrizar
+  técnica.
+- `guitar.pick_scrape`: `duracao_ms` e `velocity` são `source: null` e o bloco
+  descreve um evento de transição de SEÇÃO — o motor de técnicas não recebe o
+  mapa de seções, então onde colocar o scrape seria decisão inventada.
+- `guitar.drop_tuning`: é restrição de GERAÇÃO ("nunca gerar nota abaixo da
+  corda solta mais grave"), já garantida por `tools/techniques/physical.py`.
+  Como técnica só poderia transpor nota estrutural (proibido) ou não fazer
+  nada.
+- `guitar.track_offset`: o offset é NEGATIVO por definição (20 a 30 ms para
+  trás) e MIDI não tem tempo negativo. Material que começa no tick 0 — o caso
+  normal — não tem para onde recuar, e recuar a guitarra empurrando as outras
+  tracks para a frente violaria a regra de que track não declarada sai nota a
+  nota idêntica. É ajuste de track delay do DAW, não dado de nota.
 
 `_validate_strings` (`tools/techniques/physical.py`) recebeu uma exceção
 dedicada a `*.hammer_pull` (`bass.hammer_pull` e `guitar.hammer_pull`,
@@ -516,15 +566,111 @@ O teste `test_supported_techniques_is_derived_from_the_registry` em
 `tests/test_techniques_engine.py` afirma a tupla exata para que registro fantasma
 (aplicador stub, `_identity_apply`) quebre o build. O teste
 `test_keys_engine_inventory_matches_the_issue_14_contract` no mesmo arquivo trava
-o inventário da família `keys` e afirma que as dez técnicas restantes
+o inventário da família `keys` e afirma que as sete técnicas restantes
 documentadas continuam fora do motor.
 
-As quatro técnicas de teclas implementadas são todas nível `technique` e só
-acrescentam CC/pitch bend — nunca mudam pitch/posição/duração da nota
-estrutural. `filtro` (CC74) e `portamento` (CC5/CC65), citados na issue #14
+Nas três de nível `humanize`, a seleção por `density` é decidida CANDIDATO A
+CANDIDATO, a partir da seed do contexto e da identidade do alvo (canal, tick,
+altura/alturas), pelo helper `select_by_stable_density`. Sortear um subconjunto
+do pool (`select_by_density`) só é idempotente enquanto o pool não muda entre
+passadas, e ele muda justamente porque a técnica aplicada tira o alvo da lista
+de candidatos — acorde rolado deixa de ser simultâneo, nota já articulada não
+tem mais o que encurtar. Em `keys.rolled_chord` o espalhamento sorteado também
+sai da identidade do acorde, senão o valor de cada acorde dependeria de quantos
+acordes foram selecionados antes dele.
+
+O limite conhecido dessa idempotência está medido e não escondido: reaplicar
+`keys.rolled_chord` sobre a SAÍDA dela pode rolar um acorde a mais, quando o
+rolo do acorde anterior liberou a folga que faltava — as vozes de baixo dele
+passam a terminar antes. É convergente (a partir daí não anda mais), mas não é
+idempotência plena, e nenhuma escolha de seed conserta: a grandeza medida
+mudou de verdade. `render` sobre a mesma origem continua byte-idêntico, porque
+a origem é a mesma; o teste
+`test_a_chord_freed_by_the_neighbours_roll_only_settles_on_the_next_pass`
+trava exatamente esse comportamento.
+
+As quatro técnicas de teclas de EXPRESSÃO CONTÍNUA (`keys.damper_pedal`,
+`keys.expression`, `keys.modulation`, `keys.pitch_bend`) são nível `technique`
+e só acrescentam CC/pitch bend — nunca mudam pitch/posição/duração da nota
+estrutural. As três acrescentadas na rodada seguinte são nível `humanize`,
+porque mexem em execução (velocity, timing, duração) e não escrevem evento
+nenhum novo:
+
+- `keys.voice_dynamics`: sobe a voz de cima do acorde até ficar `delta` acima
+  da mais forte das outras. O `delta` em unidades MIDI é DERIVADO no manual por
+  aritmética de dois parâmetros já sourced do mesmo bloco (`fhv_melodia_normal`
+  e `fhv_melodia_enfatizada`, Goebl 2001) pela conversão logarítmica medida de
+  Goebl & Bresin 2003 — nada de converter m/s linearmente para 0–127, que é o
+  erro contra o qual o próprio manual avisa. Rebaixar só acontece quando o topo
+  já bateu 127, e aí o piso é `127 - delta`: nenhuma voz cai mais que `delta`
+  pontos porque a queda máxima possível é `127 - (127 - delta)`. É a invariante
+  que impede a inversão de intenção que `drums.accent_hierarchy` cometeu em
+  DEIXE IR — e ela é ARITMÉTICA, não um guard que descarta acorde. O PR #120
+  trazia um `if` que prometia jogar fora "o acorde que exigiria uma queda
+  maior"; ele era inalcançável (só rodava com o topo em 127, onde a condição
+  vira `velocity > 127`) e saiu na revisão: proteção morta vendida como
+  proteção ativa é o mesmo vício de `_identity_apply`.
+- `keys.rolled_chord`: espalha o acorde com intervalos DECRESCENTES do grave
+  para o agudo (o achado que dá nome ao bloco) e deixa a nota de topo no tempo,
+  como manda a receita. Só entra acorde com folga real antes do tempo e escrito
+  em ordem ascendente — rolar um acorde escrito fora dessa ordem exigiria
+  reordenar os `note_on`, que é justamente o que o contrato `humanize` proíbe.
+  A folga se mede até o FIM da nota anterior, não até o onset dela: medindo até
+  o onset, uma nota terminando cinco ticks antes do tempo passava na guarda e o
+  `note_on` da fundamental do acorde nascia ANTES do `note_off` dela — o
+  sintetizador cortava a fundamental. Acorde cujo `note_off` deslocado cruzaria
+  o `note_off` de uma nota de fora também fica de fora, porque `note_pairs`
+  congela a ordem dos `note_off` da track inteira.
+- `keys.human_articulation`: aplica a razão de articulação medida (0,75) ao
+  tell nº 2 do manual, a nota colada com 100% da duração nominal. A razão é
+  medida contra o INTERVALO ATÉ O PRÓXIMO ATAQUE, não contra a duração escrita:
+  é a forma da regra Overall articulation. Medir contra a duração encurtaria a
+  cada passada, empilhando ornamento sobre ornamento. Medir contra o IOI é
+  NECESSÁRIO para a idempotência, mas não basta — a afirmação de que era "a
+  única" coisa que fazia a técnica ser idempotente estava errada: a nota já
+  articulada some do pool de candidatos, e com sorteio sobre o pool a passada
+  seguinte resorteava o resto intocado, de modo que `density` fracionária
+  convergia para 1,0 a cada reaplicação.
+
+As sete restantes continuam fora do motor, também com motivo concreto:
+
+- `keys.melody_lead`, `keys.hand_asynchrony` e `keys.bass_anticipation`: as
+  três exigem que uma voz soe ANTES de notas escritas no mesmo tick. Realizar
+  isso muda a ordem dos `note_on` na track, que o contrato `humanize` congela
+  (`_MidiContentSnapshot.note_on_sequence`), e o nível `technique` não pode
+  mover nota estrutural nenhuma. Não é falta de número — os números são os
+  melhores do manual inteiro (Goebl 2001; Goebl/Flossmann/Widmer 2010) — é
+  contrato.
+- `keys.vibrato`: o próprio manual (§7.6) diz que o onset não tem padrão medido
+  ("não escreva 'vibrato entra após N ms' — é invenção") e recomenda, para
+  resultado reprodutível entre engines, desenhar rampa de CC1 — que é
+  exatamente o que `keys.modulation` já executa. Registrar seria duplicar
+  aplicador com outro nome.
+- `keys.syncopated_pedal`: o gesto (soltar antes da harmonia nova, repisar
+  depois que ela soa) já é o que `keys.damper_pedal` escreve; a diferença é a
+  constante de atraso. Dois aplicadores registrados escrevendo CC64 na mesma
+  track brigariam entre si — o atraso medido de 50–150 ms é candidato a
+  parâmetro de `keys.damper_pedal`, não a técnica nova.
+- `keys.rhodes_touch`: o bloco declara explicitamente que NÃO existe curva de
+  velocity canônica do Rhodes, e que nenhum estudo de performance foi
+  publicado. Os parâmetros com fonte são geometria da ação em milímetros, sem
+  ponte para nota MIDI.
+- `keys.hammond_dynamics`: a regra central (velocity é ignorada, dinâmica é
+  CC11) é fato oficial, mas realizá-la exige um mapeamento velocity→CC11 que
+  nenhuma fonte publica; inventá-lo seria mais um número órfão.
+
+`filtro` (CC74) e `portamento` (CC5/CC65), citados na issue #14
 original, **não** têm bloco de técnica próprio em `knowledge/tecnicas/tecnicas_teclas_midi.md`
 (só aparecem discutidos em prosa na §7.4). São pesquisa futura, não bug desta
 rodada — inventar bloco de técnica novo em cima deles é escopo novo.
+
+Os dois únicos números acrescentados ao manual nesta rodada estão em
+`tecnicas_teclas_midi.md`: `keys.voice_dynamics.delta_midi_melodia_vs_acompanhamento`
+(DERIVADO, aritmética entre dois parâmetros já sourced) e
+`keys.rolled_chord.razao_entre_intervalos_sucessivos` (CONVENÇÃO com razão
+declarada — a fonte publica o perfil e o total, nunca a razão entre um
+intervalo e o seguinte). O segundo derruba `verified` de `keys.rolled_chord`
+para `false`, como manda o parser, e isso é o sinal correto.
 
 ### Preset real em vez de nome inventado
 

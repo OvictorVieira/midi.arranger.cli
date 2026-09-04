@@ -569,3 +569,159 @@ def rebuild_track(
         rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
         previous_tick = absolute_tick
     track[:] = rebuilt
+
+
+def manual_param_of(canonical: str, name: str) -> Any:
+    """Le `value` de um parametro do manual de OUTRA tecnica.
+
+    Existe pelo mesmo motivo de `din_msgs_per_second_ceiling`: numero fisico
+    ja sourced num bloco vizinho do mesmo manual nao deve ser duplicado (nem
+    hardcoded) no bloco que o consome. `guitar.vibrato`, por exemplo, precisa
+    do range de pitch bend declarado em `guitar.bend` para converter cents em
+    passos de roda.
+    """
+    manual = build_index().get(canonical)
+    if manual is None:
+        raise ValueError(
+            f"manual de {canonical!r} nao encontrado para ler {name!r}"
+        )
+    for param in manual.parameters:
+        if param.name == name and isinstance(param.value, (int, float)):
+            return param.value
+    raise ValueError(
+        f"tecnica {canonical!r} precisa declarar {name} no manual"
+    )
+
+
+def isolated_notes(
+    notes: tuple[dict[str, int], ...] | list[dict[str, int]],
+    *,
+    skip_drum_channel: bool = True,
+) -> list[dict[str, int]]:
+    """Notas que soam SOZINHAS no canal delas, com `prev_end` anexado.
+
+    Pitch bend e mensagem de CANAL: bend ou vibrato escrito enquanto outra
+    nota do mesmo canal soa desafina o acorde inteiro — o manual de guitarra
+    e explicito que bend dentro de acorde em canal unico e impossivel e que
+    vibrato de canal em power chord esta errado, porque o guitarrista vibra
+    UMA corda. `prev_end` e o fim da ultima nota anterior do mesmo canal (ou
+    `None`), para o aplicador saber se ha espaco antes do ataque.
+    """
+    by_channel: dict[int, list[dict[str, int]]] = {}
+    for note in notes:
+        if skip_drum_channel and note["channel"] == 9:
+            continue
+        by_channel.setdefault(note["channel"], []).append(note)
+
+    out: list[dict[str, int]] = []
+    for group in by_channel.values():
+        ordered = sorted(group, key=lambda n: (n["start"], n["end"], n["pitch"]))
+        for position, note in enumerate(ordered):
+            if any(
+                other["start"] < note["end"] and other["end"] > note["start"]
+                for index, other in enumerate(ordered)
+                if index != position
+            ):
+                continue
+            entry = dict(note)
+            entry["prev_end"] = max(
+                (other["end"] for other in ordered[:position]),
+                default=-1,
+            )
+            out.append(entry)
+    return sorted(out, key=lambda n: (n["start"], n["pitch"]))
+
+
+def isolated_notes_by_file(
+    mid: mido.MidiFile,
+    *,
+    skip_drum_channel: bool = True,
+) -> dict[int, list[dict[str, int]]]:
+    """`isolated_notes` avaliado no escopo do CANAL do arquivo INTEIRO.
+
+    Pitch bend e mensagem de canal, e canal nao pertence a uma track: duas
+    tracks no mesmo canal soam juntas no mesmo sintetizador. Avaliar isolamento
+    track a track deixava passar exatamente o power chord que o manual proibe —
+    `_render_guitar_element` da o mesmo `GUITAR_CHANNEL` a todas as layers, e
+    `_apply_style_techniques_to_edit_tracks` junta num so `MidiFile` todas as
+    tracks fisicas com o mesmo nome de DAW.
+
+    Devolve `{indice_da_track: [notas isoladas daquela track]}`, com `prev_end`
+    medido tambem no canal inteiro.
+    """
+    todas: list[dict[str, int]] = []
+    for track_index, track in enumerate(mid.tracks):
+        for note in iter_note_dicts(track, track_index=track_index):
+            todas.append(dict(note))
+
+    out: dict[int, list[dict[str, int]]] = {
+        track_index: [] for track_index in range(len(mid.tracks))
+    }
+    for note in isolated_notes(todas, skip_drum_channel=skip_drum_channel):
+        out[note["track_index"]].append(note)
+    for notes in out.values():
+        notes.sort(key=lambda n: (n["start"], n["pitch"]))
+    return out
+
+
+def select_by_stable_density(
+    candidates: list[dict[str, Any]],
+    *,
+    density: Any,
+    context: Any,
+    purpose: str,
+    identity: Callable[[dict[str, Any]], tuple[Any, ...]],
+    sort_key: Callable[[dict[str, Any]], tuple[Any, ...]],
+) -> list[dict[str, Any]]:
+    """Selecao por densidade em que a decisao NAO depende do pool.
+
+    `select_by_density` sorteia um subconjunto do pool: se o pool encolhe entre
+    duas passadas — e encolhe, porque tecnica aplicada tira o alvo da lista de
+    candidatos — o resorteio pega o RESTO INTOCADO e a reaplicacao converge
+    para `density=1.0`. Aqui cada candidato decide sozinho, a partir da seed do
+    contexto e da propria identidade, entao candidato recusado na primeira
+    passada continua recusado em todas as seguintes.
+
+    A contrapartida e que a contagem selecionada e binomial em torno de
+    `len(candidates) * density` em vez de exata; `density=1.0` (e qualquer
+    densidade nao numerica) continua levando o pool inteiro.
+    """
+    if not candidates:
+        return []
+    if not isinstance(density, (int, float)):
+        return sorted(candidates, key=sort_key)
+    requested = float(density)
+    if requested <= 0.0:
+        return []
+    if requested >= 1.0:
+        return sorted(candidates, key=sort_key)
+    chosen = [
+        candidate
+        for candidate in candidates
+        if context.rng(f"{purpose}:{identity(candidate)}").random() < requested
+    ]
+    return sorted(chosen, key=sort_key)
+
+
+def simultaneous_chords(
+    notes: tuple[dict[str, int], ...] | list[dict[str, int]],
+    *,
+    min_size: int = 2,
+    skip_drum_channel: bool = True,
+) -> list[list[dict[str, int]]]:
+    """Agrupa notas que comecam no MESMO tick e canal, em ordem de escrita.
+
+    Cada grupo sai ordenado por `note_on_index` — a ordem em que os eventos
+    aparecem na track, que e justamente a ordem que o contrato `humanize`
+    proibe mudar.
+    """
+    groups: dict[tuple[int, int], list[dict[str, int]]] = {}
+    for note in notes:
+        if skip_drum_channel and note["channel"] == 9:
+            continue
+        groups.setdefault((note["channel"], note["start"]), []).append(note)
+    return [
+        sorted(groups[key], key=lambda n: n["note_on_index"])
+        for key in sorted(groups)
+        if len(groups[key]) >= min_size
+    ]

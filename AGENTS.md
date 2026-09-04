@@ -203,15 +203,31 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `context.parameters`/`recipe`/manual e repassados a `fill_windows`, não hardcoded no módulo de
   detecção — mesma regra de "parâmetro não pode ser mentiroso" do restante deste arquivo.
 - Inventário atual de teclas (issue #14): `keys.damper_pedal`, `keys.expression`,
-  `keys.modulation` e `keys.pitch_bend` — todas nível `technique`, só acrescentam CC/pitch bend,
-  nunca mudam pitch/posição/duração da nota estrutural. As dez restantes documentadas no manual
-  (`keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`, `keys.voice_dynamics`,
-  `keys.rolled_chord`, `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`,
-  `keys.hammond_dynamics`, `keys.human_articulation`) continuam FORA de `SUPPORTED_TECHNIQUES` —
-  plano que as declare recebe `PlanValidationError` explícito. `filtro` (CC74) e `portamento`
+  `keys.modulation` e `keys.pitch_bend` — nível `technique`, só acrescentam CC/pitch bend, nunca
+  mudam pitch/posição/duração da nota estrutural — mais `keys.human_articulation`,
+  `keys.rolled_chord` e `keys.voice_dynamics`, nível `humanize`, que mexem só em duração, timing e
+  velocity e não escrevem evento novo nenhum. As sete restantes documentadas no manual
+  (`keys.melody_lead`, `keys.hand_asynchrony`, `keys.bass_anticipation`,
+  `keys.syncopated_pedal`, `keys.vibrato`, `keys.rhodes_touch`, `keys.hammond_dynamics`) continuam
+  FORA de `SUPPORTED_TECHNIQUES` — plano que as declare recebe `PlanValidationError` explícito. Os
+  motivos concretos de cada recusa estão em `docs/arquitetura.md` §4 e não são "falta de tempo":
+  `melody_lead`/`hand_asynchrony`/`bass_anticipation` exigiriam fazer uma voz soar ANTES de notas
+  escritas no mesmo tick, o que muda a ordem dos `note_on` congelada pelo contrato `humanize`.
+  `filtro` (CC74) e `portamento`
   (CC5/CC65), citados na issue #14 original, NÃO têm bloco de técnica próprio no manual (só
   aparecem em prosa na §7.4 de `tecnicas_teclas_midi.md`): são pesquisa futura, não bug desta
   rodada — não inventar bloco de técnica novo em cima deles.
+- Inventário atual de guitarra (issue #19): `guitar.bend`, `guitar.dead_notes`,
+  `guitar.double_tracking`, `guitar.hammer_pull`, `guitar.palm_mute`, `guitar.pinch_harmonic` e
+  `guitar.vibrato`. `guitar.bend` e `guitar.vibrato` só entram em nota que soa SOZINHA no canal —
+  o manual é categórico que bend dentro de acorde em canal único é impossível e que vibrato de
+  canal em power chord está errado — e as duas sempre devolvem o pitch bend ao centro antes do
+  note_off. As onze restantes continuam FORA de `SUPPORTED_TECHNIQUES`, cada uma com motivo
+  concreto registrado em `docs/arquitetura.md` §4; em especial `guitar.picking_direction`,
+  `guitar.rake` e `guitar.pick_scrape` ficam de fora porque os números de que o aplicador
+  precisaria são `source: null` no manual, e `guitar.track_offset` porque offset negativo de track
+  não é dado de nota (MIDI não tem tempo negativo, e recuar a guitarra empurrando as outras tracks
+  violaria a saída nota a nota idêntica).
 - Técnica de nível `humanize` **não pode inverter a intenção da origem**: nota que a origem escreveu
   no topo da faixa não pode sair na camada mais baixa. Foi assim que `accent_hierarchy` transformou
   63 caixas de 127 em 32 e matou as viradas de DEIXE IR. Ao mexer em velocity, meça **por peça e por
