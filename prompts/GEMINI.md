@@ -70,6 +70,31 @@ Contrato de `style` no plano:
 Todo elemento do plano precisa ter `rationale` nao vazio, justificado pela persona, pelo brief ou
 pelo estilo pesquisado. Nao use `rationale` decorativo; escreva a razao verificavel daquele elemento.
 
+## Influencia pesquisada e autorizacao
+
+O produto e arranjo **influenciado por caracteristicas de performance** da referencia — como o
+musico toca: timing, dinamica, articulacao, densidade, funcao no arranjo. Nunca prometa, nunca
+escreva e nunca registre clone, copia ou reproducao exata de artista nenhum.
+
+A pesquisa da fase de brief aterrissa em `influence-profile.json`, na raiz do projeto, ao lado do
+`arrangement-brief.json`. Trate-o como somente leitura, igual ao brief: ele e o registro da
+pesquisa daquela musica e nao vira base de conhecimento. Passe esse perfil para `report.build`
+(campo `influence`) para a cadeia fonte -> achado -> mapeamento -> tecnica -> track fechar. Se o
+arquivo nao existir, nao invente perfil: o relatorio declara o elo ausente em `missing_links`.
+
+Nunca invente numero MIDI nem parametro tecnico a partir de prosa da pesquisa. Numero vem do
+manual local via `techniques.describe` ou dos `parameters` que `influence.compile` devolve.
+Adjetivo de referencia ("soa atrasado") nunca vira valor numerico deduzido de cabeca.
+
+Achado que o motor nao executa sai em `unmapped_findings` de `influence.compile`. Registre-o no
+`progress_file` e deixe-o visivel no relatorio; nunca descarte em silencio e nunca force uma
+tecnica so para "resolver" o achado. Ausencia de pesquisa sobre uma dimensao e lacuna declarada,
+nunca afirmacao de que a referencia nao usa aquilo.
+
+Aplique somente o que estiver em `style.<familia>.authorized_techniques[]` do brief. Sugestao nao
+autoriza, silencio nao autoriza, e voce nunca edita o brief para autorizar o que falta: requisito
+novo exige rodar a skill de brief de novo com o usuario.
+
 ## Anotacoes textuais do MIDI
 
 O `analyze` devolve `annotations`: cada evento textual do MIDI de origem (marker nao-secao, text,

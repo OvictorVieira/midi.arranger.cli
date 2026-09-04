@@ -30,6 +30,16 @@ from tools.registry import get as get_tool
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL_PATH = REPO_ROOT / "skills" / "midi-brief" / "SKILL.md"
 
+# Artefatos que a skill (ou a fase `run`) PRODUZ no projeto do usuario. Eles
+# sao citados no corpo da SKILL.md por nome de arquivo e, por definicao, nao
+# existem neste repositorio.
+_PRODUCED_ARTIFACTS = frozenset({
+    "arrangement-brief.json",
+    "influence-profile.json",
+    "arrangement-plan.json",
+    "arrangement-report.json",
+})
+
 
 # --- helpers --------------------------------------------------------------
 
@@ -130,8 +140,8 @@ def test_referenced_files_exist():
         if candidate in seen:
             continue
         seen.add(candidate)
-        if candidate == "arrangement-brief.json":
-            # produzido pela skill; nao existe no repo.
+        if candidate in _PRODUCED_ARTIFACTS:
+            # produzido pela skill ou pela fase `run`; nao existe no repo.
             continue
         target = REPO_ROOT / candidate
         if not target.exists():
@@ -238,6 +248,38 @@ def test_referenced_tools_are_registered():
         # veto nenhum.
         "nao descarta um veto",
         "nao crie guitarra",
+        # Issue #76 — a skill como coordenadora do fluxo reference-driven.
+        # Linguagem do produto (posicionamento legal, nao estetica).
+        "influenciado por caracteristicas de performance",
+        # Fluxo de dez passos, com o render fora desta fase.
+        "influence.compile",
+        "influence-profile.json",
+        "InfluenceProfile",
+        # A skill nao inventa numero a partir de prosa.
+        "Nunca invente numero MIDI nem parametro tecnico a partir de prosa",
+        # Fonte + confianca + resumo parafraseado antes de autorizar.
+        "Apresentacao antes da autorizacao",
+        "Resumo parafraseado",
+        # So capacidade executavel e oferecida.
+        "implemented_only",
+        "implemented: false",
+        # Achado nao suportado permanece visivel.
+        "unmapped_findings",
+        "Achado nao suportado permanece visivel",
+        # Autorizacao do conjunto recomendado em uma acao, com lista canonica.
+        "conjunto recomendado",
+        "grave a lista canonica completa",
+        # Sem acesso a web: tres saidas explicitas.
+        "Quando nao ha acesso a web",
+        "Fornecer as fontes manualmente",
+        "Usar a persona default",
+        "Cancelar aquela referencia",
+        # Antirreferencia e veto tem precedencia sobre sugestao.
+        "Antirreferencias e vetos mandam mais que sugestao",
+        # Lacuna nao vira afirmacao sobre a referencia.
+        "Lacuna nao e decisao",
+        # A skill nao renderiza antes da autorizacao.
+        "nao renderiza",
     ],
 )
 def test_body_carries_required_clauses(clause):
@@ -335,3 +377,71 @@ def test_session_created_at_command_matches_brief_schema_pattern():
             f"'date -u +{fmt}' produz {sample!r}, que nao bate com o "
             "padrao ISO-8601 UTC validado em brief_schema.py"
         )
+
+
+def test_route_vocabulary_matches_plan_routes():
+    """Regressao: o modo rapido mandava gravar `route: banda`, que nao existe
+    em `tools.plan.ROUTES` — brief.validate recusaria o brief inteiro em
+    `E_BRIEF_INVALID`. Todo nome de rota citado entre crases tem que ser uma
+    rota real."""
+    from tools.plan import ROUTES
+
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    cited = set(re.findall(r"`route`: `([a-z_]+)`", body))
+    assert cited, "SKILL.md nao cita nenhum valor concreto de route"
+    invalid = sorted(cited - set(ROUTES))
+    assert not invalid, (
+        f"SKILL.md manda gravar rota inexistente: {invalid}; "
+        f"validas: {list(ROUTES)}"
+    )
+
+
+def test_product_language_never_promises_a_clone():
+    """Posicionamento legal do produto (issue #76): a skill fala em arranjo
+    *influenciado por caracteristicas de performance*. As palavras 'clone',
+    'copia' e 'reproducao exata' so podem aparecer sendo PROIBIDAS — nunca
+    como promessa."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    assert "influenciado por caracteristicas de performance" in body.lower()
+
+    forbidden = re.compile(r"clone|copia|reproducao exata")
+    negations = ("nunca", "nao ", "jamais", "recusa", "sem soar")
+    offending = []
+    for paragraph in re.split(r"\n\s*\n", body):
+        lowered = paragraph.lower()
+        if forbidden.search(lowered) and not any(n in lowered for n in negations):
+            offending.append(paragraph.strip()[:120])
+    assert not offending, (
+        f"SKILL.md fala de clone/copia sem proibir: {offending}"
+    )
+
+
+def test_flow_has_the_ten_coordinated_steps_in_order():
+    """O fluxo do MVP reference-driven tem dez passos numerados, na ordem, e o
+    passo 10 (render/entrega) e delegado ao `run` — nao acontece aqui."""
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    flow = body.split("## O fluxo, em ordem", 1)[1].split("\n## ", 1)[0]
+    steps = re.findall(r"^\s*(\d{1,2})\. ", flow, flags=re.MULTILINE)
+    assert steps == [str(n) for n in range(1, 11)], (
+        f"fluxo da skill nao tem os dez passos em ordem: {steps}"
+    )
+
+    lowered = flow.lower()
+    for expected in (
+        "analyze",
+        "influenceprofile",
+        "influence.compile",
+        "unmapped_findings",
+        "authorized_techniques",
+        "brief.validate",
+        "midi-arranger run",
+    ):
+        assert expected in lowered, f"passo do fluxo sem {expected!r}"
+
+    assert "voce nao renderiza nada antes da autorizacao" in lowered
