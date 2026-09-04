@@ -150,6 +150,7 @@ Tools disponiveis:
   somente leitura durante o run; requisito novo exige rodar a skill de brief de novo.
 - `analyze`: use antes de qualquer decisao de arranjo para extrair estrutura e fatos do MIDI.
   Nao use como validador final e nao use para modificar arquivo.
+- `learn`: use quando o usuario entregar um corpus de MIDI da propria banda/musico em vez de pedir pesquisa ("no estilo das nossas musicas"). Mede o corpus e devolve `style.<familia>` pronto para o plano. So a familia 'drums' esta implementada; outra familia devolve erro explicito. Leia `measurements.dimensions` e os warnings `W_LEARN_NOT_MEASURABLE`: dimensao de feel (velocity/timing/ghost notes/autocorrelacao) que o corpus nao permite medir com confianca fica de fora de `style.parameters` — NUNCA apresente isso como "a banda toca robotico", apenas como MIDI sem essa informacao (a humanizacao pode acontecer no plugin/audio).
 - `plan.skeleton`: use para iniciar um plano a partir da analise. Nao use para inventar elementos;
   a decisao musical e sua.
 - `plan.validate`: use sempre antes de `render`. Nao pule validacao para economizar iteracao.

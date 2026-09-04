@@ -23,6 +23,7 @@ from typing import Any
 import pretty_midi
 
 from . import analyze as analyze_mod
+from . import learn as learn_mod
 from . import plan as plan_mod
 from . import plugins as plugins_mod
 from . import presets as presets_mod
@@ -2696,6 +2697,139 @@ TECHNIQUES_DESCRIBE_TOOL = Tool(
 )
 
 
+# --- learn -------------------------------------------------------------
+
+LEARN_DESCRIPTION = (
+    "Mede um corpus de MIDI da mesma banda/musico (o caminho \"no estilo das "
+    "nossas musicas\" da entrevista) e devolve um perfil `style.<familia>` "
+    "pronto para entrar em `plan.style` — sem pesquisar nada, so mede os "
+    "arquivos informados (sem rede, sem relogio). So a familia 'drums' esta "
+    "implementada nesta versao; outra familia devolve erro explicito, nunca "
+    "um perfil vazio disfarcado de medicao. `researched_at` (YYYY-MM-DD) e "
+    "informado por quem chama — a tool nao tem relogio. O detalhe de CADA "
+    "dimensao medida (ou explicitamente NAO medida, com a razao) vem em "
+    "`measurements.dimensions`; `style.<familia>.parameters` so recebe os "
+    "numeros das dimensoes com confianca real — MIDI quantizado/velocity "
+    "travada (humanizacao feita no plugin, nao no MIDI) fica de fora dos "
+    "parametros e aparece como warning `W_LEARN_NOT_MEASURABLE`, nunca como "
+    "'zero jitter e o estilo desta banda'."
+)
+
+
+def _learn_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    raw_paths = payload["midi_paths"]
+    resolved = [
+        _resolve_midi(item, field=f"midi_paths[{i}]")
+        for i, item in enumerate(raw_paths)
+    ]
+    family = payload["family"]
+    researched_at = payload["researched_at"]
+    reference = payload.get("reference")
+
+    try:
+        result = learn_mod.learn(
+            [str(p) for p in resolved],
+            family,
+            researched_at=researched_at,
+            reference=reference,
+        )
+    except learn_mod.LearnFamilyNotSupportedError as exc:
+        raise ToolError(
+            "E_LEARN_FAMILY_NOT_SUPPORTED", str(exc), path="family",
+            hint=f"familias implementadas: {list(learn_mod.LEARN_SUPPORTED_FAMILIES)}",
+        ) from None
+    except learn_mod.LearnEmptyCorpusError as exc:
+        raise ToolError("E_LEARN_EMPTY_CORPUS", str(exc), path="midi_paths") from None
+    except learn_mod.LearnError as exc:
+        raise ToolError("E_LEARN_INVALID", str(exc), path="midi_paths") from None
+
+    return (
+        {"style": result.style, "measurements": result.measurements},
+        result.warnings,
+    )
+
+
+_LEARN_DIMENSION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["structural", "feel"]},
+        "measured": {"type": "boolean"},
+        "confidence": {"enum": list(STYLE_CONFIDENCE_LEVELS)},
+        "n_samples": {"type": "integer", "minimum": 0},
+        "n_files": {"type": "integer", "minimum": 0},
+        "reason": {"type": "string", "minLength": 1},
+        "value": {"type": "object", "additionalProperties": True},
+    },
+    "required": [
+        "name", "kind", "measured", "confidence", "n_samples", "n_files",
+        "reason", "value",
+    ],
+}
+
+
+LEARN_TOOL = Tool(
+    name="learn",
+    description=LEARN_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "midi_paths": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+            },
+            "family": {"enum": list(STYLE_FAMILIES)},
+            "researched_at": {"type": "string", "pattern": ISO_DATE_PATTERN},
+            "reference": {"type": ["string", "null"]},
+        },
+        "required": ["midi_paths", "family", "researched_at"],
+        "additionalProperties": False,
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "style": {
+                "type": "object",
+                "properties": {
+                    family: _plan_family_style_schema() for family in STYLE_FAMILIES
+                },
+                "additionalProperties": False,
+            },
+            "measurements": {
+                "type": "object",
+                "properties": {
+                    "family": {"enum": list(STYLE_FAMILIES)},
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "minLength": 1},
+                                "note_count": {"type": "integer", "minimum": 0},
+                            },
+                            "required": ["path", "note_count"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "dimensions": {
+                        "type": "object",
+                        "additionalProperties": _LEARN_DIMENSION_SCHEMA,
+                    },
+                },
+                "required": ["family", "files", "dimensions"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["style", "measurements"],
+        "additionalProperties": False,
+    },
+    func=_learn_impl,
+)
+
+
 # --- registro --------------------------------------------------------------
 
 def bootstrap() -> None:
@@ -2708,7 +2842,7 @@ def bootstrap() -> None:
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
         RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL, PRESETS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
-        BRIEF_VALIDATE_TOOL,
+        BRIEF_VALIDATE_TOOL, LEARN_TOOL,
     ):
         if _get(tool.name) is None:
             register(tool)
@@ -2722,6 +2856,7 @@ bootstrap()
 __all__ = [
     "ANALYZE_TOOL",
     "BRIEF_VALIDATE_TOOL",
+    "LEARN_TOOL",
     "PLAN_SKELETON_TOOL",
     "PLAN_VALIDATE_TOOL",
     "PLUGINS_SCAN_TOOL",
