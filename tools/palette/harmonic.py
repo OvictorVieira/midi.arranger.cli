@@ -169,17 +169,24 @@ def _velocity_for_bar(
     dynamics: dict,
     section_kind: str,
     base: int,
-    fade_in_floor: int = FADE_IN_FLOOR,
+    velocity_ranges=VELOCITY_RANGES,
 ) -> int:
     """Velocity do pad para uma nota comecando na barra bar_index_in_section
     (0-based dentro da secao).
 
     Suporta forma dinamica:
-      - entry='fade_in_Nbars': ramp linear de FADE_IN_FLOOR ate base nos
-        primeiros N bars; a partir do bar N a velocity fica no base.
+      - entry='fade_in_Nbars': ramp linear do piso 'ghost' de
+        `velocity_ranges` ate base nos primeiros N bars; a partir do bar N a
+        velocity fica no base.
       - shape='hold': velocity constante em base.
       - shape='open_at_chorus': base + OPEN_AT_CHORUS_BONUS quando a secao
         for do kind 'chorus'; caso contrario comporta-se como hold.
+
+    O bucket 'ghost' de `velocity_ranges` so e lido quando o fade-in esta de
+    fato ativo (mesmo padrao usado em `_rhythmic_velocity`): um `profile`
+    esparso que nao declara 'ghost' continua valido para chamadas sem
+    entry='fade_in_Nbars', em vez de estourar KeyError por um piso que a
+    forma dinamica pedida nunca usa.
     """
     entry = dynamics.get("entry")
     shape = dynamics.get("shape", "hold")
@@ -188,6 +195,7 @@ def _velocity_for_bar(
 
     fade_bars = _parse_fade_in_bars(entry)
     if fade_bars > 0 and bar_index_in_section < fade_bars:
+        fade_in_floor = velocity_ranges["ghost"][0]
         # Ramp linear: bar 0 -> 1/N do caminho, bar N-1 -> N/N (base).
         frac = (bar_index_in_section + 1) / fade_bars
         v = round(fade_in_floor + (base - fade_in_floor) * frac)
@@ -249,7 +257,6 @@ def generate_pad(
 
     resolved_profile = profile or StyleProfile.default()
     base = _pad_base_velocity(resolved_profile.velocity_ranges)
-    fade_in_floor = resolved_profile.velocity_ranges["ghost"][0]
 
     # Pre-calcula o offset (segundos) de cada camada. Camada 0 no onset;
     # cada camada seguinte acumula um sorteio na faixa PAD_LAYER_ONSET_STAGGER_MS.
@@ -265,7 +272,9 @@ def generate_pad(
         for bar_pos, bar in enumerate(bars):
             if bar.chord is None:
                 continue
-            v = _velocity_for_bar(bar_pos, dyn, section.kind, base, fade_in_floor)
+            v = _velocity_for_bar(
+                bar_pos, dyn, section.kind, base, resolved_profile.velocity_ranges,
+            )
             pitches = _voice_pad_chord(bar.chord, register)
             start_s = bar.start + stagger_s
             end_s = bar.end
@@ -674,7 +683,7 @@ def generate_keyboard(
             # bar comeca em bar.end, e o guard de linha 562 assegura o resto).
             v_bar = _velocity_for_bar(
                 bar_pos, dyn, section.kind, base,
-                resolved_profile.velocity_ranges["ghost"][0],
+                resolved_profile.velocity_ranges,
             )
             voiced = engine.voice(VoicingRequest(pitches=tuple(pitches), role=role))
             for vn in voiced:
@@ -803,10 +812,16 @@ def _strings_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
 
 def _strings_ghost_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
     """Velocity ghost para vozes internas. STRINGS_GHOST_MAX_ABS_VELOCITY
-    (=39) e o piso do 'ghost <40'; usamos meio do bucket ghost mas trava
-    em <40 para respeitar o AC literal."""
-    lo, _hi = velocity_ranges["ghost"]
-    return min(STRINGS_GHOST_MAX_ABS_VELOCITY, (int(lo) + STRINGS_GHOST_MAX_ABS_VELOCITY) // 2)
+    (=39) e um TETO fisico absoluto do 'ghost <40' (AC literal), nao um
+    substituto do `hi` do bucket 'ghost' do profile: usamos o meio do
+    bucket ghost — `hi` do profile ja capado nesse teto — e travamos o
+    resultado final no mesmo teto. Com o default (20, 50) o teto domina
+    (hi efetivo = 39) e o resultado e byte-identico ao anterior; um profile
+    que estreite 'ghost' (ex.: (5, 10)) passa a comandar o resultado, em vez
+    de ser descartado em favor do teto."""
+    lo, hi = velocity_ranges["ghost"]
+    hi_eff = min(int(hi), STRINGS_GHOST_MAX_ABS_VELOCITY)
+    return min(STRINGS_GHOST_MAX_ABS_VELOCITY, (int(lo) + hi_eff) // 2)
 
 
 def _pitch_class_within(pc: int, lo: int, hi: int) -> int:
@@ -1105,7 +1120,7 @@ def generate_strings(
         note_dur = (boundary - bar.start) * gate
         v_bar = _velocity_for_bar(
             bar_pos, dyn, section.kind, base,
-            resolved_profile.velocity_ranges["ghost"][0],
+            resolved_profile.velocity_ranges,
         )
         chug_active = chug_map[bar_pos]
         for vi in range(voices):

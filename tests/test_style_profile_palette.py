@@ -34,7 +34,12 @@ from tools.analyze import Analysis, BarAnalysis, Chord
 from tools.constants import TIMING_JITTER_MS, VELOCITY_RANGES
 from tools.palette.bass import generate_bass
 from tools.palette.drums import GM_HAT_CLOSED, generate_drums
-from tools.palette.harmonic import PAD_BASE_VELOCITY_BUCKET, generate_pad
+from tools.palette.harmonic import (
+    PAD_BASE_VELOCITY_BUCKET,
+    _strings_ghost_velocity,
+    generate_pad,
+    generate_strings,
+)
 from tools.plan import PlanSection
 from tools.rng import assert_traceable_seed
 from tools.style_profile import StyleProfile
@@ -237,3 +242,75 @@ def test_generate_bass_without_profile_matches_default_profile():
     without = generate_bass(a, s, layers=1, seed=99)
     with_default = generate_bass(a, s, layers=1, seed=99, profile=StyleProfile.default())
     assert without == with_default
+
+
+# --- achados do Codex no PR #109 --------------------------------------------
+
+def test_generate_pad_accepts_sparse_profile_without_ghost_bucket_when_hold():
+    """PR #109, achado 1: `StyleProfile` aceita mapa esparso de proposito
+    (nenhuma chave e obrigatoria — ver `tools/style_profile.py::_validate`).
+    `dynamics={'shape': 'hold'}` nunca ativa a rampa fade-in e portanto nunca
+    precisa do piso do bucket 'ghost'; gerar o pad com um profile que so
+    declara 'tied_soft' nao pode estourar KeyError por um piso que este
+    caminho de codigo nem usa."""
+    profile = StyleProfile(velocity_ranges={"tied_soft": (30, 30)})
+    layers = generate_pad(
+        _analysis(), _section(),
+        layers=1, dynamics={"shape": "hold"}, seed=7, profile=profile,
+    )
+    notes = layers[0].notes
+    assert notes, "fixture deve gerar pelo menos uma nota"
+    assert all(n.velocity == 30 for n in notes)
+
+
+def test_generate_pad_sparse_profile_without_ghost_bucket_raises_when_fade_in_needed():
+    """Contraprova do teste acima: quando o caminho de codigo REALMENTE
+    precisa do piso 'ghost' (fade_in_Nbars ativo), a ausencia do bucket
+    continua sendo erro explicito — nao um fallback silencioso inventado."""
+    profile = StyleProfile(velocity_ranges={"tied_soft": (30, 30)})
+    with pytest.raises(KeyError):
+        generate_pad(
+            _analysis(), _section(),
+            layers=1, dynamics={"entry": "fade_in_2bars", "shape": "hold"},
+            seed=7, profile=profile,
+        )
+
+
+def test_strings_ghost_velocity_respects_profile_hi_within_physical_ceiling():
+    """PR #109, achado 2: `_strings_ghost_velocity` descartava o `hi` do
+    bucket 'ghost' do profile e sempre calculava a media com o teto fisico
+    hard-coded (39), produzindo 22 para ghost=(5, 10) — fora da faixa
+    declarada pelo usuario, e variar `hi` nao tinha efeito nenhum
+    (parametro mentiroso, AGENTS.md L151-155). O `hi` do profile agora
+    comanda o resultado, capado no teto fisico de 39 (AC 'ghost <40')."""
+    narrow = _strings_ghost_velocity(velocity_ranges={"ghost": (5, 10)})
+    assert 5 <= narrow <= 10, f"velocity {narrow} fora da faixa declarada (5, 10)"
+
+    wider = _strings_ghost_velocity(velocity_ranges={"ghost": (5, 20)})
+    assert wider != narrow, "hi do profile deve mudar o resultado (parametro nao pode ser mentiroso)"
+
+    # Default (20, 50): hi efetivo cai no teto fisico (39) e o resultado
+    # continua byte-identico ao comportamento anterior a este fix.
+    assert _strings_ghost_velocity() == 29
+
+    # Teto fisico absoluto nunca e ultrapassado, mesmo com hi bem acima dele.
+    above_ceiling = _strings_ghost_velocity(velocity_ranges={"ghost": (30, 200)})
+    assert above_ceiling <= 39
+
+
+def test_generate_strings_ghost_notes_stay_within_profile_ghost_range():
+    """Mesma prova do achado 2, mas de ponta a ponta atraves de
+    `generate_strings`: com ghost_ratio=1.0 toda nota da voz interna vira
+    ghost, e a velocity emitida tem que respeitar o bucket 'ghost' do
+    profile — nao um valor fixo hard-coded fora da faixa pedida."""
+    profile = StyleProfile(velocity_ranges={**dict(VELOCITY_RANGES), "ghost": (5, 10)})
+    voices = generate_strings(
+        _analysis(), _section(),
+        voices=3, ghost_ratio=1.0, seed=11, profile=profile,
+    )
+    inner_notes = voices[1].notes
+    ghost_notes = [n for n in inner_notes if n.is_ghost]
+    assert ghost_notes, "ghost_ratio=1.0 deve marcar notas da voz interna como ghost"
+    assert all(5 <= n.velocity <= 10 for n in ghost_notes), (
+        "velocity ghost deve respeitar o bucket 'ghost' declarado no profile"
+    )
