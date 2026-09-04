@@ -80,6 +80,7 @@ from .validators import (
     validate_transitions,
 )
 from .validators.compliance import blocking_requisitos, validate_compliance
+from .validators.placement import TRANSITION_EXEMPT_ROLES
 
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -3262,9 +3263,15 @@ REPORT_BUILD_DESCRIPTION = (
     "as listas de tecnicas sugeridas, autorizadas, aplicadas, ignoradas e "
     "nao suportadas, os hashes de brief/plano/MIDI, as versoes de schema e "
     "do dicionario de mapeamento, e um `summary_text` curto para o musico "
-    "ler. REGRA: 'aplicada_verificada' so aparece quando um validador "
-    "cobriu aquela track; sem cobertura o status e "
-    "'aplicada_nao_verificavel' — nunca invente sucesso. Passe `influence` "
+    "ler. REGRA: 'aplicada_verificada' so aparece quando um validador POR "
+    "TRACK cobriu aquela track E a tecnica esta autorizada no brief desta "
+    "execucao; sem cobertura o status e 'aplicada_nao_verificavel', e sem "
+    "autorizacao rastreavel e 'aplicada_sem_autorizacao' — nunca invente "
+    "sucesso. Persona, colisao e conformidade tem escopo global: nao cobrem "
+    "track nenhuma, e erro deles (que nao carrega campo `track`) rebaixa o "
+    "status de todos os alvos. Em `techniques`, leia "
+    "`aplicadas_verificadas`/`por_status`; `aplicadas` sozinha junta "
+    "verificada, nao verificavel, com erro e sem autorizacao. Passe `influence` "
     "(o perfil da pesquisa) e `brief_path` para a cadeia ficar completa; sem "
     "eles o relatorio sai valido, porem com os elos ausentes declarados em "
     "`missing_links`."
@@ -3299,25 +3306,70 @@ def _report_validator_runs(
 ) -> list[report_mod.ValidatorRun]:
     """Roda os sete validadores e devolve o que CADA um cobriu de verdade.
 
-    `covered_tracks` e a lista de tracks que o validador realmente recebeu —
-    e o que separa "olhou e nao achou problema" de "nem olhou".
+    `covered_tracks` e a lista de tracks que o validador realmente PERCORREU
+    — e o que separa "olhou e nao achou problema" de "nem olhou". Cada
+    validador tem um alcance diferente, e declarar o alcance errado aqui e o
+    unico jeito de o relatorio afirmar cobertura inexistente:
+
+    - `harmonia`, `placement`, `artificialidade` iteram `rendered_tracks` e
+      fazem `elements_by_id.get(track.element_id)`, pulando (`continue`)
+      tudo que nao e elemento do plano. Track de `plan.edits`/origem entra
+      como `source:<nome>` e NUNCA e examinada — a docstring do harmony diz
+      isso com todas as letras. Logo, a cobertura desses tres e so a das
+      tracks de elemento (e o harmony ainda pula `harmony="percussion"`,
+      que ele nao verifica);
+    - `anticopia` itera todas as tracks renderizadas, inclusive as de
+      origem/edicao — a cobertura dele e o conjunto inteiro;
+    - `persona`, `colisao` e `conformidade` sao de ESCOPO GLOBAL: persona
+      recebe `rendered_tracks` marcado `# noqa: ARG001 - reservado` e nao
+      consome track nenhuma, colisao so recebe o plano, conformidade
+      responde por requisito do brief. Eles declaram `scope="global"` e
+      cobertura vazia; seus erros (sem campo `track`) valem para todos os
+      alvos e rebaixam o status pelo caminho de `_track_evidence`.
+
+    Nada disso muda assinatura de validador: o alcance e declarado aqui, do
+    lado da fachada, a partir do que o codigo de cada validador faz.
     """
-    covered = tuple(t.track_name for t in rendered_tracks)
+    elements_by_id = {e.id: e for e in plan_obj.elements}
+    element_tracks = [
+        t for t in rendered_tracks if t.element_id in elements_by_id
+    ]
+    section_labels = {s.label for s in plan_obj.sections}
+    todas = tuple(t.track_name for t in rendered_tracks)
+    # Harmonia so examina modo harmonico que ela mesma verifica; `percussion`
+    # sai por `continue` antes de qualquer regra.
+    cobertura_harmonia = tuple(
+        t.track_name for t in element_tracks
+        if elements_by_id[t.element_id].harmony != "percussion"
+    )
+    # Placement pula role isento de transicao e elemento sem secao declarada
+    # que exista no plano.
+    cobertura_placement = tuple(
+        t.track_name for t in element_tracks
+        if elements_by_id[t.element_id].role not in TRANSITION_EXEMPT_ROLES
+        and any(
+            label in section_labels
+            for label in elements_by_id[t.element_id].sections
+        )
+    )
+    cobertura_artificialidade = tuple(t.track_name for t in element_tracks)
+
     runs: list[report_mod.ValidatorRun] = [
         report_mod.ValidatorRun(
-            name="harmonia", executed=True, covered_tracks=covered,
+            name="harmonia", executed=True, covered_tracks=cobertura_harmonia,
             issues=tuple(validate_harmony(rendered_tracks, plan_obj, analysis)),
         ),
         report_mod.ValidatorRun(
-            name="placement", executed=True, covered_tracks=covered,
+            name="placement", executed=True, covered_tracks=cobertura_placement,
             issues=tuple(validate_placement(rendered_tracks, plan_obj, analysis)),
         ),
         report_mod.ValidatorRun(
-            name="artificialidade", executed=True, covered_tracks=covered,
+            name="artificialidade", executed=True,
+            covered_tracks=cobertura_artificialidade,
             issues=tuple(validate_artifice(rendered_tracks, plan_obj, analysis)),
         ),
         report_mod.ValidatorRun(
-            name="persona", executed=True, covered_tracks=covered,
+            name="persona", executed=True, scope="global",
             issues=tuple(validate_persona(
                 plan_obj, rendered_tracks, analysis,
                 strict=bool(payload.get("strict_persona", False)),
@@ -3327,14 +3379,14 @@ def _report_validator_runs(
 
     collision = validate_collisions(plan_obj)
     runs.append(report_mod.ValidatorRun(
-        name="colisao", executed=True, covered_tracks=covered,
+        name="colisao", executed=True, scope="global",
         issues=tuple(collision.warnings),
     ))
 
     if corpus_paths:
         corpus = load_reference_sequences([str(p) for p in corpus_paths])
         runs.append(report_mod.ValidatorRun(
-            name="anticopia", executed=True, covered_tracks=covered,
+            name="anticopia", executed=True, covered_tracks=todas,
             issues=tuple(validate_anticopy(
                 rendered_tracks, plan_obj, analysis, corpus=corpus,
             )),
@@ -3362,12 +3414,12 @@ def _report_validator_runs(
             rendered_mid=rendered_mid,
         )
         runs.append(report_mod.ValidatorRun(
-            name="conformidade", executed=True, covered_tracks=covered,
+            name="conformidade", executed=True, scope="global",
             issues=tuple(compliance.requisitos),
         ))
     else:
         runs.append(report_mod.ValidatorRun(
-            name="conformidade", executed=False,
+            name="conformidade", executed=False, scope="global",
             note=(
                 "brief ausente ou sem `requisitos[]`: nao ha requisito para "
                 "conferir a risca"

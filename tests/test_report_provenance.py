@@ -33,9 +33,34 @@ from tools.influence_compile import compile_influence
 from tools.plan import ArrangementPlan, BriefRef, StyleTechnique
 from tools.registry import call
 from tools.render import render
-from tools.report import ValidatorRun, build_report, read_stamps
+from tools.report import ValidatorRun, build_report, parse_stamp, read_stamps
 
 GHOST = "drums.ghost_notes"
+
+
+def _neutral_corpus(tmp_path: Path) -> list[str]:
+    """Corpus de referencia REAL, porem sem parentesco com o material do
+    teste: uma escala de piano.
+
+    Serve para fazer o `anticopia` EXECUTAR — ele e o unico dos sete
+    validadores que percorre tambem as tracks de `plan.edits`/origem, entao
+    e o unico que pode dar cobertura objetiva a uma track de edicao. Com o
+    corpus real de bateria (`tests/fixtures/corpus_drums`), a bateria chapada
+    da fixture casa de verdade e o veredito vira `com_erro` — cenario do
+    teste de erro, nao do caminho feliz.
+    """
+    import pretty_midi
+
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=90.0)
+    piano = pretty_midi.Instrument(program=0, name="Ref Piano")
+    for i, pitch in enumerate((60, 62, 64, 65, 67, 69, 71, 72)):
+        piano.notes.append(pretty_midi.Note(
+            velocity=70, pitch=pitch, start=i * 0.5, end=i * 0.5 + 0.45,
+        ))
+    pm.instruments.append(piano)
+    dest = tmp_path / "corpus-neutro.mid"
+    pm.write(str(dest))
+    return [str(dest)]
 
 
 def _influence_profile() -> InfluenceProfile:
@@ -103,6 +128,7 @@ def _build_via_tool(
     brief_path: Path | None,
     influence: InfluenceProfile | None,
     out_path: Path | None = None,
+    reference_corpus: list[str] | None = None,
 ) -> dict:
     from tools.influence import to_dict as influence_to_dict
     from tools.plan import to_dict as plan_to_dict
@@ -112,6 +138,8 @@ def _build_via_tool(
         "rendered_path": str(out),
         "plan": plan_to_dict(plan),
     }
+    if reference_corpus is not None:
+        payload["reference_corpus"] = list(reference_corpus)
     if brief_path is not None:
         payload["brief_path"] = str(brief_path)
     if influence is not None:
@@ -133,10 +161,20 @@ def _link(report: dict, technique: str) -> dict:
 
 
 def test_cadeia_completa_liga_fonte_achado_mapeamento_tecnica_track_metrica(tmp_path):
-    """O caminho feliz inteiro, com todos os artefatos presentes."""
+    """O caminho feliz inteiro, com todos os artefatos presentes.
+
+    A track alvo e `Drums`, de `plan.edits`. Dos sete validadores, o UNICO
+    que a percorre e o `anticopia` — harmonia, placement e artificialidade
+    pulam por `elements_by_id.get(track.element_id) is None`, e persona,
+    colisao e conformidade sao de escopo global. Por isso o caminho feliz
+    passa um corpus de referencia: sem ele nao existe cobertura real
+    nenhuma, e o status honesto e `aplicada_nao_verificavel` (ver
+    `test_track_de_edit_sem_validador_por_track_nao_pode_sair_verificada`).
+    """
     src, out, brief_path, plan = _rendered_project(tmp_path)
     report = _build_via_tool(
         src, out, plan, brief_path=brief_path, influence=_influence_profile(),
+        reference_corpus=_neutral_corpus(tmp_path),
     )
 
     link = _link(report, GHOST)
@@ -168,7 +206,11 @@ def test_cadeia_completa_liga_fonte_achado_mapeamento_tecnica_track_metrica(tmp_
     assert metrics["velocity_min"] is not None
     evidence = targets[0]["validator_evidence"]
     assert evidence["veredito"] == "limpo"
-    assert "harmonia" in evidence["validadores"]
+    # `anticopia` e o unico validador que REALMENTE percorreu esta track.
+    # Harmonia nunca aparece aqui: ela pula track de `plan.edits`.
+    assert evidence["validadores"] == ["anticopia"]
+    assert "harmonia" not in evidence["validadores"]
+    assert evidence["erros_globais"] == []
 
     assert link["status"] == "aplicada_verificada"
     assert link["missing_links"] == []
@@ -354,13 +396,16 @@ def test_relatorio_e_deterministico_byte_a_byte(tmp_path):
     src, out, brief_path, plan = _rendered_project(tmp_path)
     profile = _influence_profile()
 
+    corpus = _neutral_corpus(tmp_path)
     primeiro = _build_via_tool(
         src, out, plan, brief_path=brief_path, influence=profile,
         out_path=tmp_path / "arrangement-report-1.json",
+        reference_corpus=corpus,
     )
     segundo = _build_via_tool(
         src, out, plan, brief_path=brief_path, influence=profile,
         out_path=tmp_path / "arrangement-report-2.json",
+        reference_corpus=corpus,
     )
 
     assert report_mod.report_sha256(primeiro) == report_mod.report_sha256(segundo)
@@ -470,3 +515,392 @@ def test_todo_status_tem_rotulo_no_resumo(status):
         "missing_links": [],
     }
     assert report_mod.format_summary(fake)
+
+
+# --- regressoes da revisao adversarial do PR #119 ---------------------------
+#
+# Cada teste abaixo reproduz um defeito REAL encontrado na revisao e trava a
+# correcao. A regra de negocio em jogo e sempre a mesma: "aplicado com
+# sucesso" so aparece com evidencia objetiva; caso contrario, nao verificavel.
+
+
+def test_track_de_edit_sem_validador_por_track_nao_pode_sair_verificada(tmp_path):
+    """Achado 1: a fachada dava a TODOS os validadores a mesma lista de
+    tracks renderizadas. `Drums` e track de `plan.edits` (`element_id`
+    `source:Drums`), e harmonia/placement/artificialidade a pulam por
+    construcao, enquanto persona/colisao/conformidade nem sao por track.
+    Sem corpus de anticopia ninguem olhou para ela — e o relatorio dizia
+    `limpo` e `aplicada_verificada`."""
+    src, out, brief_path, plan = _rendered_project(tmp_path)
+    report = _build_via_tool(
+        src, out, plan, brief_path=brief_path, influence=_influence_profile(),
+    )
+    link = _link(report, GHOST)
+    evidence = link["targets"][0]["validator_evidence"]
+
+    assert link["targets"][0]["kind"] == "edit"
+    assert evidence["validadores"] == []
+    assert evidence["veredito"] == "sem_cobertura"
+    assert link["status"] == "aplicada_nao_verificavel"
+
+    # nenhum validador por track pode reivindicar a track de edicao...
+    for name in ("harmonia", "placement", "artificialidade"):
+        assert "Drums" not in report["validators"][name]["tracks_cobertas"]
+    # ...e validador de escopo global nao cobre track nenhuma.
+    for name in ("persona", "colisao", "conformidade"):
+        assert report["validators"][name]["escopo"] == "global"
+        assert report["validators"][name]["tracks_cobertas"] == []
+
+
+def test_validador_global_nao_pode_declarar_cobertura_de_track():
+    """Achado 1, barreira estrutural: a combinacao que fabricava cobertura
+    (`scope="global"` com `covered_tracks` cheio) nao e representavel."""
+    with pytest.raises(ValueError, match="escopo global"):
+        ValidatorRun(
+            name="persona", executed=True, scope="global",
+            covered_tracks=("Drums",),
+        )
+
+
+def test_erro_de_validador_sem_campo_track_rebaixa_o_status(tmp_path):
+    """Achado 2: `RequisitoVerdict`, `PersonaIssue` e `CollisionWarning` nao
+    tem campo `track`. O relatorio so acumulava erro cujo `track` casasse com
+    o nome do alvo, entao um requisito NAO ATENDIDO convivia com
+    `aplicada_verificada` e com 'aplicadas e verificadas por validador' no
+    resumo."""
+    src, out, _bp, plan = _rendered_project(tmp_path)
+    brief = {
+        "style": {"drums": {"authorized_techniques": [GHOST]}},
+        "requisitos": [{
+            "id": "R1", "familia": "bass", "tipo": "tecnica",
+            "alvo": "ghost notes", "descricao": "por ghost notes no baixo",
+        }],
+    }
+    brief_path = tmp_path / "arrangement-brief.json"
+    brief_path.write_text(json.dumps(brief, indent=2), encoding="utf-8")
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+
+    report = _build_via_tool(
+        src, out, plan, brief_path=brief_path, influence=None,
+        reference_corpus=_neutral_corpus(tmp_path),
+    )
+    conformidade = report["validators"]["conformidade"]
+    assert conformidade["executado"] is True
+    assert conformidade["erros_globais"] == 1
+
+    link = _link(report, GHOST)
+    evidence = link["targets"][0]["validator_evidence"]
+    assert [e["id"] for e in evidence["erros_globais"]] == ["R1"]
+    assert evidence["veredito"] == "com_erro"
+    assert link["status"] == "aplicada_com_erro"
+    assert "aplicadas e verificadas por validador" not in report["summary_text"]
+
+
+def test_tecnica_carimbada_sem_autorizacao_no_brief_vira_elo_quebrado(tmp_path):
+    """Achado 3: `missing_links` tinha a mensagem do elo `technique`, mas
+    nenhum ponto do modulo a emitia — codigo morto. Brief presente
+    autorizando `[]` + tecnica carimbada saia `aplicada_verificada`, contra
+    a regra do AGENTS.md de que ausencia de autorizacao significa NENHUMA
+    tecnica."""
+    _src, out, _bp, plan = _rendered_project(tmp_path)
+    brief = {"style": {"drums": {
+        "suggested_techniques": [{"name": GHOST}],
+        "authorized_techniques": [],
+    }}}
+    report = build_report(
+        plan=plan, rendered_mid=mido.MidiFile(str(out)), rendered_midi_path=out,
+        brief=brief,
+        validators=[ValidatorRun(
+            name="harmonia", executed=True, covered_tracks=("Drums",),
+        )],
+    )
+    link = _link(report, GHOST)
+    assert link["authorized"] is False
+    assert link["targets"], "a tecnica esta carimbada na track"
+    assert "technique" in link["missing_links"]
+    assert link["status"] == "aplicada_sem_autorizacao"
+    assert GHOST not in report["techniques"]["aplicadas_verificadas"]
+    assert "SEM autorizacao rastreavel" in report["summary_text"]
+
+
+def _source_with_two_drum_tracks(tmp_path: Path) -> Path:
+    """Mesma bateria da fixture, porem repartida em DUAS tracks fisicas com
+    o MESMO nome `Drums` — o caso que o AGENTS.md trata como unidade."""
+    import pretty_midi
+
+    pm = pretty_midi.PrettyMIDI(resolution=480, initial_tempo=140.0)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    piano = pretty_midi.Instrument(program=0, name="Piano")
+    kit = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    hats = pretty_midi.Instrument(program=0, is_drum=True, name="Drums")
+    bar_len = 60.0 / 140.0 * 4
+    beat_len = bar_len / 4
+    sixteenth = beat_len / 4
+    for bar in range(16):
+        start = bar * bar_len
+        for pc in (60, 64, 67):
+            piano.notes.append(pretty_midi.Note(
+                velocity=80, pitch=pc, start=start, end=start + bar_len,
+            ))
+        for beat in range(4):
+            beat_start = start + beat * beat_len
+            kit.notes.append(pretty_midi.Note(
+                velocity=127, pitch=36 if beat in (0, 2) else 38,
+                start=beat_start, end=beat_start + 0.08,
+            ))
+            for s in range(4):
+                hh = beat_start + s * sixteenth
+                hats.notes.append(pretty_midi.Note(
+                    velocity=127, pitch=42, start=hh, end=hh + 0.04,
+                ))
+    pm.instruments.extend([piano, kit, hats])
+    dest = tmp_path / "dup_drums.mid"
+    pm.write(str(dest))
+    return dest
+
+
+def test_metrica_nao_migra_entre_tracks_com_nome_repetido_de_daw(tmp_path):
+    """Achado 4: a metrica era indexada por NOME de track. Com duas tracks
+    fisicas `Drums`, a medicao da ultima sobrescrevia a da primeira e o
+    relatorio publicava o mesmo numero para as duas."""
+    import hashlib
+
+    from tools.plan import SourceMidi
+    from tools.report import track_metrics
+
+    src = _source_with_two_drum_tracks(tmp_path)
+    plan = _plan_with_full_drum_pipeline(src)
+    plan.source_midi = SourceMidi(
+        path=str(src), sha256=hashlib.sha256(src.read_bytes()).hexdigest(),
+    )
+    brief_path = _brief_file(tmp_path, authorized=[GHOST], suggested=[])
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+    out = tmp_path / "out_dup.mid"
+    render(plan, out)
+
+    mid = mido.MidiFile(str(out))
+    stamps = [s for s in read_stamps(mid) if s.track_name == "Drums"]
+    assert len(stamps) == 2, "as duas tracks fisicas tem que sair carimbadas"
+    medido = {
+        s.track_index: track_metrics(mid.tracks[s.track_index])["note_on_count"]
+        for s in stamps
+    }
+    assert len(set(medido.values())) == 2, (
+        "as duas tracks tem contagens diferentes — sem isso o teste nao "
+        "distingue metrica correta de metrica sobrescrita"
+    )
+
+    report = build_report(
+        plan=plan, rendered_mid=mid, rendered_midi_path=out,
+        brief=json.loads(brief_path.read_text(encoding="utf-8")),
+        brief_path=brief_path,
+    )
+    targets = _link(report, GHOST)["targets"]
+    publicado = {
+        t["track_index"]: t["metrics"]["note_on_count"]
+        for t in targets if t["track_name"] == "Drums"
+    }
+    assert publicado == medido
+    # e o relatorio diz que a evidencia de validador chega por nome, para a
+    # unidade inteira — em vez de fingir precisao fisica que nao tem.
+    assert all(
+        t["validator_evidence"]["nome_ambiguo"] is True
+        for t in targets if t["track_name"] == "Drums"
+    )
+
+
+def test_carimbo_de_rodada_anterior_nao_vira_prova_desta_execucao(tmp_path):
+    """Achado 5: MIDI ja arranjado reaproveitado como origem carrega o
+    carimbo velho. Um plano SEM tecnica nenhuma lia esse carimbo e publicava
+    `aplicada_verificada` para uma tecnica que esta execucao nunca aplicou."""
+    src, out, _bp, plan = _rendered_project(tmp_path)
+
+    # (a) sem plano nem brief que declarem a tecnica: nada de verificada
+    orfao = _plan_with_full_drum_pipeline(src)
+    orfao.style["drums"].techniques = []
+    orfao.edits = []
+    report = build_report(
+        plan=orfao, rendered_mid=mido.MidiFile(str(out)), rendered_midi_path=out,
+        validators=[ValidatorRun(
+            name="harmonia", executed=True, covered_tracks=("Drums",),
+        )],
+    )
+    link = _link(report, GHOST)
+    assert link["stale_stamp"] is True
+    assert link["targets"][0]["kind"] == "desconhecido"
+    assert link["targets"][0]["declarada_neste_plano"] is False
+    assert link["status"] != "aplicada_verificada"
+    assert {"technique", "track"} <= set(link["missing_links"])
+
+    # (b) autorizada no brief, mas ausente do plano desta execucao: o
+    # carimbo continua sem provar aplicacao AGORA
+    autorizado = _plan_with_full_drum_pipeline(src)
+    autorizado.style["drums"].techniques = []
+    brief = {"style": {"drums": {"authorized_techniques": [GHOST]}}}
+    report_b = build_report(
+        plan=autorizado, rendered_mid=mido.MidiFile(str(out)),
+        rendered_midi_path=out, brief=brief,
+        validators=[ValidatorRun(
+            name="harmonia", executed=True, covered_tracks=("Drums",),
+        )],
+    )
+    link_b = _link(report_b, GHOST)
+    assert link_b["authorized"] is True
+    assert link_b["stale_stamp"] is True
+    assert link_b["status"] == "aplicada_nao_verificavel"
+    assert "technique" in link_b["missing_links"]
+
+
+def test_url_da_fonte_passa_pela_mesma_barreira_anticopia_do_titulo(tmp_path):
+    """Achado 6: `title` passava por `_quote`, `url` era copiada verbatim.
+    `influence.validate` so exige url nao vazia, entao tablatura e sequencia
+    de notas em query string aterrissavam no relatorio."""
+    from tools import influence as influence_mod
+
+    src, out, brief_path, plan = _rendered_project(tmp_path)
+    url = (
+        "https://tabs.test/riff?notes=C4%20D4%20E4%20G4&tab=e|-0-3-5-|B|-1-3-|"
+        + "x" * 400
+    )
+    profile = InfluenceProfile(
+        sources=[InfluenceSource(
+            id="src-1", url=url, title="Entrevista", retrieved_at="2026-08-26",
+        )],
+        findings=[InfluenceFinding(
+            id="f-ghost", family="drums", dimension="articulation",
+            semantic_value="ghost notes", intensity="medium",
+            confidence="high", source_ids=("src-1",),
+        )],
+    )
+    # a barreira do perfil deixa passar: por isso a do relatorio precisa
+    # existir de verdade, e nao confiar no validador de cima.
+    influence_mod.validate(profile)
+
+    report = build_report(
+        plan=plan, rendered_mid=mido.MidiFile(str(out)), rendered_midi_path=out,
+        influence=profile, compile_result=compile_influence(profile),
+        brief_path=brief_path,
+    )
+    fonte = _link(report, GHOST)["sources"][0]
+    assert fonte["url"] is None
+    assert fonte["url_omitido"] == "OMITIDO_LIMITE_CITACAO"
+    assert url not in json.dumps(report, ensure_ascii=False)
+    assert "-0-3-5-" not in json.dumps(report, ensure_ascii=False)
+
+
+def test_url_curta_com_conteudo_musical_tambem_e_omitida(tmp_path):
+    """Mesma barreira, pelo outro lado: url curta o bastante para o limite
+    de citacao, mas carregando sequencia de notas."""
+    src, out, brief_path, plan = _rendered_project(tmp_path)
+    profile = InfluenceProfile(
+        sources=[InfluenceSource(
+            id="src-1", url="https://tabs.test/x?notas=C4 D4 E4 G4 A4",
+            title="Entrevista", retrieved_at="2026-08-26",
+        )],
+        findings=[InfluenceFinding(
+            id="f-ghost", family="drums", dimension="articulation",
+            semantic_value="ghost notes", intensity="medium",
+            confidence="high", source_ids=("src-1",),
+        )],
+    )
+    report = build_report(
+        plan=plan, rendered_mid=mido.MidiFile(str(out)), rendered_midi_path=out,
+        influence=profile, compile_result=compile_influence(profile),
+        brief_path=brief_path,
+    )
+    fonte = _link(report, GHOST)["sources"][0]
+    assert fonte["url"] is None
+    assert fonte["url_omitido"] == "OMITIDO_CONTEUDO_MUSICAL"
+
+
+def test_hash_do_brief_descreve_o_arquivo_que_o_relatorio_publica(tmp_path):
+    """Achado 7: o sha vinha do argumento `brief_path` e o caminho publicado
+    vinha de `plan.brief_ref.path`. Publicar o hash de um arquivo ao lado do
+    caminho de OUTRO inverte a prova de autorizacao."""
+    _src, out, brief_path, plan = _rendered_project(tmp_path)
+    outro = tmp_path / "outro-brief.json"
+    outro.write_text(json.dumps({"style": {}}), encoding="utf-8")
+
+    report = build_report(
+        plan=plan, rendered_mid=mido.MidiFile(str(out)), rendered_midi_path=out,
+        brief_path=outro,
+    )
+    hashes = report["hashes"]
+    assert hashes["brief_sha256"] == brief_sha256(outro)
+    assert hashes["brief_path"] == str(outro)
+    assert hashes["brief_path_declarado_no_plano"] == str(brief_path)
+    assert hashes["brief_path_divergente"] is True
+    assert any(
+        m["path"] == "hashes.brief_path" for m in report["missing_links"]
+    )
+
+    # sem divergencia, nada de alarme falso
+    coerente = build_report(
+        plan=plan, rendered_mid=mido.MidiFile(str(out)), rendered_midi_path=out,
+        brief_path=brief_path,
+    )
+    assert coerente["hashes"]["brief_path_divergente"] is False
+    assert coerente["hashes"]["brief_path"] == str(brief_path)
+    assert not any(
+        m["path"] == "hashes.brief_path" for m in coerente["missing_links"]
+    )
+
+
+def test_lista_de_aplicadas_distingue_verificada_de_nao_verificavel(tmp_path):
+    """Achado 8: `techniques.aplicadas` misturava verificada, nao
+    verificavel e com erro — e e essa lista que os drivers mandam o agente
+    consumir."""
+    src, out, brief_path, plan = _rendered_project(tmp_path)
+    report = _build_via_tool(
+        src, out, plan, brief_path=brief_path, influence=None,
+    )
+    link = _link(report, GHOST)
+    assert link["status"] == "aplicada_nao_verificavel"
+
+    tecnicas = report["techniques"]
+    assert GHOST in tecnicas["aplicadas"]
+    assert GHOST not in tecnicas["aplicadas_verificadas"]
+    assert GHOST in tecnicas["aplicadas_sem_evidencia"]
+    assert tecnicas["por_status"]["aplicada_nao_verificavel"] == [GHOST]
+    assert tecnicas["por_status"]["aplicada_verificada"] == []
+
+
+def test_carimbo_ilegivel_vira_elo_ausente_em_vez_de_sumir(tmp_path):
+    """Achado 9: o parser descartava em silencio segmento sem `=`, chave
+    desconhecida e `techniques` sem colchetes, aceitava `midi-arranger v1`
+    pelado como carimbo valido, e devolvia `None` para `midi-arranger v2` —
+    fazendo a track virar 'sem carimbo' e a tecnica SUMIR do relatorio."""
+    assert parse_stamp("nao e carimbo") is None
+    assert parse_stamp("midi-arranger v2|role=drums")["problemas"] == (
+        "versao_desconhecida:midi-arranger v2",
+    )
+    assert parse_stamp("midi-arranger v1")["problemas"] == ("carimbo_sem_campos",)
+    problemas = parse_stamp(
+        "midi-arranger v1|role=drums|lixo|techniques=drums.flam|xpto=1",
+    )["problemas"]
+    assert "segmento_sem_igual:lixo" in problemas
+    assert "techniques_sem_colchetes" in problemas
+    assert "chave_desconhecida:xpto" in problemas
+
+    # ponta a ponta: carimbo de versao futura no MIDI renderizado
+    _src, out, brief_path, plan = _rendered_project(tmp_path)
+    mid = mido.MidiFile(str(out))
+    alvo = next(s for s in read_stamps(mid) if s.track_name == "Drums")
+    for msg in mid.tracks[alvo.track_index]:
+        if msg.is_meta and msg.type == "text" and msg.text.startswith("midi-arranger"):
+            msg.text = msg.text.replace("midi-arranger v1", "midi-arranger v2", 1)
+            break
+    futuro = tmp_path / "out-v2.mid"
+    mid.save(str(futuro))
+
+    report = build_report(
+        plan=plan, rendered_mid=mido.MidiFile(str(futuro)),
+        rendered_midi_path=futuro,
+        brief=json.loads(brief_path.read_text(encoding="utf-8")),
+        brief_path=brief_path,
+    )
+    assert any(
+        m["code"] == "track" and "ilegivel" in m["message"]
+        for m in report["missing_links"]
+    ), "carimbo que o leitor nao entende tem que virar elo ausente declarado"
+    assert _link(report, GHOST)["status"] != "aplicada_verificada"

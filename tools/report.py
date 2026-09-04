@@ -32,6 +32,21 @@ no-op silencioso, nunca numero sem fonte. Por isso `ValidatorRun` carrega
 `covered_tracks` explicito: ausencia de issue NAO prova que o validador
 olhou para aquela track — so a lista do que ele recebeu prova.
 
+`covered_tracks` so vale para validador POR TRACK (`scope="per_track"`).
+Validador de escopo global (persona, colisao, conformidade) nao percorre
+track nenhuma: ele declara `scope="global"`, nunca produz veredito `limpo`
+por track, e seus erros — que nao carregam campo `track` — valem para
+TODOS os alvos, rebaixando o status de qualquer tecnica que dependa deles.
+Preencher `covered_tracks` de validador global com a lista de tracks
+renderizadas foi o defeito que fez o relatorio afirmar cobertura que nunca
+existiu (revisao adversarial do PR #119).
+
+Autorizacao tambem e elo: tecnica carimbada na track sem autorizacao
+rastreavel no brief desta execucao — ou sem declaracao no plano desta
+execucao, o caso do carimbo remanescente de uma rodada anterior — nunca
+vira `aplicada_verificada`. AGENTS.md: ausencia de autorizacao significa
+NENHUMA tecnica.
+
 Todo elo que falta vira entrada explicita em `missing_links`, com codigo
 estavel, caminho e motivo. O relatorio nunca preenche elo ausente com
 suposicao.
@@ -79,8 +94,14 @@ from .render import STAMP_PREFIX
 from .techniques.engine import SUPPORTED_TECHNIQUES
 from .tracks import TrackNameError, name_for_element
 
-REPORT_SCHEMA_VERSION = 1
-"""Muda quando a forma do relatorio muda de modo observavel."""
+REPORT_SCHEMA_VERSION = 2
+"""Muda quando a forma do relatorio muda de modo observavel.
+
+2: `ValidatorRun.scope`, `validator_evidence.erros_globais`,
+`techniques.aplicadas_verificadas`/`por_status`, o status
+`aplicada_sem_autorizacao`, `hashes.brief_path_divergente` e
+`targets[].declarada_neste_plano` — correcoes da revisao adversarial do
+PR #119."""
 
 MAX_QUOTE_CHARS = 120
 """Teto de citacao de campo semantico da pesquisa. Acima disso o relatorio
@@ -102,6 +123,7 @@ tiver `ValidatorRun` vira `missing_link` de `metric`."""
 TECHNIQUE_STATUSES: tuple[str, ...] = (
     "aplicada_verificada",
     "aplicada_com_erro",
+    "aplicada_sem_autorizacao",
     "aplicada_nao_verificavel",
     "autorizada_nao_aplicada",
     "sugerida_nao_autorizada",
@@ -120,8 +142,27 @@ MISSING_LINK_CODES: tuple[str, ...] = (
 
 TRACK_VERDICTS: tuple[str, ...] = ("limpo", "com_erro", "sem_cobertura")
 
+VALIDATOR_SCOPES: tuple[str, ...] = ("per_track", "global")
+"""`per_track`: o validador percorre track a track e `covered_tracks` diz
+quais ele REALMENTE recebeu. `global`: o validador olha o plano/o arquivo
+como um todo (persona, colisao, conformidade) — nao cobre track nenhuma e
+seus erros valem para todos os alvos."""
+
 
 # --- carimbo ---------------------------------------------------------------
+
+STAMP_FAMILY_PREFIX = "midi-arranger"
+"""Prefixo de familia do carimbo, sem versao. Texto que comeca com ele mas
+nao casa com `STAMP_PREFIX` (`midi-arranger v1`) e carimbo de OUTRA versao:
+vira problema declarado, nunca "track sem carimbo" — sumir com a tecnica do
+relatorio por causa de versao futura seria mentir por omissao."""
+
+STAMP_KNOWN_KEYS: frozenset[str] = frozenset({
+    "role", "plugin", "preset", "verified", "techniques",
+    "suggested_plugin", "suggested_preset", "suggested_verified",
+})
+"""Chaves que `tools.render._format_stamp` escreve. Chave fora desta lista
+nao e descartada em silencio: vira problema declarado no carimbo."""
 
 
 @dataclass(frozen=True)
@@ -139,6 +180,11 @@ class TrackStamp:
     plugin: str | None = None
     preset: str | None = None
     verified: bool | None = None
+    problems: tuple[str, ...] = ()
+    """Defeitos observados na leitura do carimbo (versao desconhecida,
+    segmento sem `=`, chave desconhecida, `techniques` sem colchetes,
+    carimbo sem campo nenhum). Carimbo corrompido vira `missing_link`, nao
+    desaparece do relatorio."""
 
 
 def parse_stamp(text: str) -> dict[str, Any] | None:
@@ -146,24 +192,49 @@ def parse_stamp(text: str) -> dict[str, Any] | None:
 
     Formato (ver `tools.render._format_stamp`): `midi-arranger v1|k=v|...`,
     com `techniques=[a,b]`. Valor nunca contem `|` — o render recusa.
+
+    `None` significa "isto nao e carimbo do midi-arranger" e so isso. Texto
+    que e carimbo mas esta corrompido, incompleto ou de outra versao volta
+    como dict com a chave `problemas` preenchida: quem le decide o que
+    fazer, mas nada some em silencio. Um `midi-arranger v2` devolvendo
+    `None` fazia a track virar "sem carimbo" e a tecnica sumir do relatorio
+    — mentira por omissao, nao tolerancia a versao futura.
     """
-    if not text.startswith(STAMP_PREFIX):
+    stripped = text.strip()
+    if not stripped.startswith(STAMP_FAMILY_PREFIX):
         return None
+    head = stripped.split("|", 1)[0].strip()
+    rest = stripped[len(STAMP_PREFIX):]
+    if not stripped.startswith(STAMP_PREFIX) or (rest and not rest.startswith("|")):
+        return {"problemas": (f"versao_desconhecida:{head}",)}
+    problems: list[str] = []
     fields: dict[str, Any] = {}
-    for part in text.split("|")[1:]:
+    for part in stripped.split("|")[1:]:
         if "=" not in part:
+            problems.append(f"segmento_sem_igual:{part.strip()}")
             continue
         key, _, value = part.partition("=")
         key = key.strip()
+        if key not in STAMP_KNOWN_KEYS:
+            problems.append(f"chave_desconhecida:{key}")
+            continue
         if key == "techniques":
             inner = value.strip()
             if inner.startswith("[") and inner.endswith("]"):
                 inner = inner[1:-1]
+            else:
+                problems.append("techniques_sem_colchetes")
             fields[key] = tuple(n for n in (t.strip() for t in inner.split(",")) if n)
         elif key in ("verified", "suggested_verified"):
             fields[key] = value.strip() == "true"
         else:
             fields[key] = value
+    if not fields:
+        problems.append("carimbo_sem_campos")
+    elif "role" not in fields:
+        problems.append("carimbo_sem_role")
+    if problems:
+        fields["problemas"] = tuple(problems)
     return fields
 
 
@@ -171,7 +242,8 @@ def read_stamps(mid: mido.MidiFile) -> tuple[TrackStamp, ...]:
     """Le o carimbo de cada track do MIDI renderizado.
 
     Track sem carimbo (track de origem nao declarada em `plan.edits`, que sai
-    byte-identica) simplesmente nao aparece no resultado.
+    byte-identica) simplesmente nao aparece no resultado. Track com carimbo
+    corrompido APARECE, com `problems` preenchido.
     """
     stamps: list[TrackStamp] = []
     for index, track in enumerate(mid.tracks):
@@ -197,6 +269,7 @@ def read_stamps(mid: mido.MidiFile) -> tuple[TrackStamp, ...]:
             plugin=payload.get("plugin"),
             preset=payload.get("preset"),
             verified=payload.get("verified"),
+            problems=tuple(payload.get("problemas", ())),
         ))
     return tuple(stamps)
 
@@ -262,9 +335,14 @@ class ValidatorRun:
 
     - `executed`: False significa "nao rodou". O relatorio marca ausencia de
       metrica, jamais aprova por omissao.
-    - `covered_tracks`: os nomes de track que o validador REALMENTE recebeu.
-      Sem isso nao ha como distinguir "olhou e nao achou problema" de "nem
-      olhou" — e essa distincao e a regra central da issue #77.
+    - `scope`: `per_track` (percorre track a track) ou `global` (olha plano
+      ou arquivo inteiro). Validador global NAO cobre track nenhuma; quem o
+      declarasse com `covered_tracks` cheio estaria fabricando cobertura.
+    - `covered_tracks`: os nomes de track que o validador REALMENTE
+      percorreu — so faz sentido com `scope="per_track"`, e o construtor
+      recusa a combinacao contraria. Sem isso nao ha como distinguir "olhou
+      e nao achou problema" de "nem olhou" — e essa distincao e a regra
+      central da issue #77.
     - `issues`: os objetos de issue do proprio validador (dataclasses com
       `severity` e, quando o validador e por track, `track`). Vereditos de
       conformidade (`RequisitoVerdict`) tambem entram aqui.
@@ -276,6 +354,19 @@ class ValidatorRun:
     covered_tracks: tuple[str, ...] = ()
     issues: tuple[Any, ...] = ()
     note: str = ""
+    scope: str = "per_track"
+
+    def __post_init__(self) -> None:
+        if self.scope not in VALIDATOR_SCOPES:
+            raise ValueError(
+                f"scope invalido {self.scope!r}; use um de {VALIDATOR_SCOPES}",
+            )
+        if self.scope == "global" and self.covered_tracks:
+            raise ValueError(
+                f"validador {self.name!r} e de escopo global e nao pode "
+                f"declarar covered_tracks — cobertura de track so existe "
+                f"em validador per_track",
+            )
 
 
 _COMPLIANCE_ERROR_STATUSES = frozenset({"nao_atendido", "parcial"})
@@ -322,8 +413,15 @@ def _validators_block(runs: Sequence[ValidatorRun]) -> dict[str, Any]:
         block[run.name] = {
             "executado": bool(run.executed),
             "motivo": run.note or None,
+            "escopo": run.scope,
             "tracks_cobertas": sorted(set(run.covered_tracks)),
             "erros": len(errors),
+            # Erro sem `track` (RequisitoVerdict, PersonaIssue,
+            # CollisionWarning) e erro de escopo global: vale para todo alvo
+            # e rebaixa o status de qualquer tecnica que dependa deste
+            # validador. Contabilizar so o que tem `track` deixava esses
+            # erros invisiveis para o status.
+            "erros_globais": len([e for e in errors if e["track"] is None]),
             "issues": sorted(
                 issues,
                 key=lambda i: (i["severity"], i["track"] or "", i["message"]),
@@ -452,6 +550,7 @@ class _Link:
     suggested: bool = False
     authorized: bool = False
     targets: list[dict[str, Any]] = field(default_factory=list)
+    stale_stamp: bool = False
     missing: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -467,6 +566,7 @@ class _Link:
             "findings": self.findings,
             "mapping": self.mapping,
             "plan_declaration": self.plan_declaration,
+            "stale_stamp": self.stale_stamp,
             "targets": self.targets,
             "missing_links": sorted(set(self.missing)),
             "notes": sorted(set(self.notes)),
@@ -496,15 +596,26 @@ def _finding_entry(
 
 
 def _source_entry(source: influence_mod.InfluenceSource) -> dict[str, Any]:
-    title, omission = _quote(source.title)
+    """Metadado de citacao da fonte — e so isso.
+
+    A url passa pela MESMA barreira do titulo (`_quote`): `influence.validate`
+    so exige que ela nao seja vazia, entao uma url pode carregar tablatura e
+    sequencia de notas em query string. Url que nao passa vira `null` com
+    nota de omissao: proveniencia nao justifica transportar conteudo musical
+    da referencia para dentro do relatorio.
+    """
+    title, title_omission = _quote(source.title)
+    url, url_omission = _quote(source.url)
     entry: dict[str, Any] = {
         "id": source.id,
-        "url": source.url,
+        "url": url,
         "title": title,
         "retrieved_at": source.retrieved_at,
     }
-    if omission:
-        entry["title_omitido"] = omission
+    if title_omission:
+        entry["title_omitido"] = title_omission
+    if url_omission:
+        entry["url_omitido"] = url_omission
     return entry
 
 
@@ -545,11 +656,28 @@ def build_report(
             "aplicacao de tecnica pode ser confirmada por carimbo",
         )
 
-    metrics_by_track: dict[str, dict[str, Any]] = {}
+    # Indexado por track_index, NUNCA por nome: DAW repete nome de track, e o
+    # AGENTS.md trata nome repetido como caso de primeira classe. Com duas
+    # tracks fisicas `Drums`, a chave por nome publicava a metrica da ultima
+    # para as duas.
+    metrics_by_index: dict[int, dict[str, Any]] = {}
     if rendered_mid is not None:
         for stamp in stamps:
-            metrics_by_track[stamp.track_name] = track_metrics(
+            metrics_by_index[stamp.track_index] = track_metrics(
                 rendered_mid.tracks[stamp.track_index],
+            )
+    name_counts: dict[str, int] = {}
+    for stamp in stamps:
+        name_counts[stamp.track_name] = name_counts.get(stamp.track_name, 0) + 1
+
+    for stamp in stamps:
+        if stamp.problems:
+            _miss(
+                "track",
+                f"rendered.tracks[{stamp.track_index}]",
+                f"carimbo da track {stamp.track_name!r} esta ilegivel ou "
+                f"fora do formato conhecido ({', '.join(stamp.problems)}) — "
+                f"o que ele afirma nao pode ser usado como prova",
             )
 
     if influence is None:
@@ -717,8 +845,11 @@ def build_report(
                 sections = []
                 sections_source = "nao_declarado"
                 element_id = None
-            metrics = metrics_by_track.get(stamp.track_name, {})
-            evidence = _track_evidence(stamp.track_name, validators)
+            metrics = metrics_by_index.get(stamp.track_index, {})
+            evidence = _track_evidence(
+                stamp.track_name, validators,
+                ambiguous_name=name_counts.get(stamp.track_name, 0) > 1,
+            )
             target = {
                 "track_name": stamp.track_name,
                 "track_index": stamp.track_index,
@@ -729,6 +860,12 @@ def build_report(
                 "sections_source": sections_source,
                 "metrics": metrics,
                 "validator_evidence": evidence,
+                # O carimbo prova despacho; ele NAO prova que o despacho foi
+                # desta execucao. MIDI ja arranjado reaproveitado como origem
+                # sai com o carimbo velho (track nao declarada em plan.edits
+                # sai byte-identica, carimbo incluso).
+                "declarada_neste_plano": declared is not None,
+                "carimbo_problemas": sorted(stamp.problems),
             }
             if kind == "edit":
                 target["sections_nota"] = (
@@ -737,6 +874,35 @@ def build_report(
                 )
             link.targets.append(target)
         link.targets.sort(key=lambda t: t["track_index"])
+
+        # --- elo de autorizacao e de correspondencia com esta execucao ------
+        if link.targets and not link.authorized:
+            # Tecnica carimbada na track sem autorizacao rastreavel: elo
+            # `technique` QUEBRADO. AGENTS.md: ausencia de autorizacao
+            # significa NENHUMA tecnica — nunca "todas".
+            link.missing.append("technique")
+            link.notes.append(
+                f"tecnica {technique!r} aparece em carimbo de track, mas nao "
+                f"esta em style.{family}.authorized_techniques do brief "
+                f"desta execucao",
+            )
+        stale = [t for t in link.targets if not t["declarada_neste_plano"]]
+        unknown = [t for t in link.targets if t["kind"] == "desconhecido"]
+        link.stale_stamp = bool(stale or unknown)
+        if stale:
+            link.missing.append("technique")
+            link.notes.append(
+                f"tecnica {technique!r} nao e declarada em "
+                f"plan.style.{family}.techniques desta execucao — o carimbo "
+                f"encontrado pode ser de uma rodada anterior",
+            )
+        if unknown:
+            link.missing.append("track")
+            link.notes.append(
+                f"carimbo de {technique!r} em track que nao e elemento do "
+                f"plano nem track de plan.edits: "
+                f"{sorted(t['track_name'] for t in unknown)!r}",
+            )
 
         # --- status --------------------------------------------------------
         link.status = _status_for(link, not_recommended_by_key)
@@ -767,10 +933,21 @@ def build_report(
                 f"declarada verificada por ele",
             )
 
+    hashes = _hashes_block(plan, brief_path, rendered_midi_path)
+    if hashes["brief_path_divergente"]:
+        _miss(
+            "technique",
+            "hashes.brief_path",
+            f"o brief hasheado ({hashes['brief_path']!r}) nao e o brief "
+            f"declarado em plan.brief_ref.path "
+            f"({hashes['brief_path_declarado_no_plano']!r}): a prova de "
+            f"autorizacao nao descreve o arquivo que o plano cita",
+        )
+
     report: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "versions": _versions_block(plan, influence, compile_result),
-        "hashes": _hashes_block(plan, brief_path, rendered_midi_path),
+        "hashes": hashes,
         "chain": [link.to_dict() for link in links],
         "techniques": _status_index(links),
         "validators": _validators_block(validators),
@@ -800,36 +977,72 @@ _MISSING_MESSAGES: dict[str, str] = {
 
 
 def _track_evidence(
-    track_name: str, validators: Sequence[ValidatorRun],
+    track_name: str,
+    validators: Sequence[ValidatorRun],
+    *,
+    ambiguous_name: bool = False,
 ) -> dict[str, Any]:
     """Veredito objetivo para uma track.
 
-    `sem_cobertura` quando nenhum validador executado recebeu esta track —
-    ausencia de issue NAO e prova de conformidade.
+    - `sem_cobertura` quando nenhum validador POR TRACK executado percorreu
+      esta track — ausencia de issue NAO e prova de conformidade, e
+      validador de escopo global (persona, colisao, conformidade) nunca
+      cobre track nenhuma;
+    - `com_erro` quando ha erro atribuido a esta track OU erro de escopo
+      global (issue sem campo `track`, como `RequisitoVerdict`,
+      `PersonaIssue` e `CollisionWarning`). Erro global sem dono era erro
+      que nao rebaixava nada.
+
+    `ambiguous_name` marca nome de track repetido pela DAW: a cobertura dos
+    validadores chega por NOME, entao ela vale para a unidade inteira
+    (AGENTS.md trata nome repetido como uma unidade), e o relatorio diz isso
+    em vez de fingir precisao fisica que os validadores nao entregam.
     """
     covered = sorted(
         run.name for run in validators
-        if run.executed and track_name in run.covered_tracks
+        if run.executed and run.scope == "per_track"
+        and track_name in run.covered_tracks
+    )
+    global_runs = sorted(
+        run.name for run in validators
+        if run.executed and run.scope == "global"
     )
     errors: list[dict[str, Any]] = []
+    global_errors: list[dict[str, Any]] = []
     for run in validators:
         if not run.executed:
             continue
         for issue in run.issues:
             entry = _issue_to_dict(run.name, issue)
-            if entry["track"] == track_name and entry["severity"] == "error":
+            if entry["severity"] != "error":
+                continue
+            if entry["track"] == track_name:
                 errors.append(entry)
-    if not covered:
-        verdict = "sem_cobertura"
-    elif errors:
+            elif entry["track"] is None:
+                global_errors.append(entry)
+    if errors or global_errors:
         verdict = "com_erro"
+    elif not covered:
+        verdict = "sem_cobertura"
     else:
         verdict = "limpo"
-    return {
+    evidence: dict[str, Any] = {
         "veredito": verdict,
         "validadores": covered,
+        "validadores_escopo_global": global_runs,
         "erros": sorted(errors, key=lambda e: (e["validator"], e["message"])),
+        "erros_globais": sorted(
+            global_errors, key=lambda e: (e["validator"], e["message"]),
+        ),
     }
+    if ambiguous_name:
+        evidence["nome_ambiguo"] = True
+        evidence["nome_ambiguo_nota"] = (
+            "mais de uma track fisica com este nome: a cobertura e o erro "
+            "de validador chegam por NOME e valem para a unidade inteira, "
+            "nao para uma track fisica especifica"
+        )
+    return evidence
 
 
 def _status_for(
@@ -837,6 +1050,16 @@ def _status_for(
 ) -> str:
     key = (link.family, link.technique)
     if link.targets:
+        # Ordem deliberada: autorizacao vem ANTES de qualquer veredito de
+        # validador. Tecnica aplicada sem autorizacao rastreavel no brief e
+        # um problema de consentimento, nao de qualidade — e nenhum
+        # validador limpo pode transforma-la em "verificada".
+        if not link.authorized:
+            return "aplicada_sem_autorizacao"
+        if link.stale_stamp:
+            # Carimbo que nao corresponde ao plano desta execucao (ou track
+            # que nao e elemento nem edit) nao prova aplicacao AGORA.
+            return "aplicada_nao_verificavel"
         verdicts = {t["validator_evidence"]["veredito"] for t in link.targets}
         if "com_erro" in verdicts:
             return "aplicada_com_erro"
@@ -852,28 +1075,46 @@ def _status_for(
     return "sugerida_nao_autorizada"
 
 
-def _status_index(links: Sequence[_Link]) -> dict[str, list[str]]:
-    """As cinco listas que a issue #77 pede, por nome de tecnica."""
+def _status_index(links: Sequence[_Link]) -> dict[str, Any]:
+    """As listas legiveis por maquina, por nome de tecnica.
+
+    `aplicadas` continua sendo o conjunto do que chegou a alguma track — mas
+    ele SOZINHO nao distingue verificada de nao verificavel, de aplicada com
+    erro, nem de aplicada sem autorizacao. Quem consome so essa lista lia
+    "aplicada" e entendia "deu certo". Por isso ela vem acompanhada de
+    `aplicadas_verificadas` (o unico subconjunto com evidencia objetiva) e
+    de `por_status`, com o status exato de cada tecnica.
+    """
     index: dict[str, list[str]] = {
         "sugeridas": [],
         "autorizadas": [],
         "aplicadas": [],
+        "aplicadas_verificadas": [],
+        "aplicadas_sem_evidencia": [],
         "ignoradas": [],
         "nao_suportadas": [],
     }
+    por_status: dict[str, list[str]] = {status: [] for status in TECHNIQUE_STATUSES}
     for link in links:
         name = link.technique
+        por_status.setdefault(link.status, []).append(name)
         if link.suggested:
             index["sugeridas"].append(name)
         if link.authorized:
             index["autorizadas"].append(name)
         if link.status.startswith("aplicada"):
             index["aplicadas"].append(name)
+            if link.status == "aplicada_verificada":
+                index["aplicadas_verificadas"].append(name)
+            else:
+                index["aplicadas_sem_evidencia"].append(name)
         elif link.technique not in SUPPORTED_TECHNIQUES:
             index["nao_suportadas"].append(name)
         else:
             index["ignoradas"].append(name)
-    return {k: sorted(set(v)) for k, v in index.items()}
+    out: dict[str, Any] = {k: sorted(set(v)) for k, v in index.items()}
+    out["por_status"] = {k: sorted(set(v)) for k, v in sorted(por_status.items())}
+    return out
 
 
 def _versions_block(
@@ -893,24 +1134,55 @@ def _versions_block(
     }
 
 
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    """Dois caminhos apontam para o mesmo arquivo? So compara texto depois
+    de normalizar — caminho relativo e absoluto do mesmo brief nao sao
+    divergencia."""
+    try:
+        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+    except OSError:
+        return str(a) == str(b)
+
+
 def _hashes_block(
     plan: ArrangementPlan,
     brief_path: str | Path | None,
     rendered_midi_path: str | Path | None,
 ) -> dict[str, Any]:
+    """Hashes de prova.
+
+    `brief_sha256` e `brief_path` tem que descrever O MESMO arquivo: o hash
+    existe para provar qual autorizacao estava em vigor, e publica-lo ao lado
+    do caminho de outro arquivo inverte a prova. Por isso o caminho publicado
+    e sempre o que foi realmente hasheado, e a divergencia com
+    `plan.brief_ref.path` sai DECLARADA em vez de silenciada.
+    """
     from .brief_ref import brief_sha256
 
     brief_hash: str | None = None
+    hashed_path: str | None = None
+    hash_source: str | None = None
     if brief_path is not None:
         brief_hash = brief_sha256(brief_path)
+        hashed_path = str(brief_path)
+        hash_source = "brief_path"
     elif plan.brief_ref is not None:
         brief_hash = plan.brief_ref.sha256
+        hashed_path = str(plan.brief_ref.path)
+        hash_source = "plan.brief_ref.sha256"
+    declared = str(plan.brief_ref.path) if plan.brief_ref else None
+    divergent = bool(
+        hashed_path and declared and not _same_file(hashed_path, declared),
+    )
     rendered_hash: str | None = None
     if rendered_midi_path is not None:
         rendered_hash = _sha256_of_file(Path(rendered_midi_path))
     return {
         "brief_sha256": brief_hash,
-        "brief_path": str(plan.brief_ref.path) if plan.brief_ref else None,
+        "brief_path": hashed_path,
+        "brief_sha256_origem": hash_source,
+        "brief_path_declarado_no_plano": declared,
+        "brief_path_divergente": divergent,
         "plan_sha256": _plan_sha256(plan),
         "source_midi_sha256": plan.source_midi.sha256,
         "rendered_sha256": rendered_hash,
@@ -934,6 +1206,9 @@ def format_summary(report: dict[str, Any]) -> str:
     rotulos = {
         "aplicada_verificada": "aplicadas e verificadas por validador",
         "aplicada_com_erro": "aplicadas, mas com erro de validador",
+        "aplicada_sem_autorizacao": (
+            "aplicadas SEM autorizacao rastreavel no brief"
+        ),
         "aplicada_nao_verificavel": "aplicadas, porem NAO verificaveis",
         "autorizada_nao_aplicada": "autorizadas e nao aplicadas",
         "sugerida_nao_autorizada": "sugeridas e nao autorizadas",
