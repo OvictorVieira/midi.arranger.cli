@@ -50,6 +50,7 @@ from .palette.electronic import (
     generate_sub,
     generate_sub_drop,
 )
+from .palette.guitar import GUITAR_ROLES, generate_guitar
 from .palette.harmonic import (
     DRONE_ROLES,
     KEYBOARD_ROLES,
@@ -156,6 +157,7 @@ RHYTHMIC_CHANNEL = 0
 MOTOR_CHANNEL = 0
 SHADOW_CHANNEL = 0
 BASS_CHANNEL = 0
+GUITAR_CHANNEL = 0
 DRUMS_CHANNEL = 9
 """Canal MIDI 10 (indice 0-based 9) — convencao General MIDI de percussao,
 a mesma que Superior Drummer/Addictive Drums e qualquer DAW esperam para
@@ -187,6 +189,7 @@ SHADOW_PATTERN_FIELDS: frozenset[str] = frozenset({
 })
 DRUMS_PATTERN_FIELDS: frozenset[str] = frozenset()
 BASS_PATTERN_FIELDS: frozenset[str] = frozenset()
+GUITAR_PATTERN_FIELDS: frozenset[str] = frozenset()
 """Nem bateria nem baixo (issue #20) consomem `element.pattern` nesta
 rodada — todo controle vem de `element.register`/`energy` da secao. Campo
 declarado em `pattern` para esses roles vira aviso de nao-suportado, mesma
@@ -644,6 +647,8 @@ def _pattern_fields_for_role(role: str) -> frozenset[str]:
         return DRUMS_PATTERN_FIELDS
     if role in BASS_ROLES:
         return BASS_PATTERN_FIELDS
+    if role in GUITAR_ROLES:
+        return GUITAR_PATTERN_FIELDS
     if role in HAT_ELEC_ROLES:
         return HAT_ELEC_PATTERN_FIELDS
     if role in SUB_ROLES:
@@ -830,6 +835,7 @@ def _style_technique_seed(
 _EDIT_PROFILE_STYLE_FAMILIES = {
     "bass": "bass",
     "drums": "drums",
+    "guitar": "guitar",
     "keys": "keys",
 }
 
@@ -2458,6 +2464,38 @@ def _render_bass_element(
     return _layers_to_tracks(element, layer_notes, pm, channel)
 
 
+def _render_guitar_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera tracks de guitarra ritmica do zero (issue #19). Uma track por
+    layer; notas de todas as secoes concatenadas na mesma layer. Cada
+    golpe e um voicing power-chord do campo harmonico vigente, sempre
+    checado contra a afinacao/registro declarados
+    (`tools.palette.guitar.generate_guitar`)."""
+    layer_notes: list[list[RhythmicNote]] = [[] for _ in range(element.layers)]
+    register = (int(element.register[0]), int(element.register[1]))
+
+    for section, seed in _iter_element_sections(element, plan):
+        layers = generate_guitar(
+            analysis,
+            section,
+            role=element.role,
+            register=register,
+            layers=element.layers,
+            articulation=element.articulation,
+            dynamics=element.dynamics,
+            seed=seed,
+        )
+        for i, layer in enumerate(layers):
+            layer_notes[i].extend(layer.notes)
+
+    return _layers_to_tracks(element, layer_notes, pm, channel)
+
+
 _RenderElementFn = Callable[
     [Element, ArrangementPlan, Analysis, pretty_midi.PrettyMIDI, int],
     tuple[list[mido.MidiTrack], list[RenderedTrack]],
@@ -2504,6 +2542,10 @@ def _build_role_renderers() -> dict[str, _RoleRenderer]:
         **{
             role: _RoleRenderer(_render_bass_element, BASS_CHANNEL)
             for role in BASS_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_guitar_element, GUITAR_CHANNEL)
+            for role in GUITAR_ROLES
         },
         **{
             role: _RoleRenderer(_render_hat_elec_element, HAT_ELEC_CHANNEL)

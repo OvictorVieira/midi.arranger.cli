@@ -188,6 +188,14 @@ _ROLE_SPECS: dict[str, dict] = {
         "sync_role": "kick_support",
         "pattern": None,
     },
+    "guitar": {
+        "route": "hook_eletronico_pesado",
+        "register": [40, 76],
+        "articulation": "tight",
+        "harmony": "follow_chords",
+        "sync_role": "kick_support",
+        "pattern": None,
+    },
     "drums": {
         "route": "hook_eletronico_pesado",
         "register": [0, 127],

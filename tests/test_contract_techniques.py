@@ -101,15 +101,26 @@ def test_list_marks_keys_melody_lead_as_not_implemented():
     assert entries["keys.melody_lead"]["level"] is None
 
 
-def test_list_marks_guitar_palm_mute_as_not_implemented():
-    """Guitarra hoje nao tem tecnica implementada; o catalogo deixa isso
-    explicito em vez de deixar o brief autorizar algo que o motor nao
-    executa."""
+def test_list_marks_guitar_natural_harmonics_as_not_implemented():
+    """`guitar.natural_harmonics` exigiria transpor a nota estrutural pelo
+    intervalo do parcial (mudanca de pitch estrutural, proibida fora da
+    excecao de bateria) — fica documentada mas sem aplicador, mesmo
+    precedente de `bass.harmonic`. O catalogo deixa isso explicito em vez
+    de deixar o brief autorizar algo que o motor nao executa."""
     env = call("techniques.list", {"family": "guitar"})
     entries = {t["canonical"]: t for t in env["data"]["techniques"]}
-    assert "guitar.palm_mute" in entries
-    assert entries["guitar.palm_mute"]["implemented"] is False
-    assert entries["guitar.palm_mute"]["level"] is None
+    assert "guitar.natural_harmonics" in entries
+    assert entries["guitar.natural_harmonics"]["implemented"] is False
+    assert entries["guitar.natural_harmonics"]["level"] is None
+
+
+def test_list_marks_guitar_palm_mute_as_implemented_technique_level():
+    env = call("techniques.list", {"family": "guitar"})
+    entries = {t["canonical"]: t for t in env["data"]["techniques"]}
+    assert entries["guitar.palm_mute"]["implemented"] is True
+    assert entries["guitar.palm_mute"]["level"] == "technique"
+    assert entries["guitar.double_tracking"]["implemented"] is True
+    assert entries["guitar.double_tracking"]["level"] == "technique"
 
 
 def test_list_marks_drums_ghost_notes_as_implemented_technique_level():
@@ -141,22 +152,22 @@ def test_list_implemented_only_filters_documented_capacities():
 
 def test_list_default_still_returns_documented_but_unimplemented():
     """Sem `implemented_only`, o catalogo continua enumerando capacidade
-    futura — bass.slide, guitar.palm_mute, keys.melody_lead precisam
-    aparecer para o consumidor saber que existem como pesquisa, mesmo que
-    nao possam ser autorizadas."""
+    futura — bass.slide, guitar.natural_harmonics, keys.melody_lead
+    precisam aparecer para o consumidor saber que existem como pesquisa,
+    mesmo que nao possam ser autorizadas."""
     env = call("techniques.list", {})
     canonicals = {t["canonical"] for t in env["data"]["techniques"]}
-    assert {"bass.slide", "guitar.palm_mute", "keys.melody_lead"} <= canonicals
+    assert {"bass.slide", "guitar.natural_harmonics", "keys.melody_lead"} <= canonicals
 
 
-def test_list_all_19_implemented_techniques_appear_as_implemented():
-    """As 19 tecnicas atualmente executaveis (drums 8, bass 7, keys 4)
-    precisam aparecer marcadas como implementadas. Regressao aqui denuncia
-    ou um aplicador registrado sem manual ou o catalogo caido fora de
-    sincronia com `SUPPORTED_TECHNIQUES`."""
+def test_list_all_24_implemented_techniques_appear_as_implemented():
+    """As 24 tecnicas atualmente executaveis (drums 8, bass 7, guitar 5,
+    keys 4) precisam aparecer marcadas como implementadas. Regressao aqui
+    denuncia ou um aplicador registrado sem manual ou o catalogo caido
+    fora de sincronia com `SUPPORTED_TECHNIQUES`."""
     from tools.techniques import SUPPORTED_TECHNIQUES
 
-    assert len(SUPPORTED_TECHNIQUES) == 19
+    assert len(SUPPORTED_TECHNIQUES) == 24
     env = call("techniques.list", {})
     entries = {t["canonical"]: t for t in env["data"]["techniques"]}
     for canonical in SUPPORTED_TECHNIQUES:

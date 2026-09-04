@@ -60,7 +60,7 @@ ARTICULATIONS = ("ghost", "staccato", "tight", "open", "sustained", "let_ring")
 
 HARMONY_MODES = ("follow_chords", "pedal", "free", "unison_guitar", "percussion")
 
-EDIT_PROFILES = ("bass", "drums", "keys", "generic")
+EDIT_PROFILES = ("bass", "drums", "guitar", "keys", "generic")
 EDIT_INTENSITY_MIN = 0.0
 EDIT_INTENSITY_MAX = 1.0
 

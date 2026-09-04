@@ -111,7 +111,10 @@ def validate_physical_plausibility(
     if family == "drums":
         _validate_drums(canonical, notes, new_notes)
     elif family in {"bass", "guitar"}:
-        _validate_strings(canonical, family, notes, new_notes, parameters)
+        _validate_strings(
+            canonical, family, notes, new_notes, parameters,
+            allow_shared_string_overlap=canonical.endswith(".hammer_pull"),
+        )
     elif family == "keys":
         _validate_keys(canonical, notes, new_notes, parameters)
 
@@ -205,6 +208,8 @@ def _validate_strings(
     notes: tuple[_PhysicalNote, ...],
     new_notes: tuple[_PhysicalNote, ...],
     parameters: Mapping[str, Any],
+    *,
+    allow_shared_string_overlap: bool = False,
 ) -> None:
     tuning = _tuning_from_parameters(family, parameters)
     max_fret = _positive_int_parameter(parameters, "max_fret", 24)
@@ -224,11 +229,43 @@ def _validate_strings(
             and note.start_tick < new_note.end_tick
             and new_note.start_tick < note.end_tick
         ]
+        if allow_shared_string_overlap and _sharable_single_string(active, tuning, max_fret):
+            # `*.hammer_pull` estende deliberadamente a primeira nota por
+            # cima do ataque da segunda para disparar o legato no
+            # instrumento sampleado (manual §7 de guitarra/baixo) — uma
+            # corda e FISICAMENTE MONOFONICA, entao a sobreposicao
+            # observada em ticks e sempre explicavel como essa UNICA corda
+            # transicionando entre as alturas em sequencia, nunca dois
+            # dedos simultaneos. Tecnicas genericas (ex. ghost notes) NAO
+            # entram nessa excecao: para elas, exigir sobreposicao na
+            # mesma corda continua sendo erro (duas notas independentes
+            # nao podem soar juntas de uma corda so).
+            continue
         if not _assignable_to_distinct_strings(active, tuning, max_fret):
             raise TechniquePhysicalError(
                 f"plausibilidade fisica violada por {canonical}: notas "
                 "simultaneas exigem mais de uma nota na mesma corda"
             )
+
+
+def _sharable_single_string(
+    notes: list[_PhysicalNote],
+    tuning: tuple[int, ...],
+    max_fret: int,
+) -> bool:
+    """`True` quando UMA corda alcanca todas as alturas de `notes`."""
+
+    common: set[int] | None = None
+    for note in notes:
+        reach = {
+            string_index
+            for string_index, open_pitch in enumerate(tuning)
+            if open_pitch <= note.pitch <= open_pitch + max_fret
+        }
+        common = reach if common is None else (common & reach)
+        if not common:
+            return False
+    return bool(common)
 
 
 def _validate_keys(
@@ -340,6 +377,97 @@ def _assign_candidates(
     return False
 
 
+GUITAR_CHORD_VOICING_WINDOW_FRETS: int = 6
+"""Janela maxima de casas entre notas pisadas de um voicing de guitarra.
+
+Fonte: arXiv 2510.10619 ("A playable chord voicing requires at most one
+pitch per string and all non-open string pitches must fall within a
+window of 6 frets") — o unico artigo academico citado no manual de
+guitarra (`knowledge/tecnicas/tecnicas_guitarra_midi.md`,
+`guitar.chord_voicing`). Casas com corda solta (fret 0) nao entram na
+janela: uma corda solta nao exige alcance de mao nenhum."""
+
+
+def guitar_voicing_frets(
+    pitches: Sequence[int],
+    tuning: Sequence[int],
+    *,
+    max_fret: int = 24,
+) -> tuple[int, ...] | None:
+    """Atribui cada altura de `pitches` a uma corda distinta de `tuning`.
+
+    Devolve a tupla de casas (fret) escolhida, na MESMA ordem de `pitches`,
+    minimizando a janela entre as casas pisadas (fret > 0) — a atribuicao
+    mais tocavel entre as possiveis. `None` quando nenhuma atribuicao
+    existe (altura fora do alcance de toda corda, ou mais alturas que
+    cordas disponiveis dentro do alcance).
+
+    Nao decide sozinho se o voicing e TOCAVEL: so resolve a atribuicao de
+    corda. Use `guitar_voicing_is_playable` para a decisao completa
+    (atribuicao existe E cabe na janela de `GUITAR_CHORD_VOICING_WINDOW_FRETS`).
+    """
+
+    pitches = tuple(pitches)
+    tuning = tuple(tuning)
+    if not pitches:
+        return ()
+
+    candidates: list[list[tuple[int, int]]] = [
+        [
+            (string_index, pitch - open_pitch)
+            for string_index, open_pitch in enumerate(tuning)
+            if open_pitch <= pitch <= open_pitch + max_fret
+        ]
+        for pitch in pitches
+    ]
+    if any(not item for item in candidates):
+        return None
+
+    best: tuple[int, tuple[int, ...]] | None = None
+
+    def backtrack(index: int, used: set[int], frets: list[int]) -> None:
+        nonlocal best
+        if index == len(candidates):
+            fretted = [f for f in frets if f > 0]
+            span = (max(fretted) - min(fretted)) if fretted else 0
+            if best is None or span < best[0]:
+                best = (span, tuple(frets))
+            return
+        for string_index, fret in candidates[index]:
+            if string_index in used:
+                continue
+            used.add(string_index)
+            frets.append(fret)
+            backtrack(index + 1, used, frets)
+            frets.pop()
+            used.discard(string_index)
+
+    backtrack(0, set(), [])
+    return best[1] if best is not None else None
+
+
+def guitar_voicing_is_playable(
+    pitches: Sequence[int],
+    tuning: Sequence[int],
+    *,
+    max_fret: int = 24,
+    window: int = GUITAR_CHORD_VOICING_WINDOW_FRETS,
+) -> bool:
+    """`True` quando `pitches` cabe numa unica maozada na afinacao dada.
+
+    Cada altura precisa de uma corda distinta dentro de `max_fret`, e as
+    casas pisadas (excluindo corda solta) precisam caber em `window` casas
+    entre si — a mesma regra de `guitar.chord_voicing` no manual."""
+
+    frets = guitar_voicing_frets(pitches, tuning, max_fret=max_fret)
+    if frets is None:
+        return False
+    fretted = [f for f in frets if f > 0]
+    if not fretted:
+        return True
+    return (max(fretted) - min(fretted)) <= window
+
+
 def _fits_two_keyboard_hands(pitches: tuple[int, ...], max_span: int) -> bool:
     if pitches[-1] - pitches[0] <= max_span:
         return True
@@ -352,6 +480,9 @@ def _fits_two_keyboard_hands(pitches: tuple[int, ...], max_span: int) -> bool:
 
 
 __all__ = [
+    "GUITAR_CHORD_VOICING_WINDOW_FRETS",
     "TechniquePhysicalError",
+    "guitar_voicing_frets",
+    "guitar_voicing_is_playable",
     "validate_physical_plausibility",
 ]

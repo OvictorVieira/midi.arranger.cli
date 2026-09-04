@@ -99,6 +99,31 @@ PROFILE_PARAMS: dict[str, ProfileParams] = {
         anchor_pitches=frozenset(),
         anchor_max_abs_ms=3.0,
     ),
+    "guitar": ProfileParams(
+        # Sem bias direcional documentado (issue #19): ao contrario do
+        # baixo/hat, nao ha numero medido de adiantamento/atraso para
+        # guitarra ritmica no manual (`tecnicas_guitarra_midi.md`,
+        # secao Lacunas). Neutro por honestidade, nao "seguro por default".
+        bias_ms=0.0,
+        # CONVENCAO: sigma no piso do bucket 'normal' de TIMING_JITTER_MS
+        # (3, 8) — issue #19 pede timing de guitarra ritmica moderna
+        # "apertado", e guitarra editada/quantizada em metal moderno e mais
+        # firme que baixo tocado a mao; sem medicao publicada, o motor
+        # escolhe o extremo apertado da faixa ja existente em vez de
+        # inventar um numero novo fora dela.
+        sigma_ms=3.0,
+        # CONVENCAO: amplitude entre a de bateria (4) e a de baixo (6) —
+        # riff de guitarra tem dinamica de picking, mas sem arco de frase
+        # tao marcado quanto o baixo.
+        velocity_amplitude=5,
+        velocity_phrase_shape=False,
+        # 'tight': riff palm-muted e nota curta por natureza
+        # (`guitar.palm_mute`, `guitar.dead_notes`) mesmo antes de qualquer
+        # tecnica ser autorizada.
+        gate_articulation="tight",
+        anchor_pitches=frozenset(),
+        anchor_max_abs_ms=3.0,
+    ),
     "generic": ProfileParams(
         # Fallback: mesma pegada de 'keys' — sem opinioes sobre pecas
         # especificas, apenas humaniza dentro do bucket 'normal'.
