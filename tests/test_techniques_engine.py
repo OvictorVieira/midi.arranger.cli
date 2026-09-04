@@ -209,15 +209,20 @@ def test_supported_techniques_is_derived_from_the_registry():
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
+        "guitar.bend",
         "guitar.dead_notes",
         "guitar.double_tracking",
         "guitar.hammer_pull",
         "guitar.palm_mute",
         "guitar.pinch_harmonic",
+        "guitar.vibrato",
         "keys.damper_pedal",
         "keys.expression",
+        "keys.human_articulation",
         "keys.modulation",
         "keys.pitch_bend",
+        "keys.rolled_chord",
+        "keys.voice_dynamics",
     )
 
 
@@ -243,15 +248,20 @@ def test_global_dispatch_rejects_documented_but_unimplemented_technique():
         "drums.flam",
         "drums.ghost_notes",
         "drums.microtiming",
+        "guitar.bend",
         "guitar.dead_notes",
         "guitar.double_tracking",
         "guitar.hammer_pull",
         "guitar.palm_mute",
         "guitar.pinch_harmonic",
+        "guitar.vibrato",
         "keys.damper_pedal",
         "keys.expression",
+        "keys.human_articulation",
         "keys.modulation",
         "keys.pitch_bend",
+        "keys.rolled_chord",
+        "keys.voice_dynamics",
     )
 
 
@@ -3933,31 +3943,31 @@ def test_plano_que_declara_tecnica_documentada_mas_nao_implementada_recebe_erro_
 _KEYS_IMPLEMENTED = (
     "keys.damper_pedal",
     "keys.expression",
+    "keys.human_articulation",
     "keys.modulation",
     "keys.pitch_bend",
+    "keys.rolled_chord",
+    "keys.voice_dynamics",
 )
 
 _KEYS_DOCUMENTED_BUT_UNIMPLEMENTED = (
     "keys.bass_anticipation",
     "keys.hammond_dynamics",
     "keys.hand_asynchrony",
-    "keys.human_articulation",
     "keys.melody_lead",
     "keys.rhodes_touch",
-    "keys.rolled_chord",
     "keys.syncopated_pedal",
     "keys.vibrato",
-    "keys.voice_dynamics",
 )
 
 
 def test_keys_engine_inventory_matches_the_issue_14_contract():
     """Trava o inventario exato de `keys` no motor.
 
-    Registro fantasma (aplicador stub ou no-op) OU registro alem das quatro
-    tecnicas de expressao continua da issue #14 quebra aqui. As dez restantes
-    documentadas continuam fora do motor por design — sao pesquisa futura,
-    nao bug desta rodada.
+    Registro fantasma (aplicador stub ou no-op) OU registro alem das sete
+    tecnicas da issue #14 quebra aqui. As sete restantes documentadas
+    continuam fora do motor por design, cada uma por um motivo concreto
+    registrado em `docs/arquitetura.md` §4 — nao por falta de tempo.
     """
     from tools.techniques import SUPPORTED_TECHNIQUES, build_index
 

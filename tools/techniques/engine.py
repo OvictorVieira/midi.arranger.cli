@@ -5512,6 +5512,774 @@ def _apply_guitar_double_tracking(
     return mid
 
 
+
+@register_technique("guitar.bend", "technique")
+def _apply_guitar_bend(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Bend de guitarra — pre-bend com release, so em nota que soa sozinha.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - Todos os numeros vem do manual via `build_index()`, e todos tem fonte
+        REAL (nao convencao): `centro_pitch_bend` (8192, MIDI 1.0),
+        `range_default_semitons` (2, GM/Shreddage), `passos_por_semitom_range_2`
+        (4096, aritmetica da spec), `musiclab_intervalo_semitons` ([1, 2], FX
+        21/22/23) e `musiclab_tempo_ms` ([100, 800], mesma tabela).
+      - A aritmetica do manual e CONFERIDA: `passos_por_semitom * range` tem
+        que dar `centro`, senao o bloco esta inconsistente e a tecnica falha.
+      - `density` ausente ou <= 0 DESLIGA. Bend em toda nota nao e intencao
+        musical, e ruido.
+      - Realiza a receita `generic` do manual ao pe da letra: pitch bend ja no
+        alvo ANTES do note_on e rampa MONOTONICA de volta ao centro depois do
+        ataque. A rampa termina antes do note_off — a regra que o manual chama
+        de "a regra que quebra a musica se for esquecida" e que a proxima nota
+        nasce desafinada se o bend ficar pendurado.
+      - So entra nota que soa SOZINHA no canal (`isolated_notes`) e que tem um
+        tick livre antes do ataque para o pre-bend: o manual e categorico que
+        bend dentro de acorde em canal unico e impossivel, porque a roda de
+        pitch e por canal e dobraria o acorde inteiro.
+      - Nota mais curta que o piso de `musiclab_tempo_ms` fica de fora: um
+        release de bend nao cabe nela.
+      - Declara o range por RPN 0 (CC101/CC100/CC6/CC38) uma vez por canal e
+        fecha com RPN Null, para que os semitons prometidos sejam os semitons
+        ouvidos em vez de dependerem do ajuste do plugin.
+      - Idempotente: mesma seed seleciona as mesmas notas e escreve eventos
+        com a mesma assinatura (canal, tick, valor); o dedup do despacho
+        central descarta as duplicatas.
+    """
+
+    import mido as _mido
+
+    from ._helpers import (
+        din_msgs_per_second_ceiling,
+        first_tempo,
+        isolated_notes,
+        iter_note_dicts,
+        select_by_density,
+        technique_setup,
+    )
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import collect_absolute, sort_and_flush
+
+    setup = technique_setup(context)
+    if setup is None:
+        return mid
+    density, _technique, int_param = setup
+
+    centro = int_param("centro_pitch_bend")
+    range_semitons = int_param("range_default_semitons")
+    passos_por_semitom = int_param("passos_por_semitom_range_2")
+    if centro != 8192:
+        raise ValueError(
+            f"tecnica {context.canonical!r} espera centro_pitch_bend=8192 "
+            f"(MIDI 1.0); manual declarou {centro}"
+        )
+    if passos_por_semitom * range_semitons != centro:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: manual inconsistente — "
+            f"{passos_por_semitom} passos/semitom x {range_semitons} semitons "
+            f"nao fecha o centro {centro}"
+        )
+
+    _manual, resolve = load_range_resolver(context)
+    intervalo_range = resolve("musiclab_intervalo_semitons")
+    tempo_range = resolve("musiclab_tempo_ms")
+    if intervalo_range is None or tempo_range is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa de "
+            "musiclab_intervalo_semitons e musiclab_tempo_ms"
+        )
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    ticks_ms = ticks_per_beat * 1000 / first_tempo(mid)
+    ticks_per_second = ticks_ms * 1000
+    teto_msgs = din_msgs_per_second_ceiling(context.canonical)
+    min_ramp_ticks = max(1, int(round(tempo_range[0] * ticks_ms)))
+
+    select_rng = context.rng("bend_select")
+    shape_rng = context.rng("bend_shape")
+
+    for track in mid.tracks:
+        candidates = [
+            note
+            for note in isolated_notes(iter_note_dicts(track))
+            if note["duration"] > min_ramp_ticks
+            and note["start"] >= 1
+            and note["prev_end"] < note["start"] - 1
+        ]
+        if not candidates:
+            continue
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=lambda note: (note["start"], note["pitch"]),
+        )
+        if not selected:
+            continue
+
+        absolute = collect_absolute(track)
+        order = len(absolute)
+        channels = sorted({note["channel"] for note in selected})
+        rpn_tick = max(0, min(note["start"] for note in selected) - 2)
+        for channel in channels:
+            for cc_num, cc_val in (
+                (101, 0), (100, 0), (6, range_semitons), (38, 0),
+            ):
+                absolute.append((
+                    rpn_tick, -4, order,
+                    _mido.Message(
+                        "control_change", channel=channel,
+                        control=cc_num, value=cc_val,
+                    ),
+                ))
+                order += 1
+
+        last_tick = rpn_tick
+        for note in selected:
+            semitons = int(round(shape_rng.uniform(*intervalo_range)))
+            semitons = max(1, min(range_semitons, semitons))
+            target = min(8191, semitons * passos_por_semitom)
+            ramp_ticks = max(
+                1,
+                min(
+                    int(round(shape_rng.uniform(*tempo_range) * ticks_ms)),
+                    note["duration"] - 1,
+                ),
+            )
+            absolute.append((
+                note["start"] - 1, -3, order,
+                _mido.Message(
+                    "pitchwheel", channel=note["channel"], pitch=target,
+                ),
+            ))
+            order += 1
+
+            span_seconds = ramp_ticks / ticks_per_second
+            max_by_rate = (
+                max(2, int(span_seconds * teto_msgs)) if span_seconds > 0 else 2
+            )
+            n_steps = max(2, min(8, max_by_rate, ramp_ticks))
+            for step in range(1, n_steps + 1):
+                frac = step / n_steps
+                absolute.append((
+                    note["start"] + int(round(ramp_ticks * frac)), -2, order,
+                    _mido.Message(
+                        "pitchwheel",
+                        channel=note["channel"],
+                        pitch=int(round(target * (1.0 - frac))),
+                    ),
+                ))
+                order += 1
+            last_tick = max(last_tick, note["start"] + ramp_ticks)
+
+        for channel in channels:
+            for cc_num, cc_val in ((101, 127), (100, 127)):
+                absolute.append((
+                    last_tick + 1, 5, order,
+                    _mido.Message(
+                        "control_change", channel=channel,
+                        control=cc_num, value=cc_val,
+                    ),
+                ))
+                order += 1
+
+        sort_and_flush(absolute, track)
+
+    return mid
+
+
+@register_technique("guitar.vibrato", "technique")
+def _apply_guitar_vibrato(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Vibrato de guitarra — oscilacao real de pitch bend, nunca no ataque.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - `rate_hz` ([5, 7]), `extent_cents` ([20, 100]), `cents_por_semitom`
+        (100) e `atraso_de_inicio_convencao_ms` ([100, 200]) vem do manual
+        (`§5`), com fonte declarada em todos — os tres primeiros ja existiam,
+        e o bloco inteiro e `verified: false` de proposito porque rate e
+        extent sao convencao, nao medicao. A conversao de cents para passos
+        de roda reusa o range de pitch bend sourced em `guitar.bend`, em vez
+        de duplicar o numero neste bloco.
+      - `density` ausente ou <= 0 DESLIGA.
+      - O UNICO fato oficial do bloco manda na implementacao: vibrato NAO
+        comeca junto com o ataque. A oscilacao so entra depois do atraso, e
+        nota curta demais para caber atraso + um ciclo inteiro fica de fora —
+        e exatamente o estagio "Start" que a Ample documenta para impedir que
+        nota rapida seja vibrada.
+      - Termina em ciclo INTEIRO: o ultimo evento e o centro (0), antes do
+        note_off. Bend pendurado desafina a proxima nota.
+      - So entra nota que soa SOZINHA no canal: o manual diz que vibrato por
+        pitch bend de canal em power chord esta errado, porque o guitarrista
+        vibra UMA corda.
+      - `extent_cents` e aplicado como excursao para cima E para baixo, que e
+        a definicao literal da fonte academica citada no bloco ("how far above
+        and below the mid-frequency each cycle fluctuates").
+      - Idempotente: mesma seed, mesmos alvos, mesma assinatura de evento.
+    """
+
+    import math as _math
+
+    import mido as _mido
+
+    from ._helpers import (
+        din_msgs_per_second_ceiling,
+        first_tempo,
+        isolated_notes,
+        iter_note_dicts,
+        manual_param_of,
+        select_by_density,
+        technique_setup,
+    )
+    from ._param_range import load_range_resolver
+    from ._track_rebuild import collect_absolute, sort_and_flush
+
+    setup = technique_setup(context)
+    if setup is None:
+        return mid
+    density, _technique, int_param = setup
+
+    cents_por_semitom = int_param("cents_por_semitom")
+    if cents_por_semitom <= 0:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: cents_por_semitom invalido "
+            f"({cents_por_semitom})"
+        )
+    range_semitons = int(manual_param_of("guitar.bend", "range_default_semitons"))
+    passos_por_semitom = int(
+        manual_param_of("guitar.bend", "passos_por_semitom_range_2")
+    )
+
+    _manual, resolve = load_range_resolver(context)
+    rate_range = resolve("rate_hz")
+    extent_range = resolve("extent_cents")
+    delay_range = resolve("atraso_de_inicio_convencao_ms")
+    if rate_range is None or extent_range is None or delay_range is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa de rate_hz, extent_cents "
+            "e atraso_de_inicio_convencao_ms"
+        )
+    if rate_range[0] <= 0:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: rate_hz precisa ser positivo"
+        )
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    ticks_ms = ticks_per_beat * 1000 / first_tempo(mid)
+    teto_msgs = din_msgs_per_second_ceiling(context.canonical)
+
+    select_rng = context.rng("vibrato_select")
+    shape_rng = context.rng("vibrato_shape")
+
+    for track in mid.tracks:
+        candidates = [
+            note
+            for note in isolated_notes(iter_note_dicts(track))
+            if note["duration"] / ticks_ms
+            > delay_range[0] + 1000.0 / rate_range[1]
+        ]
+        if not candidates:
+            continue
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=lambda note: (note["start"], note["pitch"]),
+        )
+        if not selected:
+            continue
+
+        absolute = collect_absolute(track)
+        order = len(absolute)
+        channels = sorted({note["channel"] for note in selected})
+        rpn_tick = max(0, min(note["start"] for note in selected) - 2)
+        for channel in channels:
+            for cc_num, cc_val in (
+                (101, 0), (100, 0), (6, range_semitons), (38, 0),
+            ):
+                absolute.append((
+                    rpn_tick, -4, order,
+                    _mido.Message(
+                        "control_change", channel=channel,
+                        control=cc_num, value=cc_val,
+                    ),
+                ))
+                order += 1
+
+        last_tick = rpn_tick
+        for note in selected:
+            delay_ms = shape_rng.uniform(*delay_range)
+            rate_hz = shape_rng.uniform(*rate_range)
+            extent_cents = shape_rng.uniform(*extent_range)
+            cycle_ms = 1000.0 / rate_hz
+            duration_ms = note["duration"] / ticks_ms
+            cycles = int((duration_ms - delay_ms) // cycle_ms)
+            if cycles < 1:
+                continue
+            cycle_ticks = cycle_ms * ticks_ms
+            amplitude = min(
+                8191,
+                int(round(extent_cents / cents_por_semitom * passos_por_semitom)),
+            )
+            if amplitude <= 0:
+                continue
+            samples = max(4, min(16, int(teto_msgs / rate_hz)))
+            begin = note["start"] + int(round(delay_ms * ticks_ms))
+            for cycle in range(cycles):
+                for step in range(1, samples + 1):
+                    phase = step / samples
+                    tick = begin + int(round((cycle + phase) * cycle_ticks))
+                    if tick >= note["end"]:
+                        continue
+                    absolute.append((
+                        tick, -2, order,
+                        _mido.Message(
+                            "pitchwheel",
+                            channel=note["channel"],
+                            pitch=int(round(
+                                amplitude * _math.sin(2 * _math.pi * phase)
+                            )),
+                        ),
+                    ))
+                    order += 1
+                    last_tick = max(last_tick, tick)
+
+        for channel in channels:
+            for cc_num, cc_val in ((101, 127), (100, 127)):
+                absolute.append((
+                    last_tick + 1, 5, order,
+                    _mido.Message(
+                        "control_change", channel=channel,
+                        control=cc_num, value=cc_val,
+                    ),
+                ))
+                order += 1
+
+        sort_and_flush(absolute, track)
+
+    return mid
+
+
+@register_technique("keys.voice_dynamics", "humanize")
+def _apply_keys_voice_dynamics(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Vozeamento por dinamica — a melodia e a voz mais forte do acorde.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - O delta em unidades MIDI vem do manual
+        (`delta_midi_melodia_vs_acompanhamento`), que e DERIVADO por
+        aritmetica de dois parametros ja sourced do mesmo bloco
+        (`fhv_melodia_normal` e `fhv_melodia_enfatizada`, Goebl 2001) pela
+        conversao logaritmica medida de Goebl & Bresin 2003. Nada de
+        converter m/s linearmente para 0-127, que e o erro contra o qual o
+        proprio manual avisa.
+      - Precedencia `context.parameters` > receita > manual pelo resolvedor
+        comum: o delta declarado no plano COMANDA o resultado.
+      - `density` ausente ou <= 0 DESLIGA.
+      - Sobe a voz de cima ate ficar `delta` acima da mais forte das outras.
+        Rebaixar so acontece quando o topo ja bateu em 127, e NUNCA mais que
+        `delta` pontos — a invariante que impede a inversao de intencao que
+        `drums.accent_hierarchy` cometeu em DEIXE IR. Acorde que exigiria uma
+        queda maior fica de fora, inteiro.
+      - Canal 9 (bateria) e ignorado: nota de kit e peca distinta, nao voz.
+      - Idempotente por construcao: reaplicar encontra o acorde ja com o
+        diferencial e nao mexe em nada.
+    """
+
+    from ._helpers import (
+        iter_note_dicts,
+        positive_density,
+        rebuild_track,
+        select_by_density,
+        simultaneous_chords,
+    )
+    from ._param_range import load_range_resolver
+
+    density = positive_density(context)
+    if density is None:
+        return mid
+
+    _manual, resolve = load_range_resolver(context)
+    delta_range = resolve("delta_midi_melodia_vs_acompanhamento")
+    if delta_range is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa de "
+            "delta_midi_melodia_vs_acompanhamento no manual"
+        )
+    delta = int(round((delta_range[0] + delta_range[1]) / 2))
+    if delta <= 0:
+        return mid
+
+    select_rng = context.rng("voice_dynamics_select")
+
+    for track in mid.tracks:
+        chords = simultaneous_chords(iter_note_dicts(track))
+        if not chords:
+            continue
+        candidates = [
+            {
+                "start": chord[0]["start"],
+                "pitch": chord[0]["pitch"],
+                "chord": chord,
+            }
+            for chord in chords
+        ]
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=lambda item: (item["start"], item["pitch"]),
+        )
+        if not selected:
+            continue
+
+        velocity_by_index: dict[int, int] = {}
+        for item in selected:
+            chord = item["chord"]
+            top_position = max(
+                range(len(chord)),
+                key=lambda index: (chord[index]["pitch"], index),
+            )
+            top = chord[top_position]
+            others = [
+                note for index, note in enumerate(chord) if index != top_position
+            ]
+            loudest_other = max(note["velocity"] for note in others)
+            if top["velocity"] - loudest_other >= delta:
+                continue
+            new_top = min(127, loudest_other + delta)
+            if new_top - loudest_other >= delta:
+                velocity_by_index[top["note_on_index"]] = new_top
+                continue
+            ceiling = new_top - delta
+            if any(note["velocity"] - ceiling > delta for note in others):
+                continue
+            velocity_by_index[top["note_on_index"]] = new_top
+            for note in others:
+                if note["velocity"] > ceiling:
+                    velocity_by_index[note["note_on_index"]] = max(1, ceiling)
+
+        if velocity_by_index:
+            rebuild_track(track, velocity_by_index=velocity_by_index)
+
+    return mid
+
+
+@register_technique("keys.rolled_chord", "humanize")
+def _apply_keys_rolled_chord(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Acorde rolado — espalhamento ACELERADO, com a nota de topo no tempo.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - `espalhamento_total_ms` ([30, 120], ISMIR 2015) e
+        `razao_entre_intervalos_sucessivos` (0.8, CONVENCAO com razao
+        declarada) saem do manual; a precedencia `context.parameters` >
+        receita > manual vale para os dois.
+      - `density` ausente ou <= 0 DESLIGA.
+      - O achado que da nome ao bloco e obedecido: os intervalos entre notas
+        sucessivas DIMINUEM do grave para o agudo (progressao geometrica de
+        razao < 1). Espalhamento uniforme e o erro classico que a fonte
+        aponta.
+      - A nota de topo cai NO TEMPO: o rolo comeca antes do tempo e termina
+        nele, como manda a receita generica do manual. Por isso o acorde so
+        entra se houver folga real antes dele.
+      - O contrato `humanize` proibe mudar a ordem dos note_on: acorde cuja
+        ordem escrita nao ja sobe do grave para o agudo fica de fora, porque
+        rola-lo exigiria reordenar os eventos da track. Mesma checagem para
+        a ordem dos note_off.
+      - Canal 9 (bateria) e ignorado.
+    """
+
+    from ._helpers import (
+        first_tempo,
+        iter_note_dicts,
+        positive_density,
+        rebuild_track,
+        select_by_density,
+        simultaneous_chords,
+    )
+    from ._param_range import load_range_resolver
+
+    density = positive_density(context)
+    if density is None:
+        return mid
+
+    _manual, resolve = load_range_resolver(context)
+    spread_range = resolve("espalhamento_total_ms")
+    ratio_range = resolve("razao_entre_intervalos_sucessivos")
+    if spread_range is None or ratio_range is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa de espalhamento_total_ms "
+            "e razao_entre_intervalos_sucessivos no manual"
+        )
+    ratio = (ratio_range[0] + ratio_range[1]) / 2
+    if not 0.0 < ratio < 1.0:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: razao entre intervalos precisa "
+            f"ficar em (0, 1) para o rolo acelerar; recebido {ratio}"
+        )
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    ticks_ms = ticks_per_beat * 1000 / first_tempo(mid)
+    max_spread_ticks = int(round(spread_range[1] * ticks_ms))
+    if max_spread_ticks <= 0:
+        return mid
+
+    select_rng = context.rng("rolled_chord_select")
+    shape_rng = context.rng("rolled_chord_shape")
+
+    for track in mid.tracks:
+        notes = iter_note_dicts(track, include_note_off_index=True)
+        chords = simultaneous_chords(notes, min_size=2)
+        candidates = []
+        for chord in chords:
+            pitches = [note["pitch"] for note in chord]
+            if pitches != sorted(pitches) or len(set(pitches)) != len(pitches):
+                continue
+            start = chord[0]["start"]
+            shortest = min(note["duration"] for note in chord)
+            if shortest <= max_spread_ticks:
+                continue
+            inside = {note["note_on_index"] for note in chord}
+            outside = [
+                note for note in notes if note["note_on_index"] not in inside
+            ]
+            if any(
+                other["start"] < min(n["end"] for n in chord)
+                and other["end"] > start
+                for other in outside
+            ):
+                continue
+            headroom = min(
+                [start]
+                + [start - other["start"] for other in outside
+                   if other["start"] < start]
+            )
+            if headroom <= max_spread_ticks:
+                continue
+            candidates.append({
+                "start": start,
+                "pitch": pitches[0],
+                "chord": chord,
+            })
+        if not candidates:
+            continue
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=lambda item: (item["start"], item["pitch"]),
+        )
+        if not selected:
+            continue
+
+        shifts: dict[int, int] = {}
+        for item in selected:
+            chord = item["chord"]
+            size = len(chord)
+            spread_ticks = int(round(
+                shape_rng.uniform(*spread_range) * ticks_ms
+            ))
+            if spread_ticks < size - 1:
+                continue
+            weights = [ratio ** index for index in range(size - 1)]
+            total_weight = sum(weights)
+            gaps = [spread_ticks * weight / total_weight for weight in weights]
+            offsets = []
+            for index in range(size):
+                offsets.append(int(round(sum(gaps[index:]))))
+            if len(set(offsets)) != size:
+                continue
+            new_offs = [
+                note["end"] - offset
+                for note, offset in zip(chord, offsets, strict=True)
+            ]
+            by_off_order = sorted(
+                range(size), key=lambda index: chord[index]["note_off_index"]
+            )
+            ordered_offs = [new_offs[index] for index in by_off_order]
+            if ordered_offs != sorted(ordered_offs):
+                continue
+            for note, offset in zip(chord, offsets, strict=True):
+                shifts[note["note_on_index"]] = -offset
+                shifts[note["note_off_index"]] = -offset
+
+        if shifts:
+            absolute_tick_by_index: dict[int, int] = {}
+            tick = 0
+            for msg_index, msg in enumerate(track):
+                tick += msg.time
+                absolute_tick_by_index[msg_index] = tick + shifts.get(msg_index, 0)
+            rebuild_track(track, absolute_tick_by_index=absolute_tick_by_index)
+
+    return mid
+
+
+@register_technique("keys.human_articulation", "humanize")
+def _apply_keys_human_articulation(
+    mid: mido.MidiFile,
+    *,
+    context: TechniqueContext,
+) -> mido.MidiFile:
+    """Articulacao humana — nota longa perde o colado de 100% da duracao.
+
+    Regras que fazem esta tecnica NAO virar `_identity_apply`:
+      - `razao_de_articulacao` (0.75) e `limiar_de_aplicacao_ms` (100) vem do
+        manual, ambos MEDIDOS (Friberg, Bresin & Sundberg 2006, regra Overall
+        articulation). Precedencia `context.parameters` > receita > manual: a
+        razao declarada no plano COMANDA o resultado.
+      - `density` ausente ou <= 0 DESLIGA.
+      - Encurta a DURACAO das notas selecionadas mais longas que o limiar;
+        nunca mexe em altura, ataque, ordem ou contagem — e o tell numero 2
+        do manual ("nota com 100 por cento da duracao nominal, colada na
+        seguinte"), nao os outros dois.
+      - A razao e medida contra o INTERVALO ATE O PROXIMO ATAQUE do mesmo
+        canal, que e a forma da regra Overall articulation e a unica que faz
+        a tecnica ser IDEMPOTENTE: reaplicar encontra a nota ja em 0.75 do
+        IOI e nao encurta de novo. Medir contra a duracao escrita encurtaria
+        a cada passada (0.75, depois 0.5625...), empilhando ornamento sobre
+        ornamento — exatamente o que o AC-20 proibe. Nota sem proximo ataque
+        no canal fica de fora: sem IOI nao ha razao de articulacao.
+      - So encurta. Nota ja mais curta que a razao continua como esta —
+        alongar criaria overlap que a origem nao escreveu.
+      - O contrato `humanize` tambem congela o pareamento note_on/note_off:
+        note_off que passaria a fechar antes do note_off anterior faria a
+        fotografia mudar de ordem, entao essa nota fica de fora em vez de
+        quebrar o contrato.
+      - O multiplicador de velocity de 0.7-0.9 do mesmo bloco NAO e aplicado
+        aqui de proposito: o manual o descreve como higiene de dados de um
+        take gravado com controlador, nao como gesto de execucao. Aplicar em
+        toda track so abaixaria o volume geral.
+      - Canal 9 (bateria) e ignorado.
+    """
+
+    from ._helpers import (
+        first_tempo,
+        iter_note_dicts,
+        positive_density,
+        rebuild_track,
+        select_by_density,
+    )
+    from ._param_range import load_range_resolver
+
+    density = positive_density(context)
+    if density is None:
+        return mid
+
+    _manual, resolve = load_range_resolver(context)
+    ratio_range = resolve("razao_de_articulacao")
+    threshold_range = resolve("limiar_de_aplicacao_ms")
+    if ratio_range is None or threshold_range is None:
+        raise ValueError(
+            f"tecnica {context.canonical!r} precisa de razao_de_articulacao "
+            "e limiar_de_aplicacao_ms no manual"
+        )
+    ratio = (ratio_range[0] + ratio_range[1]) / 2
+    if not 0.0 < ratio < 1.0:
+        raise ValueError(
+            f"tecnica {context.canonical!r}: razao_de_articulacao precisa "
+            f"ficar em (0, 1); recebido {ratio}"
+        )
+    threshold_ms = (threshold_range[0] + threshold_range[1]) / 2
+
+    ticks_per_beat = mid.ticks_per_beat
+    if ticks_per_beat <= 0:
+        return mid
+    ticks_ms = ticks_per_beat * 1000 / first_tempo(mid)
+    threshold_ticks = int(round(threshold_ms * ticks_ms))
+
+    select_rng = context.rng("articulation_select")
+
+    for track in mid.tracks:
+        all_notes = iter_note_dicts(track, include_note_off_index=True)
+        by_channel: dict[int, list[dict[str, int]]] = {}
+        for note in all_notes:
+            if note["channel"] == 9:
+                continue
+            by_channel.setdefault(note["channel"], []).append(note)
+
+        target_by_off_index: dict[int, int] = {}
+        for group in by_channel.values():
+            ordered = sorted(group, key=lambda item: (item["start"], item["pitch"]))
+            for position, note in enumerate(ordered):
+                next_start = next(
+                    (
+                        other["start"]
+                        for other in ordered[position + 1:]
+                        if other["start"] > note["start"]
+                    ),
+                    None,
+                )
+                if next_start is None or note["duration"] <= threshold_ticks:
+                    continue
+                target = note["start"] + max(
+                    1, int(round((next_start - note["start"]) * ratio))
+                )
+                if target >= note["end"]:
+                    continue
+                target_by_off_index[note["note_off_index"]] = target
+
+        candidates = [
+            note
+            for note in all_notes
+            if note["note_off_index"] in target_by_off_index
+        ]
+        if not candidates:
+            continue
+        selected = select_by_density(
+            candidates,
+            density=density,
+            rng=select_rng,
+            sort_key=lambda note: (note["start"], note["pitch"]),
+        )
+        if not selected:
+            continue
+        chosen = {note["note_off_index"] for note in selected}
+
+        new_end_by_index: dict[int, int] = {}
+        previous_off_tick = -1
+        for note in sorted(all_notes, key=lambda item: item["note_off_index"]):
+            if note["note_off_index"] not in chosen:
+                previous_off_tick = note["end"]
+                continue
+            new_end = target_by_off_index[note["note_off_index"]]
+            if new_end < previous_off_tick:
+                previous_off_tick = note["end"]
+                continue
+            new_end_by_index[note["note_off_index"]] = new_end
+            previous_off_tick = new_end
+
+        if new_end_by_index:
+            absolute_tick_by_index: dict[int, int] = {}
+            tick = 0
+            for msg_index, msg in enumerate(track):
+                tick += msg.time
+                absolute_tick_by_index[msg_index] = new_end_by_index.get(
+                    msg_index, tick
+                )
+            rebuild_track(track, absolute_tick_by_index=absolute_tick_by_index)
+
+    return mid
+
+
 SUPPORTED_TECHNIQUES = tuple(t.canonical for t in registered_techniques())
 
 

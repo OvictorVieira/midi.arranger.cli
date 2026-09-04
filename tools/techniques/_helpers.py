@@ -569,3 +569,88 @@ def rebuild_track(
         rebuilt.append(msg.copy(time=absolute_tick - previous_tick))
         previous_tick = absolute_tick
     track[:] = rebuilt
+
+
+def manual_param_of(canonical: str, name: str) -> Any:
+    """Le `value` de um parametro do manual de OUTRA tecnica.
+
+    Existe pelo mesmo motivo de `din_msgs_per_second_ceiling`: numero fisico
+    ja sourced num bloco vizinho do mesmo manual nao deve ser duplicado (nem
+    hardcoded) no bloco que o consome. `guitar.vibrato`, por exemplo, precisa
+    do range de pitch bend declarado em `guitar.bend` para converter cents em
+    passos de roda.
+    """
+    manual = build_index().get(canonical)
+    if manual is None:
+        raise ValueError(
+            f"manual de {canonical!r} nao encontrado para ler {name!r}"
+        )
+    for param in manual.parameters:
+        if param.name == name and isinstance(param.value, (int, float)):
+            return param.value
+    raise ValueError(
+        f"tecnica {canonical!r} precisa declarar {name} no manual"
+    )
+
+
+def isolated_notes(
+    notes: tuple[dict[str, int], ...] | list[dict[str, int]],
+    *,
+    skip_drum_channel: bool = True,
+) -> list[dict[str, int]]:
+    """Notas que soam SOZINHAS no canal delas, com `prev_end` anexado.
+
+    Pitch bend e mensagem de CANAL: bend ou vibrato escrito enquanto outra
+    nota do mesmo canal soa desafina o acorde inteiro — o manual de guitarra
+    e explicito que bend dentro de acorde em canal unico e impossivel e que
+    vibrato de canal em power chord esta errado, porque o guitarrista vibra
+    UMA corda. `prev_end` e o fim da ultima nota anterior do mesmo canal (ou
+    `None`), para o aplicador saber se ha espaco antes do ataque.
+    """
+    by_channel: dict[int, list[dict[str, int]]] = {}
+    for note in notes:
+        if skip_drum_channel and note["channel"] == 9:
+            continue
+        by_channel.setdefault(note["channel"], []).append(note)
+
+    out: list[dict[str, int]] = []
+    for group in by_channel.values():
+        ordered = sorted(group, key=lambda n: (n["start"], n["end"], n["pitch"]))
+        for position, note in enumerate(ordered):
+            if any(
+                other["start"] < note["end"] and other["end"] > note["start"]
+                for index, other in enumerate(ordered)
+                if index != position
+            ):
+                continue
+            entry = dict(note)
+            entry["prev_end"] = max(
+                (other["end"] for other in ordered[:position]),
+                default=-1,
+            )
+            out.append(entry)
+    return sorted(out, key=lambda n: (n["start"], n["pitch"]))
+
+
+def simultaneous_chords(
+    notes: tuple[dict[str, int], ...] | list[dict[str, int]],
+    *,
+    min_size: int = 2,
+    skip_drum_channel: bool = True,
+) -> list[list[dict[str, int]]]:
+    """Agrupa notas que comecam no MESMO tick e canal, em ordem de escrita.
+
+    Cada grupo sai ordenado por `note_on_index` — a ordem em que os eventos
+    aparecem na track, que e justamente a ordem que o contrato `humanize`
+    proibe mudar.
+    """
+    groups: dict[tuple[int, int], list[dict[str, int]]] = {}
+    for note in notes:
+        if skip_drum_channel and note["channel"] == 9:
+            continue
+        groups.setdefault((note["channel"], note["start"]), []).append(note)
+    return [
+        sorted(groups[key], key=lambda n: n["note_on_index"])
+        for key in sorted(groups)
+        if len(groups[key]) >= min_size
+    ]

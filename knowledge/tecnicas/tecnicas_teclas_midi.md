@@ -319,7 +319,8 @@ Mesmo formato dos outros manuais.
     {"name": "melodia_sempre_mais_forte_pct", "value": 100, "source": "Goebl 2001 — 22 de 22 pianistas"},
     {"name": "fhv_melodia_normal_ms", "value": 1.01, "source": "Goebl 2001 — m/s de velocity de martelo, NAO velocity MIDI"},
     {"name": "fhv_melodia_enfatizada", "value": 1.28, "source": "Goebl 2001"},
-    {"name": "fhv_faixa_dinamica_total", "range": [0.21, 4.26], "source": "Goebl 2001, nota 6"}
+    {"name": "fhv_faixa_dinamica_total", "range": [0.21, 4.26], "source": "Goebl 2001, nota 6"},
+    {"name": "delta_midi_melodia_vs_acompanhamento", "value": 7, "source": "DERIVADO: 71.3 * log10(1.28 / 1.01) = 7.3 unidades MIDI, aplicando a conversao logaritmica medida de Goebl & Bresin 2003 (§2 deste manual: velocity_MIDI = 57.96 + 71.3 * log10(v)) sobre fhv_melodia_enfatizada e fhv_melodia_normal acima — nenhum numero novo, so a aritmetica entre dois parametros ja sourced"}
   ],
   "tools": {
     "generic": {"note": "ATENCAO: os valores sao velocity de martelo em m/s. A conversao para velocity MIDI e NAO-LINEAR e especifica do instrumento. Nao converta linearmente para 0-127"}
@@ -338,7 +339,8 @@ Mesmo formato dos outros manuais.
   "description": "O achado que importa: a taxa de rolagem NAO e constante. Os intervalos entre notas sucessivas diminuem progressivamente do grave para o agudo — o rolo acelera. Espalhar 20ms fixos entre cada nota e o erro classico e soa mecanico. O espalhamento TOTAL entre a primeira nota e a ultima fica entre 30 e 120ms; distribua esse total com intervalos decrescentes. Os dois corpora de piano mais citados excluiram arpejos da analise de proposito, entao este dado vem de outro estudo — confira o valor exato no artigo antes de calibrar fino.",
   "parameters": [
     {"name": "espalhamento_total_ms", "range": [30, 120], "source": "Fu, Xia, Dannenberg & Wasserman, ISMIR 2015 — modelo estatistico sobre performances de pianistas profissionais"},
-    {"name": "perfil", "value": "acelerado_nao_linear", "source": "ISMIR 2015 — intervalos diminuem progressivamente do grave para o agudo"}
+    {"name": "perfil", "value": "acelerado_nao_linear", "source": "ISMIR 2015 — intervalos diminuem progressivamente do grave para o agudo"},
+    {"name": "razao_entre_intervalos_sucessivos", "value": 0.8, "source": "CONVENCAO — a fonte publica o PERFIL (intervalos decrescentes do grave para o agudo) e o TOTAL (30-120ms), mas nao a razao entre um intervalo e o seguinte; 0.8 deixa o ultimo intervalo em cerca de metade do primeiro num acorde de quatro notas — decrescimo audivel sem colapsar as duas ultimas notas no mesmo tick; razao escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {"generic": {"note": "de baixo para cima; a nota de topo cai no tempo; intervalos DECRESCENTES entre notas sucessivas"}}
 }
