@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import mido
 import pretty_midi
 
 from . import analyze as analyze_mod
@@ -69,6 +70,7 @@ from .validators import (
     validate_placement,
     validate_transitions,
 )
+from .validators.compliance import blocking_requisitos, validate_compliance
 
 KEY_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -2830,6 +2832,226 @@ LEARN_TOOL = Tool(
 )
 
 
+# --- compliance.validate (issue #5) -----------------------------------------
+#
+# Secao isolada de proposito: prova que o MIDI RENDERIZADO atende o brief a
+# risca, requisito por requisito, com evidencia numerica — nao "o plano e
+# valido". Ver `tools/validators/compliance.py` para o mecanismo completo.
+
+COMPLIANCE_VALIDATE_DESCRIPTION = (
+    "Prova, requisito por requisito, que o MIDI RENDERIZADO atende o que "
+    "`arrangement-brief.json.requisitos[]` pediu — a risca, com evidencia "
+    "numerica. Cada requisito vira um veredito com `status` (atendido | "
+    "parcial | nao_atendido | nao_verificavel) e `evidencia` numerica; "
+    "`nao_atendido` ou `parcial` em QUALQUER requisito faz esta tool "
+    "devolver `ok=false` (E_COMPLIANCE_NOT_MET, com o relatorio completo em "
+    "error.context.report) — o agente NAO deve emitir a sentinela de "
+    "conclusao enquanto isso acontecer; corrija o plano/render e rode de "
+    "novo. `nao_verificavel` nunca bloqueia. Precisa do brief (inline ou "
+    "por caminho), do plano (inline ou por caminho), do MIDI de origem "
+    "(`midi_path`) e do MIDI renderizado (`rendered_path`) — a comparacao e "
+    "sempre origem-vs-renderizado, nunca origem-vs-vazio."
+)
+
+
+def _read_brief_dict(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extrai brief_dict do payload: `brief` inline OU `brief_path`.
+
+    Mesmo contrato de `_read_plan_dict` — inline XOR caminho, erro com
+    codigo dedicado.
+    """
+    if ("brief" in payload) == ("brief_path" in payload):
+        raise ToolError(
+            "E_BRIEF_INPUT",
+            "informe exatamente um: `brief` inline OU `brief_path`",
+            hint="use brief={} para inline ou brief_path='...' para caminho",
+        )
+    if "brief" in payload:
+        return payload["brief"]
+
+    bp = Path(payload["brief_path"]).expanduser()
+    if not bp.exists():
+        raise ToolError(
+            "E_BRIEF_FILE_NOT_FOUND",
+            f"arquivo de brief nao encontrado: {bp}",
+            path="brief_path",
+        )
+    try:
+        data = json.loads(bp.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ToolError(
+            "E_BRIEF_JSON",
+            f"brief em {bp} nao e JSON valido: {exc.msg}",
+            path="brief_path",
+        ) from None
+    except OSError as exc:
+        raise ToolError(
+            "E_BRIEF_FILE_IO",
+            f"erro lendo brief {bp}: {exc}",
+            path="brief_path",
+        ) from None
+    if not isinstance(data, dict):
+        raise ToolError(
+            "E_BRIEF_JSON",
+            f"brief precisa ser objeto JSON; recebi {type(data).__name__}",
+            path="brief_path",
+        )
+    return data
+
+
+def _requisito_verdict_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "descricao": {"type": "string"},
+            "status": {
+                "enum": ["atendido", "parcial", "nao_atendido", "nao_verificavel"],
+            },
+            "evidencia": {"type": "object", "additionalProperties": True},
+            "motivo": {"type": "string"},
+        },
+        "required": ["id", "descricao", "status", "evidencia"],
+        "additionalProperties": False,
+    }
+
+
+def _compliance_validate_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    plan_dict = _read_plan_dict(payload)
+    src = _resolve_midi(payload["midi_path"])
+    rendered_path = _resolve_midi(payload["rendered_path"], field="rendered_path")
+    if rendered_path.resolve() == src.resolve():
+        raise ToolError(
+            "E_RENDERED_IS_SOURCE",
+            f"rendered_path e o proprio midi_path: {src}",
+            path="rendered_path",
+        )
+
+    brief = _read_brief_dict(payload)
+    requisitos = brief.get("requisitos", [])
+    if not isinstance(requisitos, list):
+        raise ToolError(
+            "E_BRIEF_INVALID",
+            "brief.requisitos precisa ser um array",
+            path="brief.requisitos",
+        )
+
+    try:
+        plan_obj = plan_mod.from_dict(plan_dict)
+        plan_mod.validate(plan_obj, _plan_dir_from_payload(payload))
+    except (KeyError, TypeError, ValueError, plan_mod.PlanValidationError) as exc:
+        raise ToolError(
+            "E_PLAN_INVALID",
+            f"plano invalido: {exc}",
+            path="plan",
+        ) from None
+
+    analysis = analyze_mod.analyze(str(src))
+    rendered_tracks, missing = _rendered_tracks_from_midi(str(rendered_path), plan_obj)
+
+    try:
+        source_pm = pretty_midi.PrettyMIDI(str(src))
+    except (OSError, ValueError, EOFError, KeyError) as exc:
+        raise ToolError(
+            "E_MIDI_PARSE",
+            f"nao foi possivel carregar o MIDI de origem: {exc}",
+            path="midi_path",
+        ) from None
+    source_tracks = render_mod._rendered_tracks_from_instrument_list(
+        source_pm.instruments,
+    )
+
+    try:
+        source_mid = mido.MidiFile(str(src))
+        rendered_mid = mido.MidiFile(str(rendered_path))
+    except (OSError, ValueError, EOFError, KeyError) as exc:
+        raise ToolError(
+            "E_MIDI_PARSE",
+            f"nao foi possivel carregar MIDI para medicao (mido): {exc}",
+        ) from None
+
+    harmony = validate_harmony(rendered_tracks, plan_obj, analysis)
+    placement = validate_placement(rendered_tracks, plan_obj, analysis)
+
+    report = validate_compliance(
+        requisitos=requisitos,
+        plan=plan_obj,
+        source_tracks=source_tracks,
+        rendered_tracks=rendered_tracks,
+        harmony_issues=harmony,
+        placement_issues=placement,
+        source_mid=source_mid,
+        rendered_mid=rendered_mid,
+    )
+
+    warnings: list[dict[str, Any]] = []
+    if missing:
+        warnings.append({
+            "code": "W_ELEMENTS_MISSING_IN_RENDER",
+            "message": (
+                f"{len(missing)} elemento(s) do plano nao tem track correspondente "
+                f"no MIDI renderizado: {missing!r}"
+            ),
+            "path": "rendered_path",
+        })
+    for v in report.requisitos:
+        if v.status == "nao_verificavel":
+            warnings.append({
+                "code": "W_REQUISITO_NAO_VERIFICAVEL",
+                "message": f"requisito {v.id}: {v.motivo}",
+                "path": "requisitos",
+            })
+
+    if not report.conforme:
+        blocking = blocking_requisitos(report)
+        raise ToolError(
+            "E_COMPLIANCE_NOT_MET",
+            f"{len(blocking)} requisito(s) do brief nao foram atendidos a "
+            f"risca: {[r.id for r in blocking]}",
+            path="requisitos",
+            hint=(
+                "corrija o plano/render e rode compliance.validate de novo "
+                "antes de emitir a sentinela de conclusao"
+            ),
+            context={"report": report.to_dict()},
+        )
+
+    return report.to_dict(), warnings
+
+
+COMPLIANCE_VALIDATE_TOOL = Tool(
+    name="compliance.validate",
+    description=COMPLIANCE_VALIDATE_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "midi_path": {"type": "string", "minLength": 1},
+            "rendered_path": {"type": "string", "minLength": 1},
+            "plan": _plan_schema(),
+            "plan_path": {"type": "string", "minLength": 1},
+            "brief": {"type": "object", "additionalProperties": True},
+            "brief_path": {"type": "string", "minLength": 1},
+        },
+        "required": ["midi_path", "rendered_path"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "conforme": {"type": "boolean"},
+            "requisitos": {
+                "type": "array",
+                "items": _requisito_verdict_schema(),
+            },
+        },
+        "required": ["conforme", "requisitos"],
+        "additionalProperties": False,
+    },
+    func=_compliance_validate_impl,
+)
+
+
 # --- registro --------------------------------------------------------------
 
 def bootstrap() -> None:
@@ -2842,7 +3064,7 @@ def bootstrap() -> None:
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
         RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL, PRESETS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
-        BRIEF_VALIDATE_TOOL, LEARN_TOOL,
+        BRIEF_VALIDATE_TOOL, LEARN_TOOL, COMPLIANCE_VALIDATE_TOOL,
     ):
         if _get(tool.name) is None:
             register(tool)
@@ -2856,6 +3078,7 @@ bootstrap()
 __all__ = [
     "ANALYZE_TOOL",
     "BRIEF_VALIDATE_TOOL",
+    "COMPLIANCE_VALIDATE_TOOL",
     "LEARN_TOOL",
     "PLAN_SKELETON_TOOL",
     "PLAN_VALIDATE_TOOL",
