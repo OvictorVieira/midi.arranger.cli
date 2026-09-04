@@ -25,6 +25,7 @@ from tools import influence as influence_mod
 from tools.registry import ToolError
 from tools.registry import get as get_tool
 from tools.techniques import SUPPORTED_TECHNIQUES
+from tools.techniques.index import build_index
 
 # --- a pesquisa mockada ---------------------------------------------------
 #
@@ -190,6 +191,11 @@ def test_profile_refuses_midi_numbers_invented_from_prose():
 
 
 def test_compile_only_suggests_techniques_the_engine_executes():
+    """Nao e redundante com `_assert_rules_reference_supported_techniques()`,
+    que roda no import de `tools/influence_compile.py`: aquele assert checa a
+    TABELA de regras, este checa a SAIDA da compilacao — que cada sugestao
+    emitida carrega o achado que a justifica e uma razao nao vazia, alem do
+    nome executavel."""
     result = _compile(_profile_from_research())
     assert result["suggestions"], "pesquisa mockada deveria render sugestao"
     for suggestion in result["suggestions"]:
@@ -290,79 +296,106 @@ def _style_from(
     return style
 
 
-def test_authorizing_the_recommended_set_records_the_full_canonical_list():
-    """"Autorizar o conjunto recomendado" em UMA acao grava a lista canonica
-    completa, nome por nome — nunca um marcador de "todas"."""
-    result = _compile(_profile_from_research())
-    recommended = {}
+def _recommended_set(result: dict[str, Any]) -> dict[str, list[str]]:
+    """O conjunto que a skill oferece para autorizacao em UMA acao: exatamente
+    as sugestoes que `influence.compile` produziu, por familia."""
+    recommended: dict[str, list[str]] = {}
     for suggestion in result["suggestions"]:
         recommended.setdefault(suggestion["family"], []).append(suggestion["name"])
+    return recommended
+
+
+def test_authorizing_the_recommended_set_passes_brief_validate():
+    """"Autorizar o conjunto recomendado" grava a lista canonica que
+    `influence.compile` produziu, e essa lista passa por `brief.validate` sem
+    ajuste — o conjunto oferecido e executavel de ponta a ponta."""
+    result = _compile(_profile_from_research())
+    recommended = _recommended_set(result)
+    assert recommended == {"drums": ["drums.ghost_notes"]}
 
     brief = _brief(_style_from(result, recommended), assumptions=[
         "Guitarra — alavanca levantada pela pesquisa mas nao executavel pelo "
         "motor; ficou como achado nao suportado.",
     ])
-    out = _validate_brief(brief)
-    assert out["ok"] is True
-
-    drums = brief["style"]["drums"]
-    assert drums["authorized_techniques"] == ["drums.ghost_notes"]
-    assert [t["name"] for t in drums["techniques"]] == ["drums.ghost_notes"]
-
-
-def test_user_veto_beats_the_compiled_suggestion():
-    """Veto/antirreferencia tem precedencia: a sugestao continua registrada em
-    `suggested_techniques`, mas nao entra em `authorized_techniques` nem em
-    `techniques[]`."""
-    result = _compile(_profile_from_research())
-    vetoed = "drums.ghost_notes"
-    recommended: dict[str, list[str]] = {}
-    for suggestion in result["suggestions"]:
-        if suggestion["name"] == vetoed:
-            continue
-        recommended.setdefault(suggestion["family"], []).append(suggestion["name"])
-
-    style = _style_from(result, recommended)
-    brief = _brief(style, assumptions=[
-        "Bateria — drums.ghost_notes sugerida pela pesquisa mas vetada pelo "
-        "usuario; nao autorizada.",
-    ])
-    out = _validate_brief(brief)
-    assert out["ok"] is True
-
-    drums = brief["style"]["drums"]
-    assert vetoed in [t["name"] for t in drums["suggested_techniques"]]
-    assert drums["authorized_techniques"] == []
-    assert drums["techniques"] == []
-
-
-def test_silence_authorizes_nothing():
-    """Usuario que nao respondeu: sugestao existe, autorizacao nao. O brief e
-    valido e o `run` nao tem tecnica nenhuma para aplicar."""
-    result = _compile(_profile_from_research())
-    brief = _brief(_style_from(result, {}), assumptions=[
-        "Bateria — drums.ghost_notes sugerida mas nao autorizada; usuario nao "
-        "confirmou.",
-    ])
     assert _validate_brief(brief)["ok"] is True
-    assert brief["style"]["drums"]["authorized_techniques"] == []
 
 
-def test_technique_outside_authorized_is_refused_by_brief_validate():
+@pytest.mark.parametrize("marker", ["todas", "all", "*"])
+def test_a_marker_of_all_is_refused_instead_of_the_canonical_list(marker):
+    """A skill proibe gravar um marcador de "todas" em vez da lista nome por
+    nome. A barreira de maquina que sustenta a regra: `brief.validate` nao
+    resolve marcador nenhum — ele nao e nome de tecnica e o brief e recusado."""
     result = _compile(_profile_from_research())
-    style = _style_from(result, {})
-    style["drums"]["techniques"] = [
+    style = _style_from(result, {"drums": [marker]})
+    with pytest.raises(ToolError) as exc:
+        _validate_brief(_brief(style, assumptions=[]))
+    assert exc.value.code == "E_BRIEF_TECHNIQUE_NOT_FOUND"
+
+
+def test_user_can_authorize_a_technique_the_research_did_not_suggest():
+    """O usuario pode autorizar tecnica que a pesquisa NAO sugeriu, desde que o
+    motor a execute. `brief.validate` aceita: a barreira e sobre autorizacao e
+    sobre estar implementada, nunca sobre ter sido sugerida."""
+    result = _compile(_profile_from_research())
+    suggested = {s["name"] for s in result["suggestions"]}
+    extra = "drums.flam"
+    assert extra not in suggested
+    assert extra in SUPPORTED_TECHNIQUES
+
+    style = _style_from(result, {"drums": ["drums.ghost_notes", extra]})
+    assert _validate_brief(_brief(style, assumptions=[]))["ok"] is True
+
+
+def test_suggestion_recorded_without_authorization_is_accepted_but_inert():
+    """Veto e silencio caem no MESMO estado de maquina: a sugestao fica
+    registrada em `suggested_techniques` e `authorized_techniques` fica vazio.
+    O que este teste exercita e a assimetria real de `brief.validate` — o mesmo
+    nome que ele ACEITA em `suggested_techniques` (registro do que a pesquisa
+    levantou) ele RECUSA em `techniques[]` sem autorizacao. Sugestao nao e
+    autorizacao, e a barreira e de maquina, nao de prosa."""
+    result = _compile(_profile_from_research())
+    suggested_only = _style_from(result, {})
+    assert "drums.ghost_notes" in [
+        t["name"] for t in suggested_only["drums"]["suggested_techniques"]
+    ]
+    assert suggested_only["drums"]["authorized_techniques"] == []
+
+    # Lado aceito: sugestao registrada sem autorizacao e brief valido.
+    assert _validate_brief(_brief(suggested_only, assumptions=[
+        "Bateria — drums.ghost_notes sugerida pela pesquisa mas nao autorizada "
+        "(vetada ou nao confirmada pelo usuario).",
+    ]))["ok"] is True
+
+    # Lado recusado: a MESMA sugestao promovida a `techniques[]` sem passar por
+    # `authorized_techniques`.
+    promoted = _style_from(result, {})
+    promoted["drums"]["techniques"] = [
         {"name": "drums.ghost_notes", "rationale": "aplicada sem autorizacao"}
     ]
     with pytest.raises(ToolError) as exc:
-        _validate_brief(_brief(style, assumptions=[]))
+        _validate_brief(_brief(promoted, assumptions=[]))
     assert exc.value.code == "E_BRIEF_TECHNIQUE_NOT_AUTHORIZED"
 
 
 def test_unmapped_finding_cannot_be_authorized_as_a_technique():
     """O achado de guitarra nao suportado nao pode virar autorizacao "na mao":
-    a tecnica correspondente do manual nao esta implementada e
-    `brief.validate` recusa."""
+    a tecnica correspondente EXISTE no manual mas o motor nao a executa, e
+    `brief.validate` recusa com `E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED`.
+
+    Regressao (revisao do PR #121): a versao anterior deste teste autorizava
+    `guitar.whammy_bar`, nome que nao existe em manual nenhum — batia sempre em
+    `E_BRIEF_TECHNIQUE_NOT_FOUND` e o `assert ... in {dois codigos}` escondia
+    isso. Removendo a barreira `SUPPORTED_TECHNIQUES` de `tools/brief_schema.py`
+    o teste continuava PASSANDO: ele testava erro de digitacao, nao a barreira
+    "documentada mas nao implementada". O nome usado agora e real e o codigo
+    esperado e exato."""
+    unimplemented = "guitar.dive_bomb"
+    assert unimplemented in set(build_index().names()), (
+        "o teste precisa de tecnica REAL do manual; nome inexistente bate em "
+        "NOT_FOUND e nao exercita a barreira"
+    )
+    assert unimplemented not in SUPPORTED_TECHNIQUES
+
     result = _compile(_profile_from_research())
     style = _style_from(result, {})
     style["guitar"] = {
@@ -371,15 +404,12 @@ def test_unmapped_finding_cannot_be_authorized_as_a_technique():
         "sources": ["https://example.org/rig-rundown"],
         "confidence": "high",
         "techniques": [],
-        "authorized_techniques": ["guitar.whammy_bar"],
+        "authorized_techniques": [unimplemented],
         "suggested_techniques": [],
     }
     with pytest.raises(ToolError) as exc:
         _validate_brief(_brief(style, assumptions=[]))
-    assert exc.value.code in {
-        "E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED",
-        "E_BRIEF_TECHNIQUE_NOT_FOUND",
-    }
+    assert exc.value.code == "E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED"
 
 
 # --- sem acesso a web: as tres saidas -------------------------------------

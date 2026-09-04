@@ -13,7 +13,13 @@ Cobrimos:
   chamar tool inexistente;
 - as clausulas obrigatorias da entrevista estao presentes: 4 familias, no
   maximo 5 perguntas agrupadas, 3 formas de resposta, default declarado em
-  `assumptions`, modo rapido nao trava.
+  `assumptions`, modo rapido nao trava;
+- todo nome de tecnica citado no corpo existe de verdade, e o que a skill
+  oferece para autorizacao esta em `SUPPORTED_TECHNIQUES` — nome inventado ou
+  so documentado no manual faz `brief.validate` recusar o brief inteiro depois
+  da entrevista toda;
+- todo comando `date -u` citado produz valor que algum validador real aceita
+  (`session.created_at` e `sources[].retrieved_at`).
 """
 
 from __future__ import annotations
@@ -359,24 +365,180 @@ def test_session_families_vocabulary_matches_brief_schema():
     )
 
 
-def test_session_created_at_command_matches_brief_schema_pattern():
-    """O comando `date -u` que a SKILL.md manda rodar para `created_at`
-    precisa produzir uma string que bate com o padrao ISO-8601 UTC que
-    `tools/brief_schema.py` valida (`_SESSION_CREATED_AT_PATTERN`)."""
+def test_date_capture_commands_match_the_patterns_they_serve():
+    """Todo comando `date -u` que a SKILL.md manda rodar tem que produzir uma
+    string que algum validador real aceita.
+
+    Sao dois carimbos, com formatos DIFERENTES: `session.created_at` (ISO-8601
+    UTC completo, `tools/brief_schema.py`) e `sources[].retrieved_at` (data
+    simples `YYYY-MM-DD`, `ISO_DATE_RE` de `tools/style_schema.py`, exigido
+    por `tools/influence.py`). Um formato citado que nao serve a nenhum dos
+    dois e instrucao que produz valor recusado depois da entrevista."""
+    from datetime import UTC, datetime
+
+    from tools.style_schema import ISO_DATE_RE
+
     text = SKILL_PATH.read_text(encoding="utf-8")
     _, body = _split_frontmatter(text)
 
     strftime_formats = re.findall(r"date -u \+([^\s`)]+)", body)
     assert strftime_formats, "SKILL.md nao cita o comando 'date -u +...'"
 
-    from datetime import UTC, datetime
-
+    now = datetime.now(UTC)
+    seen_created_at = False
+    seen_retrieved_at = False
     for fmt in strftime_formats:
-        sample = datetime.now(UTC).strftime(fmt)
-        assert _brief_schema._SESSION_CREATED_AT_RE.match(sample), (
-            f"'date -u +{fmt}' produz {sample!r}, que nao bate com o "
-            "padrao ISO-8601 UTC validado em brief_schema.py"
+        sample = now.strftime(fmt)
+        if _brief_schema._SESSION_CREATED_AT_RE.match(sample):
+            seen_created_at = True
+            continue
+        if ISO_DATE_RE.match(sample):
+            seen_retrieved_at = True
+            continue
+        raise AssertionError(
+            f"'date -u +{fmt}' produz {sample!r}, que nao bate nem com o "
+            "padrao de session.created_at (brief_schema.py) nem com o de "
+            "sources[].retrieved_at (ISO_DATE_RE)"
         )
+
+    assert seen_created_at, (
+        "SKILL.md nao ensina a capturar session.created_at com 'date -u'"
+    )
+    assert seen_retrieved_at, (
+        "SKILL.md nao ensina a capturar sources[].retrieved_at com 'date -u' — "
+        "campo de proveniencia da pesquisa nao pode ficar sem instrucao de "
+        "captura, mesma regra de session.created_at"
+    )
+
+
+# Nomes de tecnica que a SKILL.md cita DELIBERADAMENTE fora do conjunto
+# autorizavel: o texto os aponta como manual a consultar (`techniques.describe`),
+# nunca como tecnica a oferecer para `authorized_techniques`. Cada entrada e
+# checada abaixo: tem que existir no indice E estar FORA de
+# `SUPPORTED_TECHNIQUES` — assim a lista nao pode virar esconderijo de nome
+# inventado nem ficar obsoleta quando o motor passar a implementar a tecnica.
+_CITED_AS_MANUAL_ONLY = frozenset({
+    "guitar.drop_tuning",
+})
+
+
+def _cited_technique_names(body: str) -> set[str]:
+    """Todo identificador `familia.tecnica` entre crases no corpo da skill."""
+    families = "|".join(sorted(_brief_schema.STYLE_FAMILIES))
+    return set(re.findall(rf"`((?:{families})\.[a-z_][a-z0-9_]*)`", body))
+
+
+def test_cited_technique_names_are_real():
+    """Regressao: a etapa de autorizacao mandava o agente ler em voz alta
+    `laid_back_timing`, `rim_shot` e `cross_stick` — tres nomes que NAO existem
+    nem no indice de manuais nem no motor. Usuario que marcasse um deles
+    derrubava o brief inteiro em `E_BRIEF_TECHNIQUE_NOT_FOUND`, depois da
+    entrevista toda. Nenhum nome de tecnica citado pela skill pode ser
+    inventado."""
+    from tools.techniques.index import build_index
+
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    cited = _cited_technique_names(body)
+    assert cited, "SKILL.md nao cita nenhum nome canonico de tecnica"
+
+    known = set(build_index().names())
+    invented = sorted(cited - known)
+    assert not invented, (
+        f"SKILL.md cita tecnica que nao existe em manual nenhum: {invented}"
+    )
+
+
+def test_cited_techniques_offered_for_authorization_are_implemented():
+    """A skill so pode oferecer para autorizacao o que o motor executa: nome
+    apenas documentado no manual faz `brief.validate` recusar o brief inteiro
+    com `E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED`. As unicas excecoes sao os nomes
+    que o texto cita explicitamente como manual a consultar, listados em
+    `_CITED_AS_MANUAL_ONLY`."""
+    from tools.techniques import SUPPORTED_TECHNIQUES
+    from tools.techniques.index import build_index
+
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+
+    cited = _cited_technique_names(body)
+    offered = cited - _CITED_AS_MANUAL_ONLY
+    not_implemented = sorted(offered - set(SUPPORTED_TECHNIQUES))
+    assert not not_implemented, (
+        f"SKILL.md cita como autorizavel tecnica que o motor nao executa: "
+        f"{not_implemented}"
+    )
+
+    # A excecao nao pode virar esconderijo: cada nome dispensado tem que ser
+    # real E de fato nao implementado.
+    known = set(build_index().names())
+    for name in sorted(_CITED_AS_MANUAL_ONLY):
+        assert name in known, (
+            f"{name} esta em _CITED_AS_MANUAL_ONLY mas nao existe no indice"
+        )
+        assert name not in SUPPORTED_TECHNIQUES, (
+            f"{name} ja e executada pelo motor — tire de _CITED_AS_MANUAL_ONLY "
+            "em vez de manter a dispensa"
+        )
+
+
+# Palavras entre crases que a secao de autorizacao usa e que NAO sao nome de
+# tecnica: campos de artefato, chaves de saida de tool e nomes de fase. Tudo
+# que sobrar nessa secao e presumido nome de tecnica e vai para a checagem.
+_AUTHORIZATION_SECTION_NON_TECHNIQUE_WORDS = frozenset({
+    "assumptions",
+    "authorized_techniques",
+    "suggested_techniques",
+    "techniques",
+    "families_in_scope",
+    "unmapped_findings",
+    "not_recommended",
+    "implemented_only",
+    "family",
+    "reference",
+    "confidence",
+    "run",
+    "render",
+})
+
+
+def _authorization_section(body: str) -> str:
+    start = body.index("## Autorizacao")
+    end = body.index("\n## ", start + len("## Autorizacao"))
+    return body[start:end]
+
+
+def test_authorization_section_names_no_invented_technique():
+    """Regressao: a fala de exemplo da etapa de autorizacao citava
+    `laid_back_timing`, `rim_shot` e `cross_stick`. Nenhum dos tres existe —
+    nem no indice de manuais, nem em `SUPPORTED_TECHNIQUES`. Era o script que
+    o agente le em voz alta para o usuario marcar, entao usuario que marcasse
+    `rim_shot` matava o brief em `E_BRIEF_TECHNIQUE_NOT_FOUND`.
+
+    Nesta secao, toda palavra entre crases que nao e campo de artefato nem
+    nome de tool tem que ser nome canonico de tecnica implementada."""
+    from tools.registry import list_tools
+    from tools.techniques import SUPPORTED_TECHNIQUES
+
+    text = SKILL_PATH.read_text(encoding="utf-8")
+    _, body = _split_frontmatter(text)
+    section = _authorization_section(body)
+
+    tool_names = {tool["name"] for tool in list_tools()}
+    tokens = set(re.findall(r"`([a-z][a-z0-9_.]*)`", section))
+    candidates = (
+        tokens
+        - tool_names
+        - _AUTHORIZATION_SECTION_NON_TECHNIQUE_WORDS
+        - {"familia.tecnica"}
+    )
+    bogus = sorted(name for name in candidates if name not in SUPPORTED_TECHNIQUES)
+    assert not bogus, (
+        "a secao de autorizacao cita nome que nao e tecnica implementada nem "
+        f"campo conhecido: {bogus}. Use o nome canonico `familia.tecnica` de "
+        "`techniques.list --implemented_only`."
+    )
 
 
 def test_route_vocabulary_matches_plan_routes():

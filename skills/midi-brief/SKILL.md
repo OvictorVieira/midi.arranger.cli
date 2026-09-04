@@ -483,6 +483,15 @@ o maquinario consegue validar, compilar e auditar depois.
 }
 ```
 
+**`retrieved_at` e carimbo capturado, nao valor de cabeca.** Mesma regra de
+`session.created_at`: rode `date -u +%Y-%m-%d` (ou
+`python3 -c "import datetime; print(datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%d'))"`)
+no momento em que voce consultou a fonte e use o valor CAPTURADO. Nao escreva
+a data de memoria, nao copie a data de publicacao do documento (o campo diz
+quando VOCE recuperou), nao reaproveite a data de outra sessao. O validador
+exige `YYYY-MM-DD` e e o campo de proveniencia da pesquisa: data inventada e
+chute apresentado como fato auditado.
+
 **Vocabulario fechado, nunca texto livre inventado:**
 
 - `family`: `bass`, `drums`, `guitar`, `keys`.
@@ -507,6 +516,33 @@ sequencia de nota. Numero de execucao sai do manual local via
 `techniques.describe` ou dos `parameters` que a propria `influence.compile`
 devolve. O validador do perfil recusa conteudo musical em qualquer
 profundidade, e voce recusa antes dele.
+
+**Como escrever `semantic_value` e `summary` sem esbarrar na barreira.** O
+validador e deliberadamente conservador e nao entende contexto: ele conta
+ocorrencias na string inteira e recusa com `E_INFLUENCE_MUSICAL_CONTENT` a
+partir de **tres**. Duas coisas disparam a contagem:
+
+- qualquer inteiro entre 0 e 127 — inclusive numero que nao tem nada de
+  musical, como razao de compressor, quantidade de microfone ou numero de
+  compasso;
+- qualquer letra MAIUSCULA de A a G solta (com ou sem acidente) — inclusive
+  letra usada como rotulo de secao.
+
+Entao a regra operacional e simples: **zero numero e zero letra de nota solta
+em `semantic_value` e `summary`.** Escreva comportamento em palavras.
+
+| Escreva assim | Nao escreva assim |
+|---|---|
+| "compressao bem apertada, ataque rapido, sala presente" | "compressao 4:1, ataque rapido e 2 microfones de sala" |
+| "segura na abertura, abre no refrao e alivia na virada final" | "na secao A segura, na B abre e na C alivia" |
+| "atrasa levemente no verso, um pouco mais no refrao" | "atrasa 8 ms no verso, 12 ms no refrao e 5 ms na ponte" |
+| "pedaliza a tonica durante toda a secao" | "pedaliza a tonica nos compassos 9, 17 e 25" |
+
+Isso nao e contorno da barreira: e escrever o que a barreira existe para
+proteger. Numero de execucao **nao pertence** ao perfil — ele sai do manual
+via `techniques.describe` ou dos `parameters` que a propria
+`influence.compile` devolve. Nome de secao pertence ao bloco de secoes do
+brief, nao a prosa do achado.
 
 **Valide o perfil antes de compilar (passo 5).** A propria
 `influence.compile` valida o perfil na entrada e falha com codigo
@@ -598,6 +634,16 @@ parametro inventado — e tambem **nao some**. Mantenha a lista `unmapped`
 visivel na conversa e registre uma linha em `assumptions` por achado nao
 suportado, para o usuario saber o que ficou de fora e por que.
 
+**Guitarra hoje cai INTEIRA em `unmapped_findings`.** As regras de mapeamento
+de `influence.compile` cobrem drums, bass e keys; para guitarra nao ha
+nenhuma. Entao pesquisa de guitarra nunca produz sugestao — todo achado dela
+volta como nao suportado, e isso e comportamento correto, nao falha da
+pesquisa. Diga isso ao usuario com essas palavras quando ele citar referencia
+de guitarra, antes de ele estranhar a lista vazia: *"pesquisei, achei isto,
+mas o motor ainda nao traduz achado de guitarra em tecnica — fica registrado
+como nao suportado."* Nao compense inventando sugestao, nao autorize tecnica
+de guitarra "na mao" para preencher o vazio.
+
 **Achado `not_recommended` tambem aparece**: e a referencia dizendo, com
 fonte, que NAO usa aquele comportamento. Isso e o oposto de lacuna.
 
@@ -626,11 +672,13 @@ apresentacao de tecnicas nem `authorized_techniques`:
 2. **Apresente ao usuario, familia por familia**, a lista das tecnicas
    disponiveis com uma linha de resumo cada. Destaque as que a pesquisa
    sugeriu (em `suggested_techniques`) com a razao curta da sugestao.
+   Cite sempre o **nome canonico completo** (`familia.tecnica`), exatamente
+   como `techniques.list` devolveu — nunca o nome curto, nunca um apelido.
    Ex.: *"para bateria voce citou Steve Jordan; a pesquisa sugere
-   `ghost_notes` (densidade media na caixa) e `laid_back_timing` (feel
-   levemente atrasado). Existem tambem `rim_shot`, `cross_stick`,
-   `accent_hierarchy`, ... — quer marcar mais alguma? quer tirar alguma
-   das sugeridas?"*
+   `drums.ghost_notes` (densidade media na caixa) e `drums.microtiming`
+   (feel levemente atrasado). Existem tambem `drums.accent_hierarchy`,
+   `drums.flam`, `drums.buzz_roll`, ... — quer marcar mais alguma? quer
+   tirar alguma das sugeridas?"*
 3. **Preencha `authorized_techniques` SO com o nome canonico do que ele
    marcou.** Nada mais. Sugestao nao marcada fica em
    `suggested_techniques` como registro do que voce levantou, mas NAO
@@ -665,14 +713,23 @@ tambem o que voce nao me mostrou".
 respondeu para uma tecnica sugerida, se disse *"nao sei"*, *"talvez"*,
 *"pode ser"*, *"como voce achar melhor"* — aquela tecnica **nao entra** em
 `authorized_techniques`. Registre em `assumptions` a linha da omissao
-(*"Bateria — `ghost_notes` sugerida mas nao autorizada; usuario nao
+(*"Bateria — `drums.ghost_notes` sugerida mas nao autorizada; usuario nao
 confirmou"*) para ele ver que a decisao foi de nao aplicar, nao de
 esquecer.
 
-O usuario pode autorizar tecnica que voce NAO sugeriu (ele pediu e voce
-respeita, desde que o nome exista no indice). O usuario pode desautorizar
-tecnica que voce sugeriu (voce respeita — a sugestao permanece em
-`suggested_techniques` como registro, so nao entra em
+O usuario pode autorizar tecnica que voce NAO sugeriu — ele pediu, voce
+respeita. Mas o criterio nao e "existir no indice de manuais": e **estar
+na saida de `techniques.list` com `implemented_only: true`**, que e o
+conjunto que o motor executa de verdade. O indice de manuais documenta
+mais tecnicas do que o motor aplica, e `brief.validate` recusa o brief
+INTEIRO com `E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED` quando
+`authorized_techniques[]` cita tecnica so documentada. Se o usuario pedir
+uma dessas, diga na hora que o motor ainda nao executa aquilo e registre a
+lacuna em `assumptions` — nao grave em `authorized_techniques` para
+descobrir o erro depois da entrevista toda.
+
+O usuario pode desautorizar tecnica que voce sugeriu (voce respeita — a
+sugestao permanece em `suggested_techniques` como registro, so nao entra em
 `authorized_techniques`).
 
 **Perfil pesquisado nao vira base de conhecimento.** O que voce pesquisou
@@ -735,7 +792,11 @@ Modo rapido default:
 - pesquisa: modo rapido **nao pesquisa referencia nenhuma** e portanto nao
   grava `influence-profile.json`. Sem pesquisa nao ha achado, sem achado nao
   ha sugestao, e sem autorizacao nao ha tecnica — declare isso em
-  `assumptions` em vez de preencher o vazio de cabeca.
+  `assumptions` em vez de preencher o vazio de cabeca. E se ja existir um
+  `influence-profile.json` na pasta, **apague**: ele e de outra rodada, o
+  `run` o entregaria a `report.build` como se fosse a pesquisa desta, e o
+  modo rapido nao grava nada por cima. A remocao tambem vira linha de
+  `assumptions`.
 - `assumptions`: uma linha por decisao, sempre comecando com "Modo rapido
   —" para o usuario reconhecer.
 
@@ -746,6 +807,35 @@ perguntar**. Mostre o brief atual (resumo em portugues) e ofereca tres
 opcoes: *continuar de onde parou* (nao mexer), *refazer do zero* (apagar e
 comecar nova entrevista), ou *editar campo especifico* (pergunta cirurgica
 sobre o que mudar).
+
+**O `influence-profile.json` segue o brief — sempre.** Sao dois artefatos da
+MESMA rodada, e o perfil nao carrega vinculo nenhum com o brief (nao tem
+`source_midi`, nem sha, nem `session.id`): nada, em lugar nenhum, detecta que
+um perfil velho ficou para tras. E a fase `run` le esse arquivo e o entrega a
+`report.build` como a pesquisa desta musica — perfil de outra rodada vira
+relatorio de proveniencia fechando a cadeia com a pesquisa ERRADA, e
+apresentando isso como fato auditado. Por isso:
+
+- **Refazer do zero:** apague `influence-profile.json` junto com o brief. Se a
+  nova rodada pesquisar, grave o perfil novo; se ela nao pesquisar (modo
+  rapido, sem acesso a web, nenhuma referencia citada), **deixe o arquivo
+  apagado** e declare em `assumptions`: *"Sem pesquisa nesta rodada;
+  `influence-profile.json` removido para nao sobrar perfil de rodada
+  anterior."*
+- **Editar campo especifico:** se a edicao mexer em referencia, familia ou
+  escopo de qualquer familia pesquisada, refaca a pesquisa daquela familia e
+  **regrave o perfil inteiro**. Se a edicao nao tocar em pesquisa nenhuma
+  (por exemplo, so `sections_confirmed`), o perfil continua valido — diga
+  isso ao usuario e registre em `assumptions` que o perfil e da rodada
+  anterior e nao foi refeito.
+- **Continuar de onde parou:** antes de seguir, confira se
+  `influence-profile.json` existe e se as referencias dele batem com as do
+  brief. Se nao existir, ou se divergir, trate como pesquisa pendente — nunca
+  siga com um perfil que voce nao conferiu.
+- **Modo rapido sobre pasta usada:** o modo rapido nao pesquisa e portanto nao
+  grava perfil, mas isso NAO autoriza deixar um `influence-profile.json` velho
+  sobreviver a um brief novo. Apague o arquivo e declare a remocao em
+  `assumptions`.
 
 > Nota: se existir sessao anterior arquivada em `.midiarranger/sessions/`,
 > **nao ofereca retomada aqui**. Retomar sessao arquivada e escopo de
@@ -779,7 +869,11 @@ sobre o que mudar).
 - Nao pesquise de cabeca quando faltar acesso a web. Anuncie a falta e ofereca
   as tres saidas (fontes manuais, persona default, cancelar a referencia).
 - Nao ofereca para autorizacao tecnica que o catalogo marca como nao
-  executavel (`implemented: false`).
+  executavel (`implemented: false`), e nao aceite uma dessas quando o
+  usuario pedir pelo nome: so entra em `authorized_techniques` o que
+  `techniques.list --implemented_only` devolve. Existir no indice de
+  manuais NAO basta — `brief.validate` recusa com
+  `E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED`.
 - Nao prometa clone, copia ou reproducao exata de artista. O produto e
   arranjo influenciado por caracteristicas de performance.
 - Nao pergunte configuracao de instrumento de corda pra familia ausente do
