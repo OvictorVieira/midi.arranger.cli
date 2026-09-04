@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import mido
 
-from tests._guitar_keys_fixtures import build_track_midi, midi_bytes, note_events
+from tests._guitar_keys_fixtures import (
+    build_track_midi,
+    copy_midi,
+    midi_bytes,
+    note_events,
+    reapplied,
+)
 from tools.techniques.engine import (
     SUPPORTED_TECHNIQUES,
     apply_technique,
@@ -129,5 +135,40 @@ def test_reapplying_does_not_shorten_again():
     """Medir contra o IOI e o que impede empilhar 0.75 sobre 0.75 (AC-20)."""
 
     once = _apply(_legato_line())
-    assert midi_bytes(_apply(once)) == midi_bytes(once)
-    assert _durations(_apply(once))[60] == 360
+    before, after = reapplied(once, _apply)
+    assert after == before
+    assert _durations(once)[60] == 360
+
+
+def _long_legato_line() -> mido.MidiFile:
+    """Dezesseis notas coladas: pool grande o bastante para densidade parcial."""
+
+    return build_track_midi(
+        [(index * 480, 480, 60 + index, 90) for index in range(16)], name="Keys",
+    )
+
+
+def test_reapplying_with_fractional_density_is_stable():
+    """Regressao do achado 3: densidade fracionaria convergia para 1.0.
+
+    Nota ja encurtada para 0,75 do IOI cai no `target >= end` e SAI do pool de
+    candidatos. Com `select_by_density` a passada seguinte resorteava o resto
+    intocado e encurtava mais notas a cada aplicacao — a promessa de
+    idempotencia do docstring so valia com `density=1.0`. A decisao agora e por
+    candidato (seed + identidade), nao por sorteio dentro do pool.
+    """
+
+    for density in (0.3, 0.5, 0.9):
+        mid = _long_legato_line()
+        passes = []
+        for _ in range(3):
+            mid = _apply(copy_midi(mid), density=density)
+            passes.append(midi_bytes(mid))
+
+        shortened = [
+            duration for duration in _durations(mid).values() if duration < 480
+        ]
+        assert shortened, "a densidade precisa encurtar algo para o teste valer"
+        assert len(shortened) < 15, "e precisa deixar nota intocada tambem"
+        assert passes[1] == passes[0]
+        assert passes[2] == passes[0]

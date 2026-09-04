@@ -340,7 +340,7 @@ Mesmo formato dos outros manuais.
   "parameters": [
     {"name": "espalhamento_total_ms", "range": [30, 120], "source": "Fu, Xia, Dannenberg & Wasserman, ISMIR 2015 — modelo estatistico sobre performances de pianistas profissionais"},
     {"name": "perfil", "value": "acelerado_nao_linear", "source": "ISMIR 2015 — intervalos diminuem progressivamente do grave para o agudo"},
-    {"name": "razao_entre_intervalos_sucessivos", "value": 0.8, "source": "CONVENCAO — a fonte publica o PERFIL (intervalos decrescentes do grave para o agudo) e o TOTAL (30-120ms), mas nao a razao entre um intervalo e o seguinte; 0.8 deixa o ultimo intervalo em cerca de metade do primeiro num acorde de quatro notas — decrescimo audivel sem colapsar as duas ultimas notas no mesmo tick; razao escolhida para o motor, sem medicao publicada"}
+    {"name": "razao_entre_intervalos_sucessivos", "value": 0.8, "source": "CONVENCAO — a fonte publica o PERFIL (intervalos decrescentes do grave para o agudo) e o TOTAL (30-120ms), mas nao a razao entre um intervalo e o seguinte; 0.8 deixa o ultimo intervalo em 0,64 do primeiro num acorde de quatro notas (quatro notas sao TRES intervalos, e 0,8 ao quadrado e 0,64) — decrescimo audivel sem colapsar as duas ultimas notas no mesmo tick; razao escolhida para o motor, sem medicao publicada"}
   ],
   "tools": {"generic": {"note": "de baixo para cima; a nota de topo cai no tempo; intervalos DECRESCENTES entre notas sucessivas"}}
 }

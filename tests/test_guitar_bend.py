@@ -17,6 +17,7 @@ from tests._guitar_keys_fixtures import (
     midi_bytes,
     note_events,
     pitchwheel_events,
+    reapplied,
 )
 from tools.techniques.engine import (
     SUPPORTED_TECHNIQUES,
@@ -148,5 +149,38 @@ def test_same_seed_is_deterministic_and_idempotent():
     again = _apply(_line())
     assert midi_bytes(once) == midi_bytes(again)
 
-    twice = _apply(once)
-    assert midi_bytes(twice) == midi_bytes(once)
+    before, after = reapplied(once, _apply)
+    assert after == before
+
+
+def test_two_tracks_on_the_same_channel_are_never_bent_together():
+    """Regressao do achado 4: isolamento medido por track deixava passar acorde.
+
+    O manual e categorico que bend dentro de acorde em canal unico e
+    impossivel, porque a roda de pitch e por canal. `isolated_notes` recebia
+    uma track por vez, entao duas tracks no mesmo canal com notas simultaneas
+    — o que `_render_guitar_element` produz para cada layer, e o que
+    `_apply_style_techniques_to_edit_tracks` monta ao juntar tracks fisicas de
+    mesmo nome de DAW — passavam pelo filtro e ganhavam dois fluxos de bend
+    conflitantes no canal 0.
+    """
+
+    def power_chord() -> mido.MidiFile:
+        mid = mido.MidiFile(ticks_per_beat=480)
+        for name, pitch in (("Guitar L", 52), ("Guitar R", 59)):
+            track = mido.MidiTrack()
+            track.append(mido.MetaMessage("track_name", name=name, time=0))
+            track.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+            track.append(
+                mido.Message("note_on", channel=0, note=pitch, velocity=100, time=480)
+            )
+            track.append(
+                mido.Message("note_off", channel=0, note=pitch, velocity=0, time=1920)
+            )
+            mid.tracks.append(track)
+        return mid
+
+    result = _apply(power_chord())
+
+    assert pitchwheel_events(result) == []
+    assert midi_bytes(result) == midi_bytes(power_chord())

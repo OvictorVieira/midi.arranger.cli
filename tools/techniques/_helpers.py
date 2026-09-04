@@ -632,6 +632,77 @@ def isolated_notes(
     return sorted(out, key=lambda n: (n["start"], n["pitch"]))
 
 
+def isolated_notes_by_file(
+    mid: mido.MidiFile,
+    *,
+    skip_drum_channel: bool = True,
+) -> dict[int, list[dict[str, int]]]:
+    """`isolated_notes` avaliado no escopo do CANAL do arquivo INTEIRO.
+
+    Pitch bend e mensagem de canal, e canal nao pertence a uma track: duas
+    tracks no mesmo canal soam juntas no mesmo sintetizador. Avaliar isolamento
+    track a track deixava passar exatamente o power chord que o manual proibe —
+    `_render_guitar_element` da o mesmo `GUITAR_CHANNEL` a todas as layers, e
+    `_apply_style_techniques_to_edit_tracks` junta num so `MidiFile` todas as
+    tracks fisicas com o mesmo nome de DAW.
+
+    Devolve `{indice_da_track: [notas isoladas daquela track]}`, com `prev_end`
+    medido tambem no canal inteiro.
+    """
+    todas: list[dict[str, int]] = []
+    for track_index, track in enumerate(mid.tracks):
+        for note in iter_note_dicts(track, track_index=track_index):
+            todas.append(dict(note))
+
+    out: dict[int, list[dict[str, int]]] = {
+        track_index: [] for track_index in range(len(mid.tracks))
+    }
+    for note in isolated_notes(todas, skip_drum_channel=skip_drum_channel):
+        out[note["track_index"]].append(note)
+    for notes in out.values():
+        notes.sort(key=lambda n: (n["start"], n["pitch"]))
+    return out
+
+
+def select_by_stable_density(
+    candidates: list[dict[str, Any]],
+    *,
+    density: Any,
+    context: Any,
+    purpose: str,
+    identity: Callable[[dict[str, Any]], tuple[Any, ...]],
+    sort_key: Callable[[dict[str, Any]], tuple[Any, ...]],
+) -> list[dict[str, Any]]:
+    """Selecao por densidade em que a decisao NAO depende do pool.
+
+    `select_by_density` sorteia um subconjunto do pool: se o pool encolhe entre
+    duas passadas — e encolhe, porque tecnica aplicada tira o alvo da lista de
+    candidatos — o resorteio pega o RESTO INTOCADO e a reaplicacao converge
+    para `density=1.0`. Aqui cada candidato decide sozinho, a partir da seed do
+    contexto e da propria identidade, entao candidato recusado na primeira
+    passada continua recusado em todas as seguintes.
+
+    A contrapartida e que a contagem selecionada e binomial em torno de
+    `len(candidates) * density` em vez de exata; `density=1.0` (e qualquer
+    densidade nao numerica) continua levando o pool inteiro.
+    """
+    if not candidates:
+        return []
+    if not isinstance(density, (int, float)):
+        return sorted(candidates, key=sort_key)
+    requested = float(density)
+    if requested <= 0.0:
+        return []
+    if requested >= 1.0:
+        return sorted(candidates, key=sort_key)
+    chosen = [
+        candidate
+        for candidate in candidates
+        if context.rng(f"{purpose}:{identity(candidate)}").random() < requested
+    ]
+    return sorted(chosen, key=sort_key)
+
+
 def simultaneous_chords(
     notes: tuple[dict[str, int], ...] | list[dict[str, int]],
     *,

@@ -492,7 +492,18 @@ senoidal de pitch bend que só entra DEPOIS do atraso de início — o estágio
 termina em ciclo inteiro, no centro, antes do note_off). As duas só entram em
 nota que soa SOZINHA no canal: o manual é categórico que bend dentro de acorde
 em canal único é impossível e que vibrato de canal em power chord está errado,
-porque o guitarrista vibra UMA corda. Nenhum número novo entrou no manual de
+porque o guitarrista vibra UMA corda. "Sozinha no canal" é avaliado no
+`MidiFile` INTEIRO (`isolated_notes_by_file`), não track a track: canal não
+pertence a uma track — `_render_guitar_element` dá o mesmo `GUITAR_CHANNEL` a
+todas as layers e `_apply_style_techniques_to_edit_tracks` junta num só
+`MidiFile` todas as tracks físicas com o mesmo nome de DAW, então avaliar por
+track deixava passar exatamente o power chord proibido, com dois fluxos de
+pitch bend conflitantes no mesmo canal. O `guitar.vibrato` também fecha SEMPRE
+no centro: o evento de fase 1.0 é o único que vale 0 e, quando o arredondamento
+o punha em cima do `note_off`, ele era descartado e o bend ficava pendurado
+desafinando a nota seguinte. E o sorteio de `delay_ms`/`rate_hz` acontece antes
+de qualquer escrita: nota que não fecha um ciclo inteiro depois do sorteio sai
+byte-idêntica, sem RPN órfão. Nenhum número novo entrou no manual de
 guitarra para isso — os dois blocos já tinham todos os parâmetros com fonte.
 
 As onze técnicas restantes do
@@ -557,6 +568,26 @@ O teste `test_supported_techniques_is_derived_from_the_registry` em
 o inventário da família `keys` e afirma que as sete técnicas restantes
 documentadas continuam fora do motor.
 
+Nas três de nível `humanize`, a seleção por `density` é decidida CANDIDATO A
+CANDIDATO, a partir da seed do contexto e da identidade do alvo (canal, tick,
+altura/alturas), pelo helper `select_by_stable_density`. Sortear um subconjunto
+do pool (`select_by_density`) só é idempotente enquanto o pool não muda entre
+passadas, e ele muda justamente porque a técnica aplicada tira o alvo da lista
+de candidatos — acorde rolado deixa de ser simultâneo, nota já articulada não
+tem mais o que encurtar. Em `keys.rolled_chord` o espalhamento sorteado também
+sai da identidade do acorde, senão o valor de cada acorde dependeria de quantos
+acordes foram selecionados antes dele.
+
+O limite conhecido dessa idempotência está medido e não escondido: reaplicar
+`keys.rolled_chord` sobre a SAÍDA dela pode rolar um acorde a mais, quando o
+rolo do acorde anterior liberou a folga que faltava — as vozes de baixo dele
+passam a terminar antes. É convergente (a partir daí não anda mais), mas não é
+idempotência plena, e nenhuma escolha de seed conserta: a grandeza medida
+mudou de verdade. `render` sobre a mesma origem continua byte-idêntico, porque
+a origem é a mesma; o teste
+`test_a_chord_freed_by_the_neighbours_roll_only_settles_on_the_next_pass`
+trava exatamente esse comportamento.
+
 As quatro técnicas de teclas de EXPRESSÃO CONTÍNUA (`keys.damper_pedal`,
 `keys.expression`, `keys.modulation`, `keys.pitch_bend`) são nível `technique`
 e só acrescentam CC/pitch bend — nunca mudam pitch/posição/duração da nota
@@ -570,19 +601,35 @@ nenhum novo:
   e `fhv_melodia_enfatizada`, Goebl 2001) pela conversão logarítmica medida de
   Goebl & Bresin 2003 — nada de converter m/s linearmente para 0–127, que é o
   erro contra o qual o próprio manual avisa. Rebaixar só acontece quando o topo
-  já bateu 127, e nunca mais que `delta` pontos: é a invariante que impede a
-  inversão de intenção que `drums.accent_hierarchy` cometeu em DEIXE IR.
+  já bateu 127, e aí o piso é `127 - delta`: nenhuma voz cai mais que `delta`
+  pontos porque a queda máxima possível é `127 - (127 - delta)`. É a invariante
+  que impede a inversão de intenção que `drums.accent_hierarchy` cometeu em
+  DEIXE IR — e ela é ARITMÉTICA, não um guard que descarta acorde. O PR #120
+  trazia um `if` que prometia jogar fora "o acorde que exigiria uma queda
+  maior"; ele era inalcançável (só rodava com o topo em 127, onde a condição
+  vira `velocity > 127`) e saiu na revisão: proteção morta vendida como
+  proteção ativa é o mesmo vício de `_identity_apply`.
 - `keys.rolled_chord`: espalha o acorde com intervalos DECRESCENTES do grave
   para o agudo (o achado que dá nome ao bloco) e deixa a nota de topo no tempo,
   como manda a receita. Só entra acorde com folga real antes do tempo e escrito
   em ordem ascendente — rolar um acorde escrito fora dessa ordem exigiria
   reordenar os `note_on`, que é justamente o que o contrato `humanize` proíbe.
+  A folga se mede até o FIM da nota anterior, não até o onset dela: medindo até
+  o onset, uma nota terminando cinco ticks antes do tempo passava na guarda e o
+  `note_on` da fundamental do acorde nascia ANTES do `note_off` dela — o
+  sintetizador cortava a fundamental. Acorde cujo `note_off` deslocado cruzaria
+  o `note_off` de uma nota de fora também fica de fora, porque `note_pairs`
+  congela a ordem dos `note_off` da track inteira.
 - `keys.human_articulation`: aplica a razão de articulação medida (0,75) ao
   tell nº 2 do manual, a nota colada com 100% da duração nominal. A razão é
   medida contra o INTERVALO ATÉ O PRÓXIMO ATAQUE, não contra a duração escrita:
-  é a forma da regra Overall articulation e a única que faz a técnica ser
-  idempotente (reaplicar encontra a nota já em 0,75 do IOI). Medir contra a
-  duração encurtaria a cada passada, empilhando ornamento sobre ornamento.
+  é a forma da regra Overall articulation. Medir contra a duração encurtaria a
+  cada passada, empilhando ornamento sobre ornamento. Medir contra o IOI é
+  NECESSÁRIO para a idempotência, mas não basta — a afirmação de que era "a
+  única" coisa que fazia a técnica ser idempotente estava errada: a nota já
+  articulada some do pool de candidatos, e com sorteio sobre o pool a passada
+  seguinte resorteava o resto intocado, de modo que `density` fracionária
+  convergia para 1,0 a cada reaplicação.
 
 As sete restantes continuam fora do motor, também com motivo concreto:
 

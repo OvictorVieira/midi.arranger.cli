@@ -100,6 +100,30 @@ def control_events(mid: mido.MidiFile) -> list[tuple[int, int, int, int]]:
     return out
 
 
+def copy_midi(mid: mido.MidiFile) -> mido.MidiFile:
+    """Copia lida dos bytes salvos — `apply_technique` altera o arquivo NO LUGAR."""
+
+    return mido.MidiFile(file=io.BytesIO(midi_bytes(mid)))
+
+
+def reapplied(
+    mid: mido.MidiFile,
+    apply,
+) -> tuple[bytes, bytes]:
+    """`(bytes antes, bytes depois)` de reaplicar `apply` sobre `mid`.
+
+    `apply_technique` altera o `MidiFile` NO LUGAR. Comparar
+    `midi_bytes(apply(once))` com `midi_bytes(once)` compara o arquivo com ele
+    mesmo e passa sempre — foi assim que a nao-idempotencia com `density`
+    fracionaria atravessou a bateria de testes do PR #120. Aqui os bytes de
+    entrada sao fotografados ANTES e a reaplicacao roda sobre uma copia lida
+    desses mesmos bytes.
+    """
+
+    before = midi_bytes(mid)
+    return before, midi_bytes(apply(copy_midi(mid)))
+
+
 def midi_bytes(mid: mido.MidiFile) -> bytes:
     buffer = io.BytesIO()
     mid.save(file=buffer)

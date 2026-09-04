@@ -10,6 +10,7 @@ guitarrista vibra UMA corda. As duas coisas viram asserção aqui.
 from __future__ import annotations
 
 import mido
+import pytest
 
 from tests._guitar_keys_fixtures import (
     build_track_midi,
@@ -17,6 +18,7 @@ from tests._guitar_keys_fixtures import (
     midi_bytes,
     note_events,
     pitchwheel_events,
+    reapplied,
 )
 from tools.techniques.engine import (
     SUPPORTED_TECHNIQUES,
@@ -127,4 +129,89 @@ def test_structural_notes_are_untouched_and_range_is_declared():
 def test_same_seed_is_deterministic_and_idempotent():
     once = _apply(_long_note())
     assert midi_bytes(once) == midi_bytes(_apply(_long_note()))
-    assert midi_bytes(_apply(once)) == midi_bytes(once)
+    before, after = reapplied(once, _apply)
+    assert after == before
+
+
+@pytest.mark.parametrize("seed", [7, 11, 13])
+@pytest.mark.parametrize("duration", [480, 660, 720, 960, 1200, 1440, 1920])
+def test_the_closing_event_is_the_center_for_any_note_duration(seed, duration):
+    """Bend pendurado desafina a proxima nota — em QUALQUER duracao e seed.
+
+    Regressao do achado 2 da revisao do PR #120: o filtro `tick >= end`
+    descartava justamente o evento de fase 1.0 quando o arredondamento o punha
+    em cima do `note_off`, e ele e o UNICO que vale 0. Com seed 7 e 480 ticks a
+    saida terminava em -658 (-16 cents) pendurado, e com seed 13 em 660 ticks a
+    mesma coisa; o teste antigo so usava a fixture de 1920 com uma seed, que
+    por sorte fechava em 0.
+    """
+
+    result = apply_technique(
+        CANONICAL,
+        build_track_midi([(480, duration, 55, 100)], name="Guitar"),
+        seed=seed,
+        parameters={"density": 1.0},
+        tool="generic",
+    )
+    wheel = pitchwheel_events(result)
+
+    assert wheel, "a fixture precisa render vibrato para o teste valer"
+    last_tick, _channel, last_value = wheel[-1]
+    assert last_value == 0
+    assert last_tick < 480 + duration
+
+
+def test_a_note_that_ends_up_without_cycles_does_not_leave_rpn_behind():
+    """Regressao do achado 6: RPN escrito sem uma unica mensagem de vibrato.
+
+    O filtro de candidatos usa o PISO do atraso (100 ms) e o ciclo mais rapido
+    (1/7 Hz), mas `delay_ms` e `rate_hz` sao sorteados depois. Com seed 0 e uma
+    nota de 235 ticks (~245 ms) o sorteio nao fecha um ciclo inteiro: a nota e
+    pulada, e antes da correcao os 4 CC de RPN 0 e os 2 de RPN Null ja tinham
+    sido escritos — arquivo alterado sem nenhum efeito musical.
+    """
+
+    source = [(480, 235, 55, 100)]
+    untouched = midi_bytes(build_track_midi(source, name="Guitar"))
+    result = apply_technique(
+        CANONICAL,
+        build_track_midi(source, name="Guitar"),
+        seed=0,
+        parameters={"density": 1.0},
+        tool="generic",
+    )
+
+    assert pitchwheel_events(result) == []
+    assert control_events(result) == []
+    assert midi_bytes(result) == untouched
+
+
+def test_two_tracks_on_the_same_channel_are_never_vibrated_together():
+    """Regressao do achado 4: isolamento medido por track deixava passar acorde.
+
+    Canal nao pertence a uma track — `_render_guitar_element` da o mesmo
+    `GUITAR_CHANNEL` a todas as layers e `_apply_style_techniques_to_edit_tracks`
+    junta num so `MidiFile` as tracks fisicas de mesmo nome de DAW. Duas notas
+    simultaneas no canal 0, em tracks diferentes, sao o power chord que o manual
+    proibe vibrar.
+    """
+
+    def power_chord() -> mido.MidiFile:
+        mid = mido.MidiFile(ticks_per_beat=480)
+        for name, pitch in (("Guitar L", 52), ("Guitar R", 59)):
+            track = mido.MidiTrack()
+            track.append(mido.MetaMessage("track_name", name=name, time=0))
+            track.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
+            track.append(
+                mido.Message("note_on", channel=0, note=pitch, velocity=100, time=480)
+            )
+            track.append(
+                mido.Message("note_off", channel=0, note=pitch, velocity=0, time=1920)
+            )
+            mid.tracks.append(track)
+        return mid
+
+    result = _apply(power_chord())
+
+    assert pitchwheel_events(result) == []
+    assert midi_bytes(result) == midi_bytes(power_chord())

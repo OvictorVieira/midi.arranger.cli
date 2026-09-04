@@ -5555,8 +5555,7 @@ def _apply_guitar_bend(
     from ._helpers import (
         din_msgs_per_second_ceiling,
         first_tempo,
-        isolated_notes,
-        iter_note_dicts,
+        isolated_notes_by_file,
         select_by_density,
         technique_setup,
     )
@@ -5603,10 +5602,11 @@ def _apply_guitar_bend(
     select_rng = context.rng("bend_select")
     shape_rng = context.rng("bend_shape")
 
-    for track in mid.tracks:
+    isolated_by_track = isolated_notes_by_file(mid)
+    for track_index, track in enumerate(mid.tracks):
         candidates = [
             note
-            for note in isolated_notes(iter_note_dicts(track))
+            for note in isolated_by_track[track_index]
             if note["duration"] > min_ramp_ticks
             and note["start"] >= 1
             and note["prev_end"] < note["start"] - 1
@@ -5733,8 +5733,7 @@ def _apply_guitar_vibrato(
     from ._helpers import (
         din_msgs_per_second_ceiling,
         first_tempo,
-        isolated_notes,
-        iter_note_dicts,
+        isolated_notes_by_file,
         manual_param_of,
         select_by_density,
         technique_setup,
@@ -5781,10 +5780,11 @@ def _apply_guitar_vibrato(
     select_rng = context.rng("vibrato_select")
     shape_rng = context.rng("vibrato_shape")
 
-    for track in mid.tracks:
+    isolated_by_track = isolated_notes_by_file(mid)
+    for track_index, track in enumerate(mid.tracks):
         candidates = [
             note
-            for note in isolated_notes(iter_note_dicts(track))
+            for note in isolated_by_track[track_index]
             if note["duration"] / ticks_ms
             > delay_range[0] + 1000.0 / rate_range[1]
         ]
@@ -5799,10 +5799,34 @@ def _apply_guitar_vibrato(
         if not selected:
             continue
 
+        planned: list[tuple[dict[str, int], int, float, int, int, int]] = []
+        for note in selected:
+            delay_ms = shape_rng.uniform(*delay_range)
+            rate_hz = shape_rng.uniform(*rate_range)
+            extent_cents = shape_rng.uniform(*extent_range)
+            cycle_ms = 1000.0 / rate_hz
+            duration_ms = note["duration"] / ticks_ms
+            cycles = int((duration_ms - delay_ms) // cycle_ms)
+            if cycles < 1:
+                continue
+            amplitude = min(
+                8191,
+                int(round(extent_cents / cents_por_semitom * passos_por_semitom)),
+            )
+            if amplitude <= 0:
+                continue
+            samples = max(4, min(16, int(teto_msgs / rate_hz)))
+            begin = note["start"] + int(round(delay_ms * ticks_ms))
+            planned.append(
+                (note, cycles, cycle_ms * ticks_ms, amplitude, samples, begin)
+            )
+        if not planned:
+            continue
+
         absolute = collect_absolute(track)
         order = len(absolute)
-        channels = sorted({note["channel"] for note in selected})
-        rpn_tick = max(0, min(note["start"] for note in selected) - 2)
+        channels = sorted({note["channel"] for note, *_rest in planned})
+        rpn_tick = max(0, min(note["start"] for note, *_rest in planned) - 2)
         for channel in channels:
             for cc_num, cc_val in (
                 (101, 0), (100, 0), (6, range_semitons), (38, 0),
@@ -5817,30 +5841,16 @@ def _apply_guitar_vibrato(
                 order += 1
 
         last_tick = rpn_tick
-        for note in selected:
-            delay_ms = shape_rng.uniform(*delay_range)
-            rate_hz = shape_rng.uniform(*rate_range)
-            extent_cents = shape_rng.uniform(*extent_range)
-            cycle_ms = 1000.0 / rate_hz
-            duration_ms = note["duration"] / ticks_ms
-            cycles = int((duration_ms - delay_ms) // cycle_ms)
-            if cycles < 1:
-                continue
-            cycle_ticks = cycle_ms * ticks_ms
-            amplitude = min(
-                8191,
-                int(round(extent_cents / cents_por_semitom * passos_por_semitom)),
-            )
-            if amplitude <= 0:
-                continue
-            samples = max(4, min(16, int(teto_msgs / rate_hz)))
-            begin = note["start"] + int(round(delay_ms * ticks_ms))
+        for note, cycles, cycle_ticks, amplitude, samples, begin in planned:
             for cycle in range(cycles):
                 for step in range(1, samples + 1):
                     phase = step / samples
                     tick = begin + int(round((cycle + phase) * cycle_ticks))
+                    fecha_a_oscilacao = cycle == cycles - 1 and step == samples
                     if tick >= note["end"]:
-                        continue
+                        if not fecha_a_oscilacao:
+                            continue
+                        tick = note["end"] - 1
                     absolute.append((
                         tick, -2, order,
                         _mido.Message(
@@ -5890,10 +5900,14 @@ def _apply_keys_voice_dynamics(
         comum: o delta declarado no plano COMANDA o resultado.
       - `density` ausente ou <= 0 DESLIGA.
       - Sobe a voz de cima ate ficar `delta` acima da mais forte das outras.
-        Rebaixar so acontece quando o topo ja bateu em 127, e NUNCA mais que
-        `delta` pontos — a invariante que impede a inversao de intencao que
-        `drums.accent_hierarchy` cometeu em DEIXE IR. Acorde que exigiria uma
-        queda maior fica de fora, inteiro.
+        Rebaixar so acontece quando o topo ja bateu em 127, e ai o piso e
+        `127 - delta`: nota nenhuma cai mais que `delta` pontos, porque a
+        queda maxima possivel e `127 - (127 - delta)`. A invariante que impede
+        a inversao de intencao que `drums.accent_hierarchy` cometeu em DEIXE
+        IR e ARITMETICA, nao um guard que descarta acorde: ate a revisao do
+        PR #120 havia aqui um `if` que prometia jogar fora o acorde de queda
+        maior, e forca bruta mostrou que ele nunca disparava — protecao morta
+        vendida como protecao ativa e o mesmo vicio de `_identity_apply`.
       - Canal 9 (bateria) e ignorado: nota de kit e peca distinta, nao voz.
       - Idempotente por construcao: reaplicar encontra o acorde ja com o
         diferencial e nao mexe em nada.
@@ -5965,8 +5979,6 @@ def _apply_keys_voice_dynamics(
                 velocity_by_index[top["note_on_index"]] = new_top
                 continue
             ceiling = new_top - delta
-            if any(note["velocity"] - ceiling > delta for note in others):
-                continue
             velocity_by_index[top["note_on_index"]] = new_top
             for note in others:
                 if note["velocity"] > ceiling:
@@ -5998,7 +6010,28 @@ def _apply_keys_rolled_chord(
         aponta.
       - A nota de topo cai NO TEMPO: o rolo comeca antes do tempo e termina
         nele, como manda a receita generica do manual. Por isso o acorde so
-        entra se houver folga real antes dele.
+        entra se houver folga real antes dele, e folga se mede ate o FIM da
+        nota anterior, nunca ate o onset dela: nota que termina cinco ticks
+        antes do tempo nao deixa espaco nenhum, e o `note_on` da fundamental
+        nascendo antes desse `note_off` fazia o sintetizador cortar a
+        fundamental do acorde no `note_off` da nota velha.
+      - Acorde cujo `note_off` deslocado cruzaria o `note_off` de uma nota de
+        FORA do acorde fica de fora: `_MidiContentSnapshot.note_pairs` guarda
+        os pares na ordem dos `note_off` da track inteira, e o contrato
+        `humanize` congela essa ordem. Nota de mesma altura soando por cima do
+        acorde tambem barra o rolo — o pareamento FIFO dela e ambiguo.
+      - A decisao de rolar e o espalhamento sorteado saem da seed mais a
+        IDENTIDADE do acorde (canal, tick, alturas), nao da posicao dele num
+        pool. Acorde rolado deixa de ser simultaneo e some do pool; com
+        sorteio sobre o pool, reaplicar resorteava o RESTO INTOCADO e a
+        densidade fracionaria convergia para 1.0 a cada passada.
+      - LIMITE CONHECIDO, medido e nao escondido: reaplicar a tecnica sobre a
+        SAIDA dela pode rolar um acorde a mais quando o rolo do acorde
+        anterior liberou a folga que faltava (as vozes de baixo dele terminam
+        antes agora). E convergente e nao volta a andar, mas nao e idempotencia
+        plena — a grandeza medida mudou de verdade, e nenhuma escolha de seed
+        conserta isso. `render` sobre a mesma origem continua byte-identico,
+        porque a origem e a mesma.
       - O contrato `humanize` proibe mudar a ordem dos note_on: acorde cuja
         ordem escrita nao ja sobe do grave para o agudo fica de fora, porque
         rola-lo exigiria reordenar os eventos da track. Mesma checagem para
@@ -6011,7 +6044,7 @@ def _apply_keys_rolled_chord(
         iter_note_dicts,
         positive_density,
         rebuild_track,
-        select_by_density,
+        select_by_stable_density,
         simultaneous_chords,
     )
     from ._param_range import load_range_resolver
@@ -6043,9 +6076,6 @@ def _apply_keys_rolled_chord(
     if max_spread_ticks <= 0:
         return mid
 
-    select_rng = context.rng("rolled_chord_select")
-    shape_rng = context.rng("rolled_chord_shape")
-
     for track in mid.tracks:
         notes = iter_note_dicts(track, include_note_off_index=True)
         chords = simultaneous_chords(notes, min_size=2)
@@ -6070,22 +6100,42 @@ def _apply_keys_rolled_chord(
                 continue
             headroom = min(
                 [start]
-                + [start - other["start"] for other in outside
+                + [start - other["end"] for other in outside
                    if other["start"] < start]
             )
             if headroom <= max_spread_ticks:
                 continue
+            same_pitch = {
+                (note["channel"], note["pitch"]): note for note in chord
+            }
+            if any(
+                (other["channel"], other["pitch"]) in same_pitch
+                and other["start"]
+                < same_pitch[(other["channel"], other["pitch"])]["end"]
+                and other["end"] > start - max_spread_ticks
+                for other in outside
+            ):
+                continue
             candidates.append({
                 "start": start,
                 "pitch": pitches[0],
+                "channel": chord[0]["channel"],
+                "pitches": tuple(pitches),
                 "chord": chord,
+                "outside_ends": tuple(
+                    sorted(other["end"] for other in outside)
+                ),
             })
         if not candidates:
             continue
-        selected = select_by_density(
+        selected = select_by_stable_density(
             candidates,
             density=density,
-            rng=select_rng,
+            context=context,
+            purpose="rolled_chord_select",
+            identity=lambda item: (
+                item["channel"], item["start"], item["pitches"],
+            ),
             sort_key=lambda item: (item["start"], item["pitch"]),
         )
         if not selected:
@@ -6095,6 +6145,8 @@ def _apply_keys_rolled_chord(
         for item in selected:
             chord = item["chord"]
             size = len(chord)
+            identity = (item["channel"], item["start"], item["pitches"])
+            shape_rng = context.rng(f"rolled_chord_shape:{identity}")
             spread_ticks = int(round(
                 shape_rng.uniform(*spread_range) * ticks_ms
             ))
@@ -6117,6 +6169,15 @@ def _apply_keys_rolled_chord(
             )
             ordered_offs = [new_offs[index] for index in by_off_order]
             if ordered_offs != sorted(ordered_offs):
+                continue
+            if any(
+                new_end != note["end"]
+                and any(
+                    new_end <= outside_end <= note["end"]
+                    for outside_end in item["outside_ends"]
+                )
+                for note, new_end in zip(chord, new_offs, strict=True)
+            ):
                 continue
             for note, offset in zip(chord, offsets, strict=True):
                 shifts[note["note_on_index"]] = -offset
@@ -6152,12 +6213,17 @@ def _apply_keys_human_articulation(
         do manual ("nota com 100 por cento da duracao nominal, colada na
         seguinte"), nao os outros dois.
       - A razao e medida contra o INTERVALO ATE O PROXIMO ATAQUE do mesmo
-        canal, que e a forma da regra Overall articulation e a unica que faz
-        a tecnica ser IDEMPOTENTE: reaplicar encontra a nota ja em 0.75 do
-        IOI e nao encurta de novo. Medir contra a duracao escrita encurtaria
-        a cada passada (0.75, depois 0.5625...), empilhando ornamento sobre
-        ornamento — exatamente o que o AC-20 proibe. Nota sem proximo ataque
-        no canal fica de fora: sem IOI nao ha razao de articulacao.
+        canal, que e a forma da regra Overall articulation. Medir contra a
+        duracao escrita encurtaria a cada passada (0.75, depois 0.5625...),
+        empilhando ornamento sobre ornamento — exatamente o que o AC-20
+        proibe. Nota sem proximo ataque no canal fica de fora: sem IOI nao ha
+        razao de articulacao.
+      - Medir contra o IOI e NECESSARIO para a idempotencia, mas nao bastava:
+        nota ja em 0.75 do IOI sai do pool de candidatos, e com sorteio sobre o
+        pool a passada seguinte resorteava o resto intocado e encurtava mais
+        notas — a promessa de idempotencia so valia com `density=1.0`. Por isso
+        a selecao e decidida por candidato, a partir da seed e da identidade
+        dele (canal, tick, altura), e nao do tamanho do pool.
       - So encurta. Nota ja mais curta que a razao continua como esta —
         alongar criaria overlap que a origem nao escreveu.
       - O contrato `humanize` tambem congela o pareamento note_on/note_off:
@@ -6176,7 +6242,7 @@ def _apply_keys_human_articulation(
         iter_note_dicts,
         positive_density,
         rebuild_track,
-        select_by_density,
+        select_by_stable_density,
     )
     from ._param_range import load_range_resolver
 
@@ -6205,8 +6271,6 @@ def _apply_keys_human_articulation(
         return mid
     ticks_ms = ticks_per_beat * 1000 / first_tempo(mid)
     threshold_ticks = int(round(threshold_ms * ticks_ms))
-
-    select_rng = context.rng("articulation_select")
 
     for track in mid.tracks:
         all_notes = iter_note_dicts(track, include_note_off_index=True)
@@ -6244,10 +6308,14 @@ def _apply_keys_human_articulation(
         ]
         if not candidates:
             continue
-        selected = select_by_density(
+        selected = select_by_stable_density(
             candidates,
             density=density,
-            rng=select_rng,
+            context=context,
+            purpose="articulation_select",
+            identity=lambda note: (
+                note["channel"], note["start"], note["pitch"],
+            ),
             sort_key=lambda note: (note["start"], note["pitch"]),
         )
         if not selected:

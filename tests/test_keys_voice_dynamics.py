@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import mido
 
-from tests._guitar_keys_fixtures import build_track_midi, midi_bytes, note_events
+from tests._guitar_keys_fixtures import (
+    build_track_midi,
+    copy_midi,
+    midi_bytes,
+    note_events,
+    reapplied,
+)
 from tools.techniques.engine import (
     SUPPORTED_TECHNIQUES,
     apply_technique,
@@ -121,4 +127,57 @@ def test_timing_and_pitches_are_untouched():
 
 def test_reapplying_changes_nothing():
     once = _apply(_chord((100, 110, 90)))
-    assert midi_bytes(_apply(once)) == midi_bytes(once)
+    before, after = reapplied(once, _apply)
+    assert after == before
+
+
+def test_reapplying_with_fractional_density_is_stable():
+    """A tecnica ja acertava isto — o teste TRAVA o acerto.
+
+    Das tres tecnicas de teclas do PR #120 esta era a unica que mantinha o
+    acorde ja vozeado no pool e apenas o pulava, entao densidade fracionaria
+    nao convergia para 1.0 ao reaplicar. As outras duas foram corrigidas para
+    seguir este comportamento; aqui fica a asserção que impede a regressao.
+    """
+
+    def chords() -> mido.MidiFile:
+        return build_track_midi(
+            [
+                (bar * 480, 480, pitch, 80 + offset)
+                for bar in range(12)
+                for offset, pitch in enumerate((60, 64, 67))
+            ],
+            name="Keys",
+        )
+
+    for density in (0.3, 0.5, 0.9):
+        mid = chords()
+        passes = []
+        for _ in range(3):
+            mid = _apply(copy_midi(mid), density=density)
+            passes.append(midi_bytes(mid))
+
+        assert passes[0] != midi_bytes(chords()), (
+            "a densidade precisa vozear algo para o teste valer"
+        )
+        assert passes[1] == passes[0]
+        assert passes[2] == passes[0]
+
+
+def test_lowering_never_drops_a_voice_more_than_delta():
+    """A invariante de pressao e ARITMETICA, nao um guard que descarta acorde.
+
+    O `if any(...)` que o PR #120 anunciava como protecao ativa era inalcancavel
+    (so rodava com `new_top == 127`, onde a condicao vira `velocity > 127`) —
+    forca bruta com 200 mil acordes nunca o disparou. O ramo morto saiu; esta
+    varredura afirma a garantia que sobrou: com o topo em 127, o piso e
+    `127 - delta` e ninguem cai mais que `delta` pontos.
+    """
+
+    for low in range(1, 128, 3):
+        for middle in range(1, 128, 5):
+            source = _chord((low, middle, 127))
+            before = _velocities(source)
+            after = _velocities(_apply(_chord((low, middle, 127))))
+            for pitch, velocity in before.items():
+                assert velocity - after[pitch] <= DELTA
