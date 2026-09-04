@@ -31,6 +31,7 @@ from . import plan as plan_mod
 from . import plugins as plugins_mod
 from . import presets as presets_mod
 from . import render as render_mod
+from . import report as report_mod
 from . import sections as sections_mod
 from . import techniques as techniques_mod
 from . import tuning as tuning_mod
@@ -69,6 +70,8 @@ from .tracks import TrackNameError, name_for_element
 from .validators import (
     RenderedNote,
     RenderedTrack,
+    load_reference_sequences,
+    validate_anticopy,
     validate_artifice,
     validate_collisions,
     validate_harmony,
@@ -3242,6 +3245,302 @@ INFLUENCE_COMPILE_TOOL = Tool(
 )
 
 
+# --- report.build (issue #77) ----------------------------------------------
+#
+# Secao ADITIVA e isolada: nao reformata nada acima. A fachada nao decide
+# nada — ela roda os validadores que ja existem, colhe `covered_tracks`
+# REAIS de cada um e entrega tudo a `tools.report.build_report`, que monta a
+# cadeia `source -> finding -> mapping -> technique -> track/section ->
+# metric`. Elo que nao existir sai marcado em `missing_links`, nunca suposto.
+
+REPORT_BUILD_DESCRIPTION = (
+    "Monta o relatorio de proveniencia (`arrangement-report.json`) DEPOIS de "
+    "`render`: liga o que foi pesquisado (`influence`), de qual fonte, como "
+    "virou tecnica (`influence.compile`), em qual track/secao foi aplicada "
+    "(carimbo do MIDI renderizado) e qual evidencia mensuravel existe no "
+    "arquivo final (metrica medida + veredito dos validadores). Traz tambem "
+    "as listas de tecnicas sugeridas, autorizadas, aplicadas, ignoradas e "
+    "nao suportadas, os hashes de brief/plano/MIDI, as versoes de schema e "
+    "do dicionario de mapeamento, e um `summary_text` curto para o musico "
+    "ler. REGRA: 'aplicada_verificada' so aparece quando um validador "
+    "cobriu aquela track; sem cobertura o status e "
+    "'aplicada_nao_verificavel' — nunca invente sucesso. Passe `influence` "
+    "(o perfil da pesquisa) e `brief_path` para a cadeia ficar completa; sem "
+    "eles o relatorio sai valido, porem com os elos ausentes declarados em "
+    "`missing_links`."
+)
+
+
+def _report_brief_dict_optional(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """`brief`/`brief_path` sao OPCIONAIS aqui (ao contrario de
+    `compliance.validate`): relatorio sem brief e legitimo — so declara o
+    elo de autorizacao como ausente."""
+    if "brief" in payload and "brief_path" in payload:
+        raise ToolError(
+            "E_BRIEF_INPUT",
+            "informe no maximo um: `brief` inline OU `brief_path`",
+            hint="use brief={} para inline ou brief_path='...' para caminho",
+        )
+    if "brief" not in payload and "brief_path" not in payload:
+        return None
+    return _read_brief_dict(payload)
+
+
+def _report_validator_runs(
+    payload: dict[str, Any],
+    plan_obj: ArrangementPlan,
+    analysis: Any,
+    rendered_tracks: list[RenderedTrack],
+    source_tracks: list[RenderedTrack],
+    source_mid: mido.MidiFile,
+    rendered_mid: mido.MidiFile,
+    brief_dict: dict[str, Any] | None,
+    corpus_paths: list[Path],
+) -> list[report_mod.ValidatorRun]:
+    """Roda os sete validadores e devolve o que CADA um cobriu de verdade.
+
+    `covered_tracks` e a lista de tracks que o validador realmente recebeu —
+    e o que separa "olhou e nao achou problema" de "nem olhou".
+    """
+    covered = tuple(t.track_name for t in rendered_tracks)
+    runs: list[report_mod.ValidatorRun] = [
+        report_mod.ValidatorRun(
+            name="harmonia", executed=True, covered_tracks=covered,
+            issues=tuple(validate_harmony(rendered_tracks, plan_obj, analysis)),
+        ),
+        report_mod.ValidatorRun(
+            name="placement", executed=True, covered_tracks=covered,
+            issues=tuple(validate_placement(rendered_tracks, plan_obj, analysis)),
+        ),
+        report_mod.ValidatorRun(
+            name="artificialidade", executed=True, covered_tracks=covered,
+            issues=tuple(validate_artifice(rendered_tracks, plan_obj, analysis)),
+        ),
+        report_mod.ValidatorRun(
+            name="persona", executed=True, covered_tracks=covered,
+            issues=tuple(validate_persona(
+                plan_obj, rendered_tracks, analysis,
+                strict=bool(payload.get("strict_persona", False)),
+            )),
+        ),
+    ]
+
+    collision = validate_collisions(plan_obj)
+    runs.append(report_mod.ValidatorRun(
+        name="colisao", executed=True, covered_tracks=covered,
+        issues=tuple(collision.warnings),
+    ))
+
+    if corpus_paths:
+        corpus = load_reference_sequences([str(p) for p in corpus_paths])
+        runs.append(report_mod.ValidatorRun(
+            name="anticopia", executed=True, covered_tracks=covered,
+            issues=tuple(validate_anticopy(
+                rendered_tracks, plan_obj, analysis, corpus=corpus,
+            )),
+        ))
+    else:
+        runs.append(report_mod.ValidatorRun(
+            name="anticopia", executed=False,
+            note=(
+                "sem `reference_corpus`: a checagem comportamental de "
+                "anti-copia nao roda — ausencia de corpus nao e prova de "
+                "originalidade"
+            ),
+        ))
+
+    requisitos = (brief_dict or {}).get("requisitos")
+    if isinstance(requisitos, list):
+        compliance = validate_compliance(
+            requisitos=requisitos,
+            plan=plan_obj,
+            source_tracks=source_tracks,
+            rendered_tracks=rendered_tracks,
+            harmony_issues=list(runs[0].issues),
+            placement_issues=list(runs[1].issues),
+            source_mid=source_mid,
+            rendered_mid=rendered_mid,
+        )
+        runs.append(report_mod.ValidatorRun(
+            name="conformidade", executed=True, covered_tracks=covered,
+            issues=tuple(compliance.requisitos),
+        ))
+    else:
+        runs.append(report_mod.ValidatorRun(
+            name="conformidade", executed=False,
+            note=(
+                "brief ausente ou sem `requisitos[]`: nao ha requisito para "
+                "conferir a risca"
+            ),
+        ))
+    return runs
+
+
+def _report_build_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    plan_dict = _read_plan_dict(payload)
+    src = _resolve_midi(payload["midi_path"])
+    rendered_path = _resolve_midi(payload["rendered_path"])
+    if rendered_path.resolve() == src.resolve():
+        raise ToolError(
+            "E_RENDERED_IS_SOURCE",
+            f"rendered_path e o proprio midi_path: {src}",
+            path="rendered_path",
+        )
+
+    try:
+        plan_obj = plan_mod.from_dict(plan_dict)
+        plan_mod.validate(plan_obj, _plan_dir_from_payload(payload))
+    except (KeyError, TypeError, ValueError, plan_mod.PlanValidationError) as exc:
+        raise ToolError(
+            "E_PLAN_INVALID",
+            f"plano invalido: {exc}",
+            path="plan",
+        ) from None
+
+    brief_dict = _report_brief_dict_optional(payload)
+    corpus_paths = _resolve_reference_corpus(payload)
+
+    profile_payload = payload.get("influence")
+    profile = None
+    compiled = None
+    if profile_payload is not None:
+        try:
+            profile = influence_mod.from_dict(profile_payload)
+            influence_mod.validate(profile)
+        except influence_mod.InfluenceValidationError as exc:
+            raise ToolError(
+                "E_INFLUENCE_INVALID",
+                f"perfil de influencia invalido: {exc}",
+                path="influence",
+            ) from None
+        target_tools = payload.get("target_tools") or None
+        compiled = influence_compile_mod.compile_influence(
+            profile, target_tools=target_tools,
+        )
+
+    analysis = analyze_mod.analyze(str(src))
+    rendered_tracks, missing = _rendered_tracks_from_midi(str(rendered_path), plan_obj)
+
+    try:
+        source_pm = pretty_midi.PrettyMIDI(str(src))
+        source_mid = mido.MidiFile(str(src))
+        rendered_mid = mido.MidiFile(str(rendered_path))
+    except (OSError, ValueError, EOFError, KeyError) as exc:
+        raise ToolError(
+            "E_MIDI_PARSE",
+            f"nao foi possivel carregar MIDI para medicao: {exc}",
+        ) from None
+    source_tracks = render_mod._rendered_tracks_from_instrument_list(
+        source_pm.instruments,
+    )
+
+    runs = _report_validator_runs(
+        payload, plan_obj, analysis, rendered_tracks, source_tracks,
+        source_mid, rendered_mid, brief_dict, corpus_paths,
+    )
+
+    report = report_mod.build_report(
+        plan=plan_obj,
+        rendered_midi_path=rendered_path,
+        rendered_mid=rendered_mid,
+        influence=profile,
+        compile_result=compiled,
+        brief=brief_dict,
+        brief_path=payload.get("brief_path"),
+        validators=runs,
+    )
+
+    warnings: list[dict[str, Any]] = []
+    if missing:
+        warnings.append({
+            "code": "W_ELEMENTS_MISSING_IN_RENDER",
+            "message": (
+                f"{len(missing)} elemento(s) do plano nao tem track correspondente "
+                f"no MIDI renderizado: {missing!r}"
+            ),
+            "path": "rendered_path",
+        })
+    for entry in report["missing_links"]:
+        warnings.append({
+            "code": "W_PROVENANCE_LINK_MISSING",
+            "message": f"{entry['code']}: {entry['message']}",
+            "path": entry["path"],
+        })
+
+    out_path = payload.get("out_path")
+    written: str | None = None
+    if out_path:
+        try:
+            written = str(report_mod.write_report(report, Path(out_path).expanduser()))
+        except OSError as exc:
+            raise ToolError(
+                "E_REPORT_WRITE",
+                f"nao foi possivel gravar o relatorio em {out_path}: {exc}",
+                path="out_path",
+            ) from None
+
+    return {"report": report, "report_path": written}, warnings
+
+
+REPORT_BUILD_TOOL = Tool(
+    name="report.build",
+    description=REPORT_BUILD_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "midi_path": {"type": "string", "minLength": 1},
+            "rendered_path": {"type": "string", "minLength": 1},
+            "plan": _plan_schema(),
+            "plan_path": {"type": "string", "minLength": 1},
+            "brief": {"type": "object", "additionalProperties": True},
+            "brief_path": {"type": "string", "minLength": 1},
+            "influence": {"type": "object", "additionalProperties": True},
+            "target_tools": {
+                "type": "object",
+                "additionalProperties": {"type": "string", "minLength": 1},
+            },
+            "reference_corpus": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
+            "strict_persona": {"type": "boolean"},
+            "out_path": {"type": "string", "minLength": 1},
+        },
+        "required": ["midi_path", "rendered_path"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "report": {
+                "type": "object",
+                "properties": {
+                    "schema_version": {"type": "integer"},
+                    "versions": {"type": "object", "additionalProperties": True},
+                    "hashes": {"type": "object", "additionalProperties": True},
+                    "chain": {"type": "array"},
+                    "techniques": {"type": "object", "additionalProperties": True},
+                    "validators": {"type": "object", "additionalProperties": True},
+                    "unmapped_findings": {"type": "array"},
+                    "missing_links": {"type": "array"},
+                    "summary_text": {"type": "string"},
+                },
+                "required": [
+                    "schema_version", "versions", "hashes", "chain",
+                    "techniques", "validators", "missing_links",
+                    "summary_text",
+                ],
+                "additionalProperties": True,
+            },
+            "report_path": {"type": ["string", "null"]},
+        },
+        "required": ["report", "report_path"],
+    },
+    func=_report_build_impl,
+)
+
+
 # --- registro --------------------------------------------------------------
 
 def bootstrap() -> None:
@@ -3255,7 +3554,7 @@ def bootstrap() -> None:
         RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL, PRESETS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
         BRIEF_VALIDATE_TOOL, LEARN_TOOL, COMPLIANCE_VALIDATE_TOOL,
-        INFLUENCE_COMPILE_TOOL,
+        INFLUENCE_COMPILE_TOOL, REPORT_BUILD_TOOL,
     ):
         if _get(tool.name) is None:
             register(tool)
@@ -3276,6 +3575,7 @@ __all__ = [
     "PLAN_VALIDATE_TOOL",
     "PLUGINS_SCAN_TOOL",
     "RENDER_TOOL",
+    "REPORT_BUILD_TOOL",
     "TECHNIQUES_DESCRIBE_TOOL",
     "TECHNIQUES_LIST_TOOL",
     "VALIDATE_TOOL",

@@ -90,6 +90,7 @@ Contexto limpo a cada iteração significa que **todo estado vive em arquivo**.
 |---|---|---|
 | `arrangement-brief.json` | O que o usuário quer: demanda, respostas da entrevista, perfis de estilo pesquisados com `sources`, `researched_at` e `confidence` | fase `brief` |
 | `arrangement-plan.json` | O que será construído: seções, elementos, `style`, `edits`, `rationale` por elemento | fase `run` |
+| `arrangement-report.json` | Relatório de proveniência: a cadeia da influência ao resultado MIDI | tool `report.build`, depois do `render` |
 | `progress.txt` | Log append-only: o que cada iteração fez | fase `run` |
 | `.midiarranger/` | Estado interno, última execução, arquivo de execuções anteriores | harness |
 
@@ -596,6 +597,43 @@ Regras:
 - O formato é determinístico: mesmo plano, mesma origem, mesma seed → mesmos
   bytes.
 
+### Relatório de proveniência (issue #77)
+
+`tools/report.py` monta `arrangement-report.json` **depois** do render. Ele não pesquisa, não
+mapeia, não aplica e não valida nada por conta própria: só liga artefatos que já existem.
+
+| Elo | De onde vem |
+|---|---|
+| `source` | `InfluenceProfile.sources[]` (`tools/influence.py`) |
+| `finding` | `InfluenceProfile.findings[]` |
+| `mapping` | `compile_influence()` — `MAPPING_RULES` e `INFLUENCE_MAPPING_VERSION` (`tools/influence_compile.py`) |
+| `technique` | `plan.style.<familia>.techniques[]` + `authorized_techniques[]`/`suggested_techniques[]` do brief |
+| `track` | carimbo `meta 0x01 text` no tick 0 (`techniques=[...]`), escrito por `tools/render.py` |
+| `section` | `plan.elements[].sections` do elemento que gerou a track |
+| `metric` | medição direta do MIDI final (`tools.report.track_metrics`) + veredito dos validadores |
+
+Regra de negócio central: **"aplicada com sucesso" só aparece com evidência objetiva de
+validador.** Por isso `ValidatorRun` carrega `covered_tracks` — a lista do que o validador
+realmente recebeu. Ausência de issue não prova que ele olhou; só a cobertura prova. Sem cobertura,
+o status é `aplicada_nao_verificavel`, nunca "ok".
+
+Vocabulário de status por técnica: `aplicada_verificada`, `aplicada_com_erro`,
+`aplicada_nao_verificavel`, `autorizada_nao_aplicada`, `sugerida_nao_autorizada`,
+`nao_recomendada`, `nao_suportada`. O bloco `techniques` resume nas cinco listas que a issue pede
+(sugeridas, autorizadas, aplicadas, ignoradas, não suportadas).
+
+Todo elo que falta vira entrada em `missing_links` com código estável (`source`, `finding`,
+`mapping`, `technique`, `track`, `metric`), caminho e motivo — o relatório nunca preenche elo
+ausente com suposição, nem trata ausência de informação como aprovação.
+
+Anticópia: `InfluenceFinding.summary` **nunca** é copiado (só `summary_present`/`summary_chars`);
+`semantic_value` é citado apenas até `MAX_QUOTE_CHARS` e passa pela mesma barreira de conteúdo
+musical do perfil (`tools.influence._validate_free_string`) — string recusada vira `null` com nota
+de omissão. Da fonte, só metadado de citação (id, url, título, data).
+
+Determinismo: sem relógio, sem rede, sem `random`; toda lista sai ordenada por chave estável, e
+duas execuções da mesma entrada produzem o mesmo arquivo byte a byte.
+
 ### Paleta de transições (issue #23)
 
 Os eventos que costuram uma seção na seguinte — `riser`, `downer`, `impact` e `reverse` (meia-lua) —
@@ -702,6 +740,7 @@ saber mas não invalida. Densidade estranha é aviso. Nota fora do acorde é err
 | `learn` | Mede um corpus e devolve um perfil de estilo |
 | `plugins.scan` | Inventário de plugins AU/VST/VST3 instalados, com papel sugerido |
 | `presets.scan` | Inventário de presets/patches reais em disco, por plugin suportado |
+| `report.build` | Relatório de proveniência: fonte → achado → mapeamento → técnica → track/seção → métrica |
 
 ---
 
