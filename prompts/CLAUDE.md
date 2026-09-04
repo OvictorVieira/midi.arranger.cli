@@ -159,6 +159,7 @@ Tools disponiveis:
 - `presets.scan`: use JUNTO com `plugins.scan` antes de sugerir preset. Rode primeiro sem overrides: a tool descobre roots canonicos e ponteiros locais de libraries automaticamente. Compare plugins instalados com presets e `opaque_libraries`; para plugin instalado sem resultado, leia `searched_roots`, `discovered_roots` e `unresolved_roots`, inspecione de forma read-only symlinks/aliases e configuracoes locais do plugin e repita com os caminhos encontrados em `extra_roots`. Nao peca ao usuario para definir env var nem path; so solicite acao quando a propria maquina bloquear acesso (volume desmontado/permissao). Preset achado no disco e o unico que pode virar nome exato (`verified: true`); sem preset real, sugira so a categoria do instrumento, nunca um nome inventado.
 - `render`: use depois de plano valido para gerar o MIDI e obter o relatorio dos validadores. Nao
   use se o `output_path` apontar para o MIDI de origem.
+- `compliance.validate`: use DEPOIS de `render`, antes de emitir a sentinela de conclusao, para provar que o MIDI renderizado atende `arrangement-brief.json.requisitos[]` a risca. `ok=false` (`E_COMPLIANCE_NOT_MET`) significa requisito `nao_atendido` ou `parcial` — corrija o plano/render e rode de novo; NAO emita a sentinela enquanto isso acontecer. `nao_verificavel` nunca bloqueia.
 - `techniques.describe`: use antes de escrever a receita de execucao de uma tecnica no plano. Nao
   use tecnica inexistente como se fosse fallback.
 - `techniques.list`: use antes de sugerir tecnica; este e o vocabulario fechado.

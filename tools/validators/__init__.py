@@ -33,6 +33,16 @@ from .collision import (
     CollisionWarning,
     validate_collisions,
 )
+from .compliance import (
+    BLOCKING_STATUSES,
+    ComplianceReport,
+    RequisitoVerdict,
+    blocking_requisitos,
+    validate_compliance,
+)
+from .compliance import (
+    format_report as format_compliance_report,
+)
 from .harmony import (
     HarmonyIssue,
     RenderedNote,
@@ -84,23 +94,28 @@ from .transitions import (
 __all__ = [
     "AntiCopyIssue",
     "ArtificeIssue",
+    "BLOCKING_STATUSES",
     "CollisionRelocation",
     "CollisionReport",
     "CollisionWarning",
+    "ComplianceReport",
     "HarmonyIssue",
     "PersonaIssue",
     "PlacementIssue",
     "ReferenceSequence",
     "RenderedNote",
     "RenderedTrack",
+    "RequisitoVerdict",
     "TRANSITION_DIMENSIONS",
     "TransitionIssue",
     "anticopy_has_errors",
     "artifice_has_errors",
+    "blocking_requisitos",
     "chord_pcs",
     "degrees_pcs",
     "format_anticopy_issues",
     "format_artifice_issues",
+    "format_compliance_report",
     "format_harmony_issues",
     "format_persona_issues",
     "format_placement_issues",
@@ -115,6 +130,7 @@ __all__ = [
     "validate_anticopy",
     "validate_artifice",
     "validate_collisions",
+    "validate_compliance",
     "validate_harmony",
     "validate_persona",
     "validate_placement",
