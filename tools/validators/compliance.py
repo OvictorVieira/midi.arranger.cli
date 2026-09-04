@@ -27,9 +27,12 @@ resposta honesta para requisito que nao vira metrica automatica.
   a lista de pitches permitidos da receita `generic` (`tools[...].notes`),
   quando o manual declara essas coisas.
 - `reducao`: mede QUATRO formas de reducao, sempre origem-vs-renderizado, e
-  o eixo sai das palavras de `alvo`/`descricao`:
+  o eixo sai das palavras de `alvo`/`descricao` DEPOIS do gate de familia —
+  nenhum eixo responde por familia que nao e a do requisito:
   (a) DENSIDADE DE VIRADA de bateria (`virada`/`fill`), pela mesma deteccao
-  do motor (`tools.techniques._fill_detection`);
+  do motor (`tools.techniques._fill_detection`), so quando a familia do
+  requisito e `drums`: `fill_windows` le exclusivamente o canal 9, entao
+  julgar um baixo por ela seria veredito sobre track nunca olhada;
   (b) CAMADAS/VOZES (`camada`, `voz`, `layer`, `polifonia`, ...), pela
   polifonia medida nos onsets — maxima e media;
   (c) FAIXA DINAMICA (`dinamica`, `volume`, `velocity`, ...), pela amplitude
@@ -39,9 +42,21 @@ resposta honesta para requisito que nao vira metrica automatica.
   Sem palavra-chave nenhuma, o eixo default e DENSIDADE DE NOTAS POR
   COMPASSO, com o numero de compassos derivado do mapa real de formula de
   compasso (`learn._time_signature_map`/`_bars_before_tick`) — nunca 4/4
-  assumido. Quando o texto do requisito nomeia uma secao de `plan.sections`,
-  todas as medicoes (b)-(d) e a default sao restritas a janela daquela
-  secao, convertida de compasso para segundos pelo mapa real de tempo.
+  assumido. O denominador e o MESMO dos dois lados (o comprimento da
+  origem, contra o qual o requisito do brief foi escrito): medir cada lado
+  com o proprio comprimento faz uma track nova de `plan.elements[]` que
+  termina depois da origem "reduzir" a densidade de uma familia que saiu
+  nota a nota identica.
+  Os quatro eixos exigem queda de pelo menos `REDUCAO_MIN_PCT`, virada
+  incluida — uma nota atravessando a borda da janela nao e reducao.
+  `dinamica` e `camadas` devolvem `nao_verificavel` (que nao bloqueia)
+  quando a origem nao tem o que reduzir (amplitude ja zerada, familia ja
+  monofonica), como `virada` e `instrumentacao` sempre fizeram: culpar o
+  render por algo que nenhum render podia entregar e tao ruim quanto o
+  falso `atendido`.
+  Quando o texto do requisito nomeia uma secao de `plan.sections`, todas as
+  medicoes (b)-(d) e a default sao restritas a janela daquela secao,
+  convertida de compasso para segundos pelo mapa real de tempo.
   Continua `nao_verificavel`, com motivo concreto: requisito sem familia de
   `STYLE_FAMILIES` fora do eixo de virada (sem familia nao se sabe QUAIS
   tracks comparar), familia que nao aparece em `plan.edits[].profile` nem em
@@ -53,16 +68,36 @@ resposta honesta para requisito que nao vira metrica automatica.
   validadores harmonico/placement (nunca reimplementa deteccao de campo
   harmonico) para confirmar que o conteudo criado fica dentro do campo
   harmonico e das secoes declaradas.
-- `estilo`: mede DOIS eixos declarados em `plan.style.<familia>.parameters`,
-  sobre as tracks da familia no render — editadas (`plan.edits[].profile`) E
-  geradas (`plan.elements[].role`):
-  (a) VIES DE TIMING (`*timing*_ms` / `*_bias*` escalar): mediana do offset
-  com sinal contra a grade de semicolcheia, convertida tick->ms pelo tempo
-  VIGENTE no tick de cada nota (mapa de `learn._tempo_map`) — arquivo com
-  mudanca de andamento media errado de qualquer outro jeito;
+- `estilo`: mede DOIS eixos declarados em `plan.style.<familia>.parameters`.
+  O eixo sai do TEXTO do requisito (`alvo`/`descricao`), como em `reducao`,
+  nunca da ordem em que este arquivo testa os eixos: escolher por ordem de
+  codigo fazia o `velocity` declarado sumir do veredito e da evidencia
+  sempre que houvesse qualquer chave de timing escalar — parametro aceito,
+  validado e depois ignorado e parametro mentiroso (AGENTS.md). O parametro
+  que nao foi medido aparece em `evidencia.parametros_nao_medidos`.
+  (a) VIES DE TIMING (`*timing*` com `bias`/`offset`, escalar): mediana do
+  offset com sinal contra a grade de semicolcheia NO RENDER menos a mesma
+  mediana NA ORIGEM — o DELTA que o render acrescentou, como o resto do
+  modulo, nunca a distancia absoluta ate a grade (numa origem nao
+  quantizada o feel do take domina a mediana e reprova um render correto).
+  A conversao tick->ms usa o tempo VIGENTE no tick de cada nota (mapa de
+  `learn._tempo_map`) — arquivo com mudanca de andamento media errado de
+  qualquer outro jeito. A medicao roda so nas tracks de `plan.edits[]`: sao
+  as unicas com contraparte na origem e as unicas que o `profile` desloca.
+  Chave de DISPERSAO (`hihat_timing_sigma_ms` e afins) nao entra: sigma
+  descreve sorteio de media zero, e cobrar mediana de sigma reprova para
+  sempre um render que fez o que o manual manda.
   (b) VELOCITY (`*velocity*`/`*dinamica*`): faixa `[min, max]` vira
   percentual de notas dentro da faixa; escalar vira mediana medida contra
-  tolerancia.
+  tolerancia. Quando o parametro e declarado por uma tecnica citada em
+  `style.<familia>.techniques[]` (`velocity` e nome de parametro DE TECNICA
+  no manual: `drums.ghost_notes` -> [20, 45]), a medicao roda so sobre as
+  notas ACRESCENTADAS — mesma leitura de `_verdict_tecnica`. O nivel
+  `technique` tem contrato de nao mexer na velocity estrutural, entao
+  cobrar a faixa da familia inteira e cobrar o estruturalmente impossivel.
+  Parametro de timing de escopo de tecnica sai `nao_verificavel` citando a
+  tecnica dona: o eixo mede a mediana da familia e nao sabe isolar o
+  ornamento.
   Sobre a propagacao de `timing_bias_ms` ponta a ponta: NENHUMA tecnica de
   `tools/techniques/engine.py` consome vies direcional de timing —
   `drums.microtiming` (o unico aplicador de nivel `humanize` que mexe em
@@ -108,7 +143,7 @@ import bisect
 import statistics
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import mido
@@ -157,11 +192,14 @@ medido bater com `timing_bias_ms`/`*_bias_ms` declarado em
 `plan.style.<familia>.parameters`. `estilo` sai `parcial` ate 3x essa
 tolerancia e `nao_atendido` alem disso."""
 
+_FILL_FAMILY: str = "drums"
+"""Unica familia que o eixo de virada pode julgar: `fill_windows` le
+exclusivamente o canal 9 (bateria GM)."""
+
 _FILL_KEYWORDS: frozenset[str] = frozenset({"virada", "viradas", "fill", "fills"})
 """Palavras que precisam aparecer em `alvo`/`descricao` para o tipo
-`reducao` rodar a medicao de densidade de virada — a unica forma de
-`reducao` com deteccao mecanica pronta nesta rodada (ver docstring do
-modulo)."""
+`reducao` rodar a medicao de densidade de virada. So valem quando a familia
+do requisito e `_FILL_FAMILY` — ver a docstring do modulo."""
 
 _MIN_TIMING_SAMPLES = 4
 """Amostra minima de notas pra `estilo` (vies de timing) e `intensidade`
@@ -206,6 +244,18 @@ _INSTRUMENTATION_KEYWORDS: frozenset[str] = frozenset({
 """Palavras que escolhem o EIXO de medicao do tipo `reducao` (ver a secao
 'tipo: reducao' abaixo). Sem casamento nenhum, o eixo default e densidade de
 notas por compasso."""
+
+_TIMING_TEXT_KEYWORDS: frozenset[str] = frozenset({
+    "timing", "vies", "bias", "laid", "adiant", "atras", "grade", "feel",
+    "swing", "push", "pull", "andamento",
+})
+_VELOCITY_TEXT_KEYWORDS: frozenset[str] = frozenset({
+    "velocity", "dinamic", "dynamic", "volume", "acento", "intensidade",
+    "ghost", "forte", "fraco",
+})
+"""Palavras que escolhem o EIXO de medicao do tipo `estilo`. O eixo sai do
+TEXTO do requisito, como em `reducao` — nunca da ordem em que o codigo testa
+os eixos, que faria o parametro do outro eixo sumir do veredito."""
 
 
 # --- dataclasses de saida -----------------------------------------------------
@@ -343,14 +393,6 @@ def _mido_track_name(track: mido.MidiTrack) -> str | None:
     return None
 
 
-def _first_tempo_us(mid: mido.MidiFile) -> int:
-    for track in mid.tracks:
-        for msg in track:
-            if msg.is_meta and msg.type == "set_tempo":
-                return int(msg.tempo)
-    return 500_000  # 120 BPM — default MIDI/mido.
-
-
 def _signed_grid_offset_ticks(start_tick: int, sixteenth: int) -> int:
     """Distancia COM SINAL ate a semicolcheia mais proxima — negativo
     quando a nota antecipa a grade, positivo quando atrasa."""
@@ -390,9 +432,15 @@ def _nao_atendido(
     )
 
 
-def _nao_verificavel(req: dict[str, Any], motivo: str) -> RequisitoVerdict:
+def _nao_verificavel(
+    req: dict[str, Any], motivo: str, evidencia: dict[str, Any] | None = None,
+) -> RequisitoVerdict:
+    """`nao_verificavel` NUNCA bloqueia. Quando a medicao chegou a produzir
+    numero antes de concluir que nao ha o que verificar, o numero vai junto
+    — evidencia calculada e descartada e evidencia perdida."""
     return RequisitoVerdict(
-        req["id"], req["descricao"], STATUS_NAO_VERIFICAVEL, {}, motivo,
+        req["id"], req["descricao"], STATUS_NAO_VERIFICAVEL,
+        dict(evidencia) if evidencia else {}, motivo,
     )
 
 
@@ -576,6 +624,56 @@ def _family_track_names(
             names.append(t.track_name)
     return names
 
+def _family_added_notes(
+    plan: ArrangementPlan,
+    family: str,
+    source_by_name: dict[str, list[RenderedTrack]],
+    rendered_by_name: dict[str, list[RenderedTrack]],
+    rendered_tracks: list[RenderedTrack],
+) -> list[RenderedNote]:
+    """Notas que o arranjador ACRESCENTOU na familia: ornamentos inseridos
+    nas tracks editadas (assinatura que nao existia na origem) mais todas as
+    notas dos elementos gerados da familia.
+
+    Toda nota vinda do MIDI de origem e estrutural por definicao (AGENTS.md),
+    e o nivel `technique` so pode acrescentar ornamento sobre ela — logo
+    parametro de escopo de tecnica so pode ser cobrado destas notas.
+    """
+    edit_names = _edit_track_names(plan, family)
+    added = _added_notes(
+        _notes_for_names(source_by_name, edit_names),
+        _notes_for_names(rendered_by_name, edit_names),
+    )
+    element_ids = frozenset(_element_ids_for_family(plan, family))
+    added += _notes_for_element_ids(rendered_tracks, element_ids)
+    return added
+
+
+def _technique_scoped_parameter(family_style: Any, param_name: str) -> str | None:
+    """Canonico da tecnica declarada em `style.<familia>.techniques[]` que
+    declara `param_name` no MANUAL — `None` quando o parametro nao e de
+    escopo de tecnica.
+
+    Nunca hardcoded: le os parametros pelo indice (`build_index()`), a mesma
+    fonte que `plan.validate` usa para checar faixa de parametro.
+    """
+    if family_style is None:
+        return None
+    declared = list(getattr(family_style, "techniques", ()) or ())
+    if not declared:
+        return None
+    idx = build_index()
+    needle = _normalize_text(param_name)
+    for t in declared:
+        resolved = idx.get(t.name)
+        if resolved is None:
+            continue
+        for p in resolved.parameters:
+            if _normalize_text(p.name) == needle:
+                return resolved.canonical
+    return None
+
+
 # --- tipo: tecnica -------------------------------------------------------
 
 
@@ -640,13 +738,9 @@ def _verdict_tecnica(
         )
     canonical, technique = match
 
-    edit_names = _edit_track_names(plan, family)
-    element_ids = frozenset(_element_ids_for_family(plan, family))
-
-    source_notes = _notes_for_names(source_by_name, edit_names)
-    rendered_edit_notes = _notes_for_names(rendered_by_name, edit_names)
-    added = _added_notes(source_notes, rendered_edit_notes)
-    added += _notes_for_element_ids(rendered_tracks, element_ids)
+    added = _family_added_notes(
+        plan, family, source_by_name, rendered_by_name, rendered_tracks,
+    )
 
     velocity_range: tuple[float, float] | None = None
     allowed_pitches: frozenset[int] | None = None
@@ -716,9 +810,17 @@ def _reducao_pct(antes: float, depois: float) -> float:
 
 def _reducao_virada(
     req: dict[str, Any], source_mid: mido.MidiFile, rendered_mid: mido.MidiFile,
+    base: dict[str, Any],
 ) -> RequisitoVerdict:
     """Densidade de virada de bateria, via `tools.techniques._fill_detection`
-    — a mesma deteccao que o motor usa, nunca uma reimplementacao."""
+    — a mesma deteccao que o motor usa, nunca uma reimplementacao.
+
+    So responde por BATERIA: `fill_windows` le exclusivamente o canal 9, e o
+    chamador (`_verdict_reducao`) so despacha para ca quando a familia do
+    requisito e `drums`. Requisito de outra familia que fale em "virada" e
+    medido nos eixos daquela familia — julgar um baixo pela virada da
+    bateria e veredito sobre track que nunca foi olhada.
+    """
     ppq = source_mid.ticks_per_beat or 0
     if ppq <= 0:
         return _nao_verificavel(req, "MIDI de origem sem ticks_per_beat valido")
@@ -751,16 +853,28 @@ def _reducao_virada(
     antes = _count_in_windows(source_notes, windows)
     depois = _count_in_windows(rendered_notes, windows)
 
-    evidencia = {
+    evidencia = dict(base)
+    evidencia.update({
         "eixo": "virada",
         "viradas_antes": len(windows),
         "viradas_depois": len(rendered_windows),
         "notas_em_virada_antes": antes,
         "notas_em_virada_depois": depois,
         "reducao_pct": _reducao_pct(antes, depois),
-    }
+        "minimo_pct": REDUCAO_MIN_PCT,
+    })
     if depois >= antes:
         return _nao_atendido(req, evidencia, "densidade de virada nao caiu")
+    if evidencia["reducao_pct"] < REDUCAO_MIN_PCT:
+        # Mesmo piso dos demais eixos de `reducao`: uma nota atravessando a
+        # borda da janela (a humanizacao mexe no timing) nao e reducao de
+        # virada — seria `atendido` por ruido.
+        return _parcial(
+            req, evidencia,
+            f"a densidade de virada caiu apenas {evidencia['reducao_pct']}%, "
+            f"abaixo do minimo de {REDUCAO_MIN_PCT}% que este validador conta "
+            f"como reducao efetiva",
+        )
     if not rendered_windows:
         return _parcial(
             req, evidencia,
@@ -809,6 +923,7 @@ def _reducao_instrumentacao(
             req,
             "nenhuma track da familia soa na origem — nao ha instrumentacao "
             "a reduzir (comparacao seria origem-vs-vazio)",
+            evidencia,
         )
     if tracks_depois < tracks_antes:
         return _atendido(req, evidencia)
@@ -846,13 +961,33 @@ def _reducao_camadas(
     })
     media_caiu = evidencia["reducao_pct"] >= REDUCAO_MIN_PCT
     max_caiu = max_depois < max_antes
+    if max_antes <= 1 and max_depois <= max_antes and media_depois <= media_antes:
+        # Origem monofonica: nao existe sobreposicao de vozes a reduzir.
+        # Mesma honestidade de `_reducao_virada`/`_reducao_instrumentacao` —
+        # `nao_atendido` aqui afirmaria falha do render sobre algo que
+        # nenhum render podia entregar.
+        return _nao_verificavel(
+            req,
+            "a familia ja e monofonica na origem (polifonia maxima "
+            f"{max_antes}) — nao ha sobreposicao de vozes a reduzir",
+            evidencia,
+        )
     if media_caiu and max_depois <= max_antes:
         return _atendido(req, evidencia)
-    if media_caiu or max_caiu:
+    if media_caiu:
         return _parcial(
             req, evidencia,
-            f"polifonia media {media_antes} -> {media_depois} e maxima "
-            f"{max_antes} -> {max_depois}: so uma das duas dimensoes caiu",
+            f"a polifonia media caiu {evidencia['reducao_pct']}% "
+            f"({media_antes} -> {media_depois}), mas a maxima subiu "
+            f"({max_antes} -> {max_depois})",
+        )
+    if max_caiu:
+        return _parcial(
+            req, evidencia,
+            f"a polifonia maxima caiu ({max_antes} -> {max_depois}), mas a "
+            f"media caiu apenas {evidencia['reducao_pct']}%, abaixo do minimo "
+            f"de {REDUCAO_MIN_PCT}% que este validador conta como reducao "
+            f"efetiva",
         )
     return _nao_atendido(
         req, evidencia,
@@ -882,14 +1017,39 @@ def _reducao_dinamica(
     })
     amplitude_caiu = evidencia["reducao_pct"] >= REDUCAO_MIN_PCT
     desvio_caiu = depois["desvio"] < antes["desvio"]
+    if (
+        antes["amplitude"] == 0 and antes["desvio"] == 0
+        and depois["amplitude"] <= antes["amplitude"]
+        and depois["desvio"] <= antes["desvio"]
+    ):
+        # Origem 100% numa unica velocity: a faixa dinamica ja esta no piso
+        # e o render tambem nao a abriu. Nenhum render possivel baixa
+        # amplitude abaixo de zero — `nao_atendido` seria culpar o render por
+        # algo impossivel. (Render que ABRE a faixa contra um pedido de
+        # fechar continua caindo no `nao_atendido` abaixo: ai a falha e real.)
+        return _nao_verificavel(
+            req,
+            "a origem ja esta em uma unica velocity (amplitude 0, desvio 0) "
+            "— nao ha faixa dinamica a reduzir",
+            evidencia,
+        )
     if amplitude_caiu and desvio_caiu:
         return _atendido(req, evidencia)
-    if amplitude_caiu or desvio_caiu:
+    if amplitude_caiu:
         return _parcial(
             req, evidencia,
-            f"amplitude de velocity {antes['amplitude']} -> "
-            f"{depois['amplitude']} e desvio {antes['desvio']} -> "
-            f"{depois['desvio']}: so uma das duas dimensoes caiu",
+            f"a amplitude de velocity caiu {evidencia['reducao_pct']}% "
+            f"({antes['amplitude']} -> {depois['amplitude']}), mas o desvio "
+            f"nao caiu ({antes['desvio']} -> {depois['desvio']})",
+        )
+    if desvio_caiu:
+        return _parcial(
+            req, evidencia,
+            f"o desvio de velocity caiu ({antes['desvio']} -> "
+            f"{depois['desvio']}), mas a amplitude caiu apenas "
+            f"{evidencia['reducao_pct']}%, abaixo do minimo de "
+            f"{REDUCAO_MIN_PCT}% que este validador conta como reducao "
+            f"efetiva",
         )
     return _nao_atendido(
         req, evidencia,
@@ -902,28 +1062,38 @@ def _reducao_densidade(
     req: dict[str, Any],
     source_notes: list[RenderedNote],
     rendered_notes: list[RenderedNote],
-    bars_antes: float,
-    bars_depois: float,
+    bars: float,
     base: dict[str, Any],
 ) -> RequisitoVerdict:
     """Eixo default: densidade de notas POR COMPASSO, com o numero de
     compassos derivado do mapa real de formula de compasso (nunca 4/4
-    assumido)."""
-    if bars_antes <= 0 or bars_depois <= 0:
+    assumido).
+
+    O denominador e o MESMO dos dois lados — um quadro de referencia, nao
+    duas medidas independentes. Medir `len(origem)/compassos_da_origem`
+    contra `len(render)/compassos_do_render` compara duas escalas
+    diferentes: `plan.elements[]` gera track nova, e uma que termine depois
+    da ultima nota da origem alonga o arquivo renderizado e "reduz" a
+    densidade de uma familia que saiu NOTA A NOTA IDENTICA (render mais
+    curto produz o espelho, reprovando um render correto). O quadro de
+    referencia e o comprimento da ORIGEM, que e contra o que o requisito do
+    brief foi escrito — mesma convencao que o recorte por secao ja usa, onde
+    `end_bar - start_bar` vale para os dois lados.
+    """
+    if bars <= 0:
         return _nao_verificavel(
             req,
             "nao foi possivel derivar o numero de compassos do MIDI "
             "(formula de compasso/ppq invalidos) para medir densidade",
         )
-    densidade_antes = round(len(source_notes) / bars_antes, 3)
-    densidade_depois = round(len(rendered_notes) / bars_depois, 3)
+    densidade_antes = round(len(source_notes) / bars, 3)
+    densidade_depois = round(len(rendered_notes) / bars, 3)
     evidencia = dict(base)
     evidencia.update({
         "eixo": "densidade",
         "notas_antes": len(source_notes),
         "notas_depois": len(rendered_notes),
-        "compassos_antes": round(bars_antes, 3),
-        "compassos_depois": round(bars_depois, 3),
+        "compassos_referencia": round(bars, 3),
         "densidade_por_compasso_antes": densidade_antes,
         "densidade_por_compasso_depois": densidade_depois,
         "reducao_pct": _reducao_pct(densidade_antes, densidade_depois),
@@ -954,17 +1124,14 @@ def _verdict_reducao(
     rendered_mid: mido.MidiFile,
 ) -> RequisitoVerdict:
     haystack = _normalize_text(f"{req['alvo']} {req['descricao']}")
-    if _has_keyword(haystack, _FILL_KEYWORDS):
-        return _reducao_virada(req, source_mid, rendered_mid)
 
     family = req["familia"]
     if family not in STYLE_FAMILIES:
         return _nao_verificavel(
             req,
-            f"tipo 'reducao' fora do eixo de virada precisa de familia em "
-            f"{list(STYLE_FAMILIES)} para saber QUAIS tracks comparar "
-            f"(plan.edits[].profile / plan.elements[].role); recebido "
-            f"{family!r}",
+            f"tipo 'reducao' precisa de familia em {list(STYLE_FAMILIES)} "
+            f"para saber QUAIS tracks comparar (plan.edits[].profile / "
+            f"plan.elements[].role); recebido {family!r}",
         )
 
     src_tracks = _family_source_tracks(plan, family, source_by_name)
@@ -979,8 +1146,14 @@ def _verdict_reducao(
             f"renderizado",
         )
 
-    section = _match_section(plan, haystack)
     base: dict[str, Any] = {"familia": family}
+    if family == _FILL_FAMILY and _has_keyword(haystack, _FILL_KEYWORDS):
+        # Eixo de virada: `fill_windows` le exclusivamente o canal 9, entao
+        # so a familia `drums` pode ser julgada por ele. Requisito de outra
+        # familia que fale em "virada" segue para os eixos daquela familia.
+        return _reducao_virada(req, source_mid, rendered_mid, base)
+
+    section = _match_section(plan, haystack)
     src_window: tuple[float, float] | None = None
     ren_window: tuple[float, float] | None = None
     if section is not None:
@@ -1013,13 +1186,10 @@ def _verdict_reducao(
             req, src_tracks, ren_tracks, src_window, ren_window, base,
         )
     if section is not None:
-        bars_antes = bars_depois = float(max(1, section.end_bar - section.start_bar))
+        bars = float(max(1, section.end_bar - section.start_bar))
     else:
-        bars_antes = _total_bars(source_mid)
-        bars_depois = _total_bars(rendered_mid)
-    return _reducao_densidade(
-        req, source_notes, rendered_notes, bars_antes, bars_depois, base,
-    )
+        bars = _total_bars(source_mid)
+    return _reducao_densidade(req, source_notes, rendered_notes, bars, base)
 
 
 # --- tipo: criacao ---------------------------------------------------------
@@ -1089,10 +1259,36 @@ def _verdict_criacao(
 # --- tipo: estilo -----------------------------------------------------------
 
 
+_TIMING_DISPERSION_MARKERS: tuple[str, ...] = (
+    "sigma", "jitter", "desvio", "stdev", "spread", "variacao", "aleator",
+    "random", "range", "autocorr",
+)
+"""Marcadores de DISPERSAO. `hihat_timing_sigma_ms` (8.7ms, parametro real
+de `drums.microtiming`) descreve o desvio-padrao de um sorteio gaussiano de
+MEDIA ZERO: a mediana medida nunca chega perto de 8.7, e tratar sigma como
+alvo de mediana reprova para sempre um render que fez exatamente o que o
+manual manda. Sigma nao e vies."""
+
+_TIMING_BIAS_MARKERS: tuple[str, ...] = ("bias", "offset", "vies")
+"""Marcadores de vies DIRECIONAL — a unica coisa que o eixo de timing sabe
+medir (mediana com sinal). Chave de timing sem nenhum deles nao declara
+direcao e nao vira alvo de mediana."""
+
+
 def _timing_parameter_key(parameters: dict[str, Any]) -> str | None:
+    """Chave de `parameters` que declara vies DIRECIONAL de timing.
+
+    Casa `timing` + marcador de vies (`bias`/`offset`/`vies`) e recusa
+    marcador de dispersao (`sigma`, `jitter`, ...): dispersao e vies sao
+    grandezas diferentes, e so o vies tem mediana com sinal para comparar.
+    """
     for key in parameters:
-        lower = key.lower()
-        if "timing" in lower and ("ms" in lower or "bias" in lower):
+        lower = _normalize_text(key)
+        if "timing" not in lower:
+            continue
+        if any(marker in lower for marker in _TIMING_DISPERSION_MARKERS):
+            continue
+        if any(marker in lower for marker in _TIMING_BIAS_MARKERS):
             return key
     return None
 
@@ -1105,49 +1301,90 @@ def _velocity_parameter_key(parameters: dict[str, Any]) -> str | None:
     return None
 
 
-def _estilo_timing(
-    req: dict[str, Any],
-    family: str,
-    timing_key: str,
-    target_ms: float,
-    track_names: list[str],
-    rendered_mid: mido.MidiFile,
-) -> RequisitoVerdict:
-    """Vies de timing REAL das tracks da familia contra a grade de
-    semicolcheia. A conversao tick->ms usa o tempo VIGENTE no tick da nota
-    (mapa de tempo de `learn._tempo_map`), nao o primeiro `set_tempo` do
-    arquivo — arquivo com mudanca de andamento media errado de outro jeito."""
-    ppq = rendered_mid.ticks_per_beat or 0
+def _grid_offsets_ms(
+    mid: mido.MidiFile, track_names: list[str],
+) -> list[float]:
+    """Offset COM SINAL de cada nota das tracks nomeadas ate a semicolcheia
+    mais proxima, em ms. A conversao tick->ms usa o tempo VIGENTE no tick da
+    nota (mapa de `learn._tempo_map`), nao o primeiro `set_tempo` do arquivo
+    — arquivo com mudanca de andamento media errado de qualquer outro jeito."""
+    ppq = mid.ticks_per_beat or 0
     if ppq <= 0:
-        return _nao_verificavel(req, "MIDI renderizado sem ticks_per_beat valido")
+        return []
     sixteenth = max(1, ppq // 4)
-    tempo_ticks, tempo_values = _tempo_arrays(rendered_mid)
-
+    tempo_ticks, tempo_values = _tempo_arrays(mid)
     offsets_ms: list[float] = []
-    for track in rendered_mid.tracks:
+    for track in mid.tracks:
         if _mido_track_name(track) not in track_names:
             continue
         for note in iter_note_dicts(track):
             offset_ticks = _signed_grid_offset_ticks(note["start"], sixteenth)
             tempo_us = _tempo_at(tempo_ticks, tempo_values, note["start"])
             offsets_ms.append(offset_ticks * tempo_us / (ppq * 1000.0))
+    return offsets_ms
 
-    if len(offsets_ms) < _MIN_TIMING_SAMPLES:
+
+def _estilo_timing(
+    req: dict[str, Any],
+    family: str,
+    timing_key: str,
+    target_ms: float,
+    edit_track_names: list[str],
+    source_mid: mido.MidiFile,
+    rendered_mid: mido.MidiFile,
+) -> RequisitoVerdict:
+    """Vies de timing que o render ACRESCENTOU sobre a origem.
+
+    Mede o DELTA origem->render, como o resto deste modulo, nunca a
+    distancia absoluta do render ate a grade de semicolcheia: numa origem
+    nao quantizada (take humano tocando 12ms atras da grade) o feel da
+    origem domina a mediana e reprova um render que aplicou exatamente o
+    vies pedido. O que o plano declara e o deslocamento que o arranjador
+    deve INTRODUZIR, e o unico jeito de medir isso e subtrair a mediana da
+    origem da mediana do render.
+
+    A medicao roda SO nas tracks de `plan.edits[]` da familia: sao as unicas
+    que tem contraparte na origem (logo, delta) e as unicas que o
+    `profile` da edit desloca. Track GERADA por `plan.elements[]` nasce na
+    grade por construcao — jogar sua mediana aqui dentro so dilui o vies
+    das editadas.
+    """
+    ppq = rendered_mid.ticks_per_beat or 0
+    if ppq <= 0:
+        return _nao_verificavel(req, "MIDI renderizado sem ticks_per_beat valido")
+    if not edit_track_names:
         return _nao_verificavel(
             req,
-            f"apenas {len(offsets_ms)} nota(s) na(s) track(s) da familia "
+            f"a familia {family!r} nao tem track em plan.edits[] — vies de "
+            f"timing e medido como delta origem->render, e track gerada por "
+            f"plan.elements[] nao tem contraparte na origem para comparar",
+        )
+
+    source_offsets = _grid_offsets_ms(source_mid, edit_track_names)
+    offsets_ms = _grid_offsets_ms(rendered_mid, edit_track_names)
+
+    if len(offsets_ms) < _MIN_TIMING_SAMPLES or len(source_offsets) < _MIN_TIMING_SAMPLES:
+        return _nao_verificavel(
+            req,
+            f"apenas {len(source_offsets)} nota(s) na origem e "
+            f"{len(offsets_ms)} no render nas track(s) editadas da familia "
             f"{family!r} — amostra insuficiente para medir vies de timing",
         )
 
-    median_ms = statistics.median(offsets_ms)
+    median_origem = statistics.median(source_offsets)
+    median_render = statistics.median(offsets_ms)
+    median_ms = median_render - median_origem
     diff = abs(median_ms - target_ms)
     evidencia = {
         "eixo": "timing",
         "parametro": timing_key,
         "alvo_ms": target_ms,
         "medido_ms": round(median_ms, 3),
+        "mediana_origem_ms": round(median_origem, 3),
+        "mediana_render_ms": round(median_render, 3),
         "tolerancia_ms": TIMING_BIAS_TOLERANCE_MS,
         "n_amostras": len(offsets_ms),
+        "n_amostras_origem": len(source_offsets),
     }
     if diff <= TIMING_BIAS_TOLERANCE_MS:
         return _atendido(req, evidencia)
@@ -1170,15 +1407,23 @@ def _estilo_velocity(
     velocity_key: str,
     target: Any,
     notes: list[RenderedNote],
+    escopo: str,
 ) -> RequisitoVerdict:
-    """Velocity das notas da familia contra o parametro declarado: par
+    """Velocity das notas medidas contra o parametro declarado: par
     `[min, max]` vira percentual de notas DENTRO da faixa; escalar vira
-    mediana medida contra tolerancia."""
+    mediana medida contra tolerancia.
+
+    `escopo` diz de ONDE vieram as notas — `familia` (todas as notas da
+    familia no render) ou `tecnica:<canonico>` (so as notas ACRESCENTADAS,
+    quando o parametro e de escopo de tecnica). O chamador decide; ver
+    `_verdict_estilo`.
+    """
     if len(notes) < _MIN_TIMING_SAMPLES:
         return _nao_verificavel(
             req,
-            f"apenas {len(notes)} nota(s) na familia {family!r} no MIDI "
-            f"renderizado — amostra insuficiente para medir velocity",
+            f"apenas {len(notes)} nota(s) medida(s) na familia {family!r} "
+            f"(escopo {escopo}) no MIDI renderizado — amostra insuficiente "
+            f"para medir velocity",
         )
     velocities = [n.velocity for n in notes]
     if isinstance(target, (list, tuple)):
@@ -1188,6 +1433,7 @@ def _estilo_velocity(
         evidencia = {
             "eixo": "velocity",
             "parametro": velocity_key,
+            "escopo": escopo,
             "faixa_alvo": [lo, hi],
             "notas_medidas": len(velocities),
             "notas_dentro_da_faixa": dentro,
@@ -1199,13 +1445,13 @@ def _estilo_velocity(
         if pct >= VELOCITY_RANGE_PARTIAL_PCT:
             return _parcial(
                 req, evidencia,
-                f"apenas {pct}% das notas da familia caem na faixa "
-                f"[{lo}, {hi}] declarada em {velocity_key!r}",
+                f"apenas {pct}% das notas medidas (escopo {escopo}) caem "
+                f"na faixa [{lo}, {hi}] declarada em {velocity_key!r}",
             )
         return _nao_atendido(
             req, evidencia,
-            f"so {pct}% das notas da familia respeitam a faixa [{lo}, {hi}] "
-            f"declarada em {velocity_key!r}",
+            f"so {pct}% das notas medidas (escopo {escopo}) respeitam a "
+            f"faixa [{lo}, {hi}] declarada em {velocity_key!r}",
         )
 
     target_v = float(target)
@@ -1214,6 +1460,7 @@ def _estilo_velocity(
     evidencia = {
         "eixo": "velocity",
         "parametro": velocity_key,
+        "escopo": escopo,
         "alvo": target_v,
         "mediana_medida": round(median_v, 3),
         "tolerancia": VELOCITY_MEDIAN_TOLERANCE,
@@ -1237,8 +1484,10 @@ def _estilo_velocity(
 def _verdict_estilo(
     req: dict[str, Any],
     plan: ArrangementPlan,
+    source_by_name: dict[str, list[RenderedTrack]],
     rendered_by_name: dict[str, list[RenderedTrack]],
     rendered_tracks: list[RenderedTrack],
+    source_mid: mido.MidiFile,
     rendered_mid: mido.MidiFile,
 ) -> RequisitoVerdict:
     family = req["familia"]
@@ -1266,33 +1515,87 @@ def _verdict_estilo(
             f"plan.elements[].role — nao ha track da familia para medir",
         )
 
+    haystack = _normalize_text(f"{req['alvo']} {req['descricao']}")
     timing_key = _timing_parameter_key(parameters)
-    if timing_key is not None and not isinstance(parameters[timing_key], (list, tuple)):
-        return _estilo_timing(
-            req, family, timing_key, float(parameters[timing_key]),
-            track_names, rendered_mid,
-        )
-
+    if timing_key is not None and isinstance(parameters[timing_key], (list, tuple)):
+        timing_key = None  # o eixo de timing so mede alvo escalar
     velocity_key = _velocity_parameter_key(parameters)
-    if velocity_key is not None:
-        notes = [
-            n
-            for t in _family_rendered_tracks(
-                plan, family, rendered_by_name, rendered_tracks,
-            )
-            for n in t.notes
-        ]
-        return _estilo_velocity(
-            req, family, velocity_key, parameters[velocity_key], notes,
+
+    # O eixo sai do TEXTO do requisito, como em `reducao` — nunca da ordem
+    # em que este arquivo testa os eixos. Escolher por ordem de codigo faz o
+    # `velocity` declarado sumir do veredito e da evidencia sempre que
+    # houver qualquer chave de timing escalar: parametro aceito, validado e
+    # depois ignorado e parametro mentiroso (AGENTS.md).
+    quer_timing = _has_keyword(haystack, _TIMING_TEXT_KEYWORDS)
+    quer_velocity = _has_keyword(haystack, _VELOCITY_TEXT_KEYWORDS)
+    if quer_velocity and not quer_timing:
+        ordem = (("velocity", velocity_key), ("timing", timing_key))
+    else:
+        ordem = (("timing", timing_key), ("velocity", velocity_key))
+
+    eixo, chave = next(((e, k) for e, k in ordem if k is not None), (None, None))
+    if eixo is None or chave is None:
+        return _nao_verificavel(
+            req,
+            f"nenhum parametro de plan.style.{family}.parameters "
+            f"({sorted(parameters)}) casa com um eixo que este validador sabe "
+            f"medir no MIDI: vies de timing (*timing*_bias/_offset, escalar) "
+            f"ou velocity (*velocity*/*dinamica*, escalar ou faixa "
+            f"[min, max])",
         )
 
-    return _nao_verificavel(
-        req,
-        f"nenhum parametro de plan.style.{family}.parameters "
-        f"({sorted(parameters)}) casa com um eixo que este validador sabe "
-        f"medir no MIDI: vies de timing (*_timing*_ms / *_bias*, escalar) ou "
-        f"velocity (*velocity*/*dinamica*, escalar ou faixa [min, max])",
-    )
+    extra: dict[str, Any] = {
+        "parametros_declarados": sorted(parameters),
+        "parametros_nao_medidos": sorted(k for k in parameters if k != chave),
+    }
+
+    if eixo == "timing":
+        scoped = _technique_scoped_parameter(family_style, chave)
+        if scoped is not None:
+            # Parametro de escopo de tecnica (ex.: `timing_offset_ms_laidback`
+            # de `drums.ghost_notes`) descreve o deslocamento do ORNAMENTO,
+            # nao a mediana da familia inteira. O eixo de timing mede a
+            # mediana das tracks editadas e nao sabe isolar o ornamento, entao
+            # a resposta honesta e nao medir — nunca reprovar a familia por um
+            # numero que nunca foi promessa dela.
+            return _nao_verificavel(
+                req,
+                f"{chave!r} e parametro da tecnica {scoped!r} no manual: vale "
+                f"para o ornamento que a tecnica insere, nao para a mediana de "
+                f"timing da familia {family!r}, que e o que este eixo mede",
+                extra,
+            )
+        verdict = _estilo_timing(
+            req, family, chave, float(parameters[chave]),
+            _edit_track_names(plan, family), source_mid, rendered_mid,
+        )
+    else:
+        scoped = _technique_scoped_parameter(family_style, chave)
+        if scoped is not None:
+            # Mesma leitura de `_verdict_tecnica`: `velocity` e nome de
+            # parametro DE TECNICA no manual (ex.: `drums.ghost_notes` ->
+            # [20, 45]) e o nivel `technique` tem contrato de NAO mexer na
+            # velocity estrutural. Exigir a faixa da familia inteira e exigir
+            # o estruturalmente impossivel; a faixa vale para o que a tecnica
+            # ACRESCENTOU.
+            notes = _family_added_notes(
+                plan, family, source_by_name, rendered_by_name, rendered_tracks,
+            )
+            escopo = f"tecnica:{scoped}"
+        else:
+            notes = [
+                n
+                for t in _family_rendered_tracks(
+                    plan, family, rendered_by_name, rendered_tracks,
+                )
+                for n in t.notes
+            ]
+            escopo = "familia"
+        verdict = _estilo_velocity(
+            req, family, chave, parameters[chave], notes, escopo,
+        )
+
+    return replace(verdict, evidencia={**verdict.evidencia, **extra})
 
 
 # --- tipo: restricao ---------------------------------------------------------
@@ -1445,7 +1748,8 @@ def validate_compliance(
             )
         elif tipo == "estilo":
             v = _verdict_estilo(
-                req, plan, rendered_by_name, rendered_tracks, rendered_mid,
+                req, plan, source_by_name, rendered_by_name, rendered_tracks,
+                source_mid, rendered_mid,
             )
         elif tipo == "restricao":
             v = _verdict_restricao(req, plan, rendered_tracks)
