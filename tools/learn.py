@@ -34,13 +34,21 @@ Por isso este modulo separa DUAS categorias de dimensao:
   vazio de conteudo.
 
 `style.<familia>.parameters` (o bloco que de fato entra no plano, ver
-`tools/contract.py::_plan_family_style_schema`) so recebe os numeros das
-dimensoes com `confidence != "default"`. Dimensao degenerada fica de fora —
-e uma LACUNA declarada (mesma logica de "parametro sem value/range/source"
-do AGENTS.md), nunca um numero fabricado. O detalhe completo de toda
-dimensao — medida ou nao, com a razao explicita — vive em
-`LearnResult.measurements`, fora do `style` (o schema de `style` so aceita
-numero escalar ou par `[min, max]`; nao ha onde guardar vocabulario ali).
+`tools/contract.py::_plan_family_style_schema`) SEMPRE sai vazio: nenhuma
+tecnica registrada em `tools/techniques/engine.py` declara ou le um
+parametro com o nome das dimensoes medidas aqui, e `tools/render.py` so
+repassa `style.parameters` para dentro de `context.parameters` de uma
+tecnica de dentro do loop `for technique in style.techniques` — que fica
+vazio, porque `learn` nao autoriza tecnica nenhuma (issue #18 nao aciona
+`authorized_techniques`, ver AGENTS.md). Colocar esses numeros em
+`parameters` seria exatamente o "parametro mentiroso" que este repositorio
+ja rejeitou (`_identity_apply`): aceito/validado pelo schema, ignorado em
+silencio pelo motor. O detalhe completo de toda dimensao — medida ou nao,
+com a razao explicita — vive SO em `LearnResult.measurements`, a unica
+fonte de verdade para esses numeros (o schema de `style` tambem so aceita
+numero escalar ou par `[min, max]`; nao ha onde guardar vocabulario ali de
+qualquer forma). `style.<familia>` ainda sai valido para entrar direto em
+`plan.style.<familia>` — so nao promete efeito de render que nao existe.
 
 ## Derivacao de `confidence` (documentada, deterministica)
 
@@ -85,6 +93,7 @@ Testes de degenerescencia por dimensao:
 
 from __future__ import annotations
 
+import bisect
 import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,7 +105,7 @@ from .constants import REGISTER_BANDS, VELOCITY_RANGES
 from .plan import STYLE_FAMILIES
 from .primitives import CYMBALS, HATS_CLOSED, HATS_OPEN, KICKS, SNARES, TOMS
 from .techniques._fill_detection import fill_windows
-from .techniques._helpers import first_tempo, iter_note_dicts
+from .techniques._helpers import iter_note_dicts
 
 # --- vocabulario e limites --------------------------------------------------
 
@@ -133,8 +142,24 @@ percussao para o canal qualificar como bateria quando nao e o canal 9. 0.7
 (nao 0.9+) porque kits reais tem pecas customizadas fora da faixa GM
 padrao (o corpus real tem pitches 20/22 abaixo de 27 — mesmo espirito dos
 aliases documentados em `tools/techniques/_fill_detection.py`, kit real do
-usuario != GM puro); o teto continua alto o bastante para nunca qualificar
-um canal predominantemente melodico/harmonico."""
+usuario != GM puro). Sozinho este ratio NAO basta — ver
+`DRUM_CHANNEL_TOP_PITCH_CONCENTRATION` — porque a faixa GM de percussao
+(27-87) cobre cinco oitavas e se sobrepoe a quase toda a tessitura pratica
+de baixo/guitarra/teclas; uma linha melodica escrita nesse registro
+tambem cruza 70% com folga."""
+
+DRUM_CHANNEL_TOP_PITCH_CONCENTRATION = 0.5
+"""CONVENCAO: fracao minima das notas do canal concentrada nas 3 pitches
+mais frequentes, para canal (fora do canal 9) qualificar como bateria. Um
+groove real e dominado por kick+snare(+hat) — nos dez arquivos do corpus
+real (`tests/fixtures/corpus_drums/`), as 3 pitches mais tocadas cobrem
+~65% das notas em todo arquivo com bateria fora do canal 9. Baixo,
+guitarra ou teclas tocando uma linha dentro da MESMA faixa de pitch nao
+concentra dessa forma — uma parte melodica tipica se distribui por mais
+pitches distintos ao longo da musica, mesmo repetindo frases. E o segundo
+sinal (alem do ratio acima) que restringe a canais que de fato repetem um
+kit fixo pequeno, em vez de qualquer conteudo predominantemente melodico
+escrito no mesmo registro."""
 
 
 def _select_drum_channels(mid: mido.MidiFile) -> frozenset[int]:
@@ -142,17 +167,25 @@ def _select_drum_channels(mid: mido.MidiFile) -> frozenset[int]:
 
     O canal 9 (convencao GM) sempre qualifica quando tem qualquer nota —
     mesma convencao usada no resto do motor. Qualquer OUTRO canal qualifica
-    quando tem volume razoavel de notas (`DRUM_CHANNEL_MIN_NOTES`) e a
-    maior parte delas cai na faixa GM de percussao
-    (`DRUM_CHANNEL_PERCUSSION_RATIO`) — cobre o export de DAW que poe a
-    bateria inteira num unico canal sem usar o canal 9 (3 dos 10 arquivos
-    do corpus real fazem isso). Ambiguo por design a favor de NAO perder
-    bateria real, nunca a favor de puxar melodia/harmonia de outro
-    instrumento — a faixa de percussao GM (27-87) nao se sobrepoe a
-    tessitura tipica de baixo/guitarra/teclas em uso normal.
+    quando tem volume razoavel de notas (`DRUM_CHANNEL_MIN_NOTES`) E as
+    duas condicoes de conteudo abaixo se sustentam juntas — nenhuma delas
+    sozinha e evidencia suficiente de bateria:
+
+    - a maior parte das notas cai na faixa GM de percussao
+      (`DRUM_CHANNEL_PERCUSSION_RATIO`);
+    - as 3 pitches mais frequentes do canal concentram a maior parte das
+      notas (`DRUM_CHANNEL_TOP_PITCH_CONCENTRATION`) — o padrao kick/snare
+      repetido de um kit fixo, que uma linha melodica (baixo/guitarra/
+      teclas) escrita no mesmo registro nao reproduz.
+
+    Cobre o export de DAW que poe a bateria inteira num unico canal sem
+    usar o canal 9 (3 dos 10 arquivos do corpus real fazem isso), sem
+    qualificar um canal predominantemente melodico/harmonico so porque a
+    tessitura da parte cai dentro da faixa GM de percussao.
     """
     counts: dict[int, int] = {}
     perc_counts: dict[int, int] = {}
+    pitch_counts: dict[int, dict[int, int]] = {}
     for track in mid.tracks:
         for msg in track:
             if msg.is_meta or msg.type != "note_on" or msg.velocity <= 0:
@@ -160,6 +193,8 @@ def _select_drum_channels(mid: mido.MidiFile) -> frozenset[int]:
             counts[msg.channel] = counts.get(msg.channel, 0) + 1
             if _GM_PERCUSSION_PITCH_MIN <= msg.note <= _GM_PERCUSSION_PITCH_MAX:
                 perc_counts[msg.channel] = perc_counts.get(msg.channel, 0) + 1
+            channel_pitches = pitch_counts.setdefault(msg.channel, {})
+            channel_pitches[msg.note] = channel_pitches.get(msg.note, 0) + 1
 
     selected: set[int] = set()
     if counts.get(DRUM_CHANNEL, 0) > 0:
@@ -168,7 +203,11 @@ def _select_drum_channels(mid: mido.MidiFile) -> frozenset[int]:
         if channel in selected or n < DRUM_CHANNEL_MIN_NOTES:
             continue
         ratio = perc_counts.get(channel, 0) / n
-        if ratio >= DRUM_CHANNEL_PERCUSSION_RATIO:
+        if ratio < DRUM_CHANNEL_PERCUSSION_RATIO:
+            continue
+        top3 = sorted(pitch_counts.get(channel, {}).values(), reverse=True)[:3]
+        top3_concentration = sum(top3) / n
+        if top3_concentration >= DRUM_CHANNEL_TOP_PITCH_CONCENTRATION:
             selected.add(channel)
     return frozenset(selected)
 
@@ -351,11 +390,96 @@ class LearnResult:
 # --- leitura de MIDI ----------------------------------------------------------
 
 
+DEFAULT_TEMPO_US = 500_000
+"""Tempo default MIDI (120 BPM) quando nenhum `set_tempo` ocorre antes do
+primeiro evento — mesma convencao de `mido`/`first_tempo`
+(`tools/techniques/_helpers.py`)."""
+
+DEFAULT_TIME_SIGNATURE = (4, 4)
+"""Formula de compasso default (4/4) quando nenhum `time_signature` ocorre
+antes do primeiro evento — mesma convencao GM/`mido`."""
+
+
+def _tempo_map(mid: mido.MidiFile) -> tuple[tuple[int, int], ...]:
+    """Mapa `(tick_absoluto, tempo_us)` ordenado por tick, com um evento
+    default em tick 0 quando o arquivo nao declara `set_tempo` antes da
+    primeira mudanca (ou nao declara nenhuma).
+
+    Todas as tracks de um SMF compartilham o mesmo relogio de ticks a
+    partir de tick 0 (cada track acumula seu proprio delta-time, mas o
+    tick absoluto resultante e comparavel entre tracks) — por isso o mapa
+    e construido varrendo TODAS as tracks, nao so a track de metadados
+    (formato 1 costuma isolar `set_tempo` na track 0, mas o SMF nao
+    exige isso)."""
+    events: list[tuple[int, int]] = []
+    for track in mid.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta and msg.type == "set_tempo":
+                events.append((tick, int(msg.tempo)))
+    events.sort(key=lambda e: e[0])
+    if not events or events[0][0] > 0:
+        events.insert(0, (0, DEFAULT_TEMPO_US))
+    return tuple(events)
+
+
+def _tempo_at(tempo_ticks: tuple[int, ...], tempo_values: tuple[int, ...], tick: int) -> int:
+    """Tempo (us/quarter) vigente em `tick`, via o mapa de `_tempo_map`."""
+    index = bisect.bisect_right(tempo_ticks, tick) - 1
+    return tempo_values[max(0, index)]
+
+
+def _time_signature_map(mid: mido.MidiFile) -> tuple[tuple[int, int, int], ...]:
+    """Mapa `(tick_absoluto, numerator, denominator)` ordenado por tick,
+    com um evento default (4/4) em tick 0 quando o arquivo nao declara
+    `time_signature`. Mesma logica de varredura de todas as tracks de
+    `_tempo_map` (o SMF nao exige que `time_signature` viva so na track de
+    metadados)."""
+    events: list[tuple[int, int, int]] = []
+    for track in mid.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.is_meta and msg.type == "time_signature":
+                events.append((tick, int(msg.numerator), int(msg.denominator)))
+    events.sort(key=lambda e: e[0])
+    if not events or events[0][0] > 0:
+        events.insert(0, (0, *DEFAULT_TIME_SIGNATURE))
+    return tuple(events)
+
+
+def _bars_before_tick(
+    time_signatures: tuple[tuple[int, int, int], ...], ppq: int, end_tick: int,
+) -> float:
+    """Numero (fracionario) de compassos entre tick 0 e `end_tick`,
+    respeitando mudancas de formula de compasso — em vez de assumir 4/4
+    fixo (`ppq * 4`) para o arquivo inteiro. Um compasso em `num/den` mede
+    `num * 4 / den` semínimas, e cada semínima mede `ppq` ticks."""
+    total_bars = 0.0
+    for i, (tick, num, den) in enumerate(time_signatures):
+        if tick >= end_tick:
+            break
+        next_tick = (
+            time_signatures[i + 1][0] if i + 1 < len(time_signatures) else end_tick
+        )
+        segment_end = min(next_tick, end_tick)
+        segment_ticks = segment_end - tick
+        if segment_ticks <= 0:
+            continue
+        bar_ticks = ppq * 4 * num / den
+        if bar_ticks <= 0:
+            continue
+        total_bars += segment_ticks / bar_ticks
+    return total_bars
+
+
 @dataclass
 class _FileNotes:
     path: str
     ppq: int
     notes: tuple[dict[str, int], ...]  # apenas canal de bateria, ordenado por start
+    time_signatures: tuple[tuple[int, int, int], ...]
 
 
 def _load_drum_file(path: Path) -> _FileNotes:
@@ -364,15 +488,21 @@ def _load_drum_file(path: Path) -> _FileNotes:
     except (OSError, ValueError, EOFError, KeyError) as exc:
         raise LearnError(f"nao foi possivel carregar o MIDI {path}: {exc}") from None
     ppq = mid.ticks_per_beat or 480
-    tempo = first_tempo(mid)
+    tempo_map = _tempo_map(mid)
+    tempo_ticks = tuple(t for t, _ in tempo_map)
+    tempo_values = tuple(v for _, v in tempo_map)
+    time_signatures = _time_signature_map(mid)
     drum_channels = _select_drum_channels(mid)
     all_notes: list[dict[str, int]] = []
     for track_index, track in enumerate(mid.tracks):
         for note in iter_note_dicts(track, track_index=track_index):
             if note["channel"] in drum_channels:
+                tempo = _tempo_at(tempo_ticks, tempo_values, note["start"])
                 all_notes.append(dict(note, tempo=tempo))
     all_notes.sort(key=lambda n: (n["start"], n["pitch"]))
-    return _FileNotes(path=str(path), ppq=ppq, notes=tuple(all_notes))
+    return _FileNotes(
+        path=str(path), ppq=ppq, notes=tuple(all_notes), time_signatures=time_signatures,
+    )
 
 
 def _offset_from_sixteenth_grid(start_tick: int, ppq: int) -> int:
@@ -685,7 +815,7 @@ def _measure_fill_density(files: list[_FileNotes]) -> DimensionMeasurement:
         windows = fill_windows(note_dicts, ticks_per_beat=f.ppq)
         total_fills += len(windows)
         last_tick = max(n["end"] for n in f.notes)
-        total_bars += last_tick / (f.ppq * 4)  # CONVENCAO: assume 4/4.
+        total_bars += _bars_before_tick(f.time_signatures, f.ppq, last_tick)
 
     n_samples = sum(len(f.notes) for f in files)
     if n_files == 0:
@@ -702,8 +832,8 @@ def _measure_fill_density(files: list[_FileNotes]) -> DimensionMeasurement:
         confidence=confidence, n_samples=n_samples, n_files=n_files,
         reason=(
             f"{total_fills} virada(s)/turnaround(s) detectado(s) em "
-            f"~{total_bars:.1f} compassos (4/4 assumido) de {n_files} "
-            "arquivo(s)."
+            f"~{total_bars:.1f} compassos (formula de compasso real do "
+            f"arquivo) de {n_files} arquivo(s)."
         ),
         value={
             "score": round(score, 3),
@@ -724,27 +854,23 @@ def _build_family_style(
     researched_at: str,
     sources: list[str],
 ) -> dict[str, Any]:
+    # `parameters` fica vazio de proposito: nenhuma tecnica registrada em
+    # `tools/techniques/engine.py` declara/le um parametro chamado
+    # `drums_articulation_vocabulary_size`, `drums_fill_density_per_bar`,
+    # `drums_velocity_mode_ratio`, `drums_velocity_stdev`,
+    # `drums_timing_offset_median_ms`, `drums_ghost_note_ratio` ou
+    # `drums_lag1_autocorrelation` — e `style.<familia>.parameters` so
+    # alcanca `context.parameters` de dentro do loop
+    # `for technique in style.techniques` (`tools/render.py`), que fica
+    # vazio quando `techniques=[]` (ver abaixo). Popular `parameters` com
+    # esses numeros faria `render()` aceitar/validar o valor e ignora-lo
+    # silenciosamente — o "parametro mentiroso" que o AGENTS.md ja rejeitou
+    # (`_identity_apply`). O detalhe completo de toda dimensao medida
+    # continua em `LearnResult.measurements`, a unica fonte de verdade para
+    # esses numeros; nenhuma tecnica esta autorizada aqui (issue #18 nao
+    # aciona `authorized_techniques`), entao `techniques` tambem fica
+    # vazio — mesma regra de "tecnica so se aplica se o usuario autorizou".
     parameters: dict[str, float] = {}
-    for dim in dimensions:
-        if not dim.measured or dim.confidence == "default":
-            continue
-        if dim.name == "articulation_vocabulary":
-            parameters["drums_articulation_vocabulary_size"] = float(
-                dim.value["distinct_piece_count"],
-            )
-        elif dim.name == "fill_density":
-            parameters["drums_fill_density_per_bar"] = float(
-                dim.value["fills_per_bar"],
-            )
-        elif dim.name == "velocity":
-            parameters["drums_velocity_mode_ratio"] = float(dim.value["mode_ratio"])
-            parameters["drums_velocity_stdev"] = float(dim.value["stdev"])
-        elif dim.name == "timing_offset_ms":
-            parameters["drums_timing_offset_median_ms"] = float(dim.value["median_ms"])
-        elif dim.name == "ghost_notes":
-            parameters["drums_ghost_note_ratio"] = float(dim.value["ratio"])
-        elif dim.name == "lag1_autocorrelation":
-            parameters["drums_lag1_autocorrelation"] = float(dim.value["r1"])
 
     measured_confident = [
         dim.confidence for dim in dimensions

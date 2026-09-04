@@ -104,10 +104,15 @@ def test_corpus_drums_reports_vocabulary_and_fill_density_with_high_confidence()
     assert fills["confidence"] == "high"
     assert fills["value"]["fills_total"] > 0
 
+    # `style.drums.parameters` fica vazio mesmo com dimensoes de alta
+    # confianca: nenhuma tecnica registrada em `tools/techniques/engine.py`
+    # le um parametro chamado `drums_articulation_vocabulary_size` ou
+    # `drums_fill_density_per_bar` — coloca-lo em `parameters` seria o
+    # "parametro mentiroso" que o AGENTS.md ja rejeitou. O numero medido
+    # continua disponivel em `measurements`, so nao finge ter efeito de
+    # render.
     style_params = result.style["drums"]["parameters"]
-    assert "drums_articulation_vocabulary_size" in style_params
-    assert "drums_fill_density_per_bar" in style_params
-    assert style_params["drums_fill_density_per_bar"] > 0
+    assert style_params == {}
 
 
 def test_corpus_drums_aggregates_across_all_files_not_just_first() -> None:
@@ -286,10 +291,192 @@ def test_synthetic_feel_style_output_validates_against_plan_style_schema(
         [synthetic_drum_midi], "drums", researched_at="2026-09-03",
     )
     validate_output(result.style, _output_style_schema())
-    # Com feel real detectado, os parametros do plano tambem carregam os
-    # numeros de feel (nao so vocabulario/estrutura, ao contrario do corpus
-    # travado).
-    params = result.style["drums"]["parameters"]
-    assert any("velocity" in k or "timing" in k or "ghost" in k for k in params) or (
-        result.style["drums"]["confidence"] != "default"
+    # Mesmo com feel real detectado (confidence != default), `parameters`
+    # continua vazio: `learn` nunca escreve um numero medido em
+    # `style.parameters` que nenhuma tecnica do motor consome (ver
+    # `_build_family_style`) — o numero fica em `measurements`.
+    assert result.style["drums"]["parameters"] == {}
+    assert result.style["drums"]["confidence"] != "default"
+
+
+# --- regressao: canal melodico nao vira "bateria" (achado do Codex, PR #110) -
+
+
+def test_melodic_bass_channel_is_not_selected_as_drum_channel() -> None:
+    """Uma linha de baixo tocada num canal != 9, dentro da MESMA faixa de
+    pitch GM de percussao (27-87), nao pode ser tratada como bateria so
+    porque a tessitura cai nessa faixa — a faixa GM (27-87) cobre 5 oitavas
+    e se sobrepoe a quase toda a escrita pratica de baixo/guitarra/teclas.
+    Antes do fix, `ratio >= 0.7` sozinho bastava e este canal qualificava
+    (100% das notas cai em 27-87); a peca que falta e concentracao real
+    num kit pequeno (`DRUM_CHANNEL_TOP_PITCH_CONCENTRATION`)."""
+    ppq = 480
+    mid = mido.MidiFile(ticks_per_beat=ppq)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Bass", time=0))
+
+    # Walking bass: 24 pitches distintos dentro de 27-87 (registro tipico
+    # de baixo), cada um tocado so 2x — nada concentrado nas 3 pitches mais
+    # comuns, ao contrario de um kit real (kick/snare/hat repetidos).
+    pitches = [p for p in range(28, 28 + 24) for _ in range(2)]
+    assert len(pitches) >= learn_mod.DRUM_CHANNEL_MIN_NOTES
+
+    absolute: list[tuple[int, int, mido.Message]] = []
+    order = 0
+    duration = ppq // 4
+    tick = 0
+    for pitch in pitches:
+        absolute.append((
+            tick, order,
+            mido.Message("note_on", channel=0, note=pitch, velocity=90, time=0),
+        ))
+        order += 1
+        absolute.append((
+            tick + duration, order,
+            mido.Message("note_off", channel=0, note=pitch, velocity=0, time=0),
+        ))
+        order += 1
+        tick += ppq // 2
+
+    prev = 0
+    for t, _order, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+        track.append(msg.copy(time=max(0, t - prev)))
+        prev = t
+    mid.tracks.append(track)
+
+    assert learn_mod._select_drum_channels(mid) == frozenset()
+
+
+# --- regressao: densidade de virada usa a formula de compasso real ---------
+
+
+def test_fill_density_uses_real_time_signature_not_hardcoded_4_4(tmp_path) -> None:
+    """Corpus em 3/4: um compasso tem `ppq * 3` ticks, nao `ppq * 4`. O
+    calculo antigo (`last_tick / (ppq * 4)`) subestimava o numero de
+    compassos em 3/4 (25% a menos) e por consequencia inflava
+    `fills_per_bar`. Este teste prova que o numero de compassos relatado
+    bate com o real (16 compassos de 3/4), nao com o que a formula errada
+    de 4/4 teria dado (12 compassos)."""
+    ppq = 480
+    sixteenth = ppq // 4
+    n_bars = 16
+    steps_per_bar = 12  # 3 tempos * 4 semicolcheias, formula de compasso 3/4
+
+    mid = mido.MidiFile(ticks_per_beat=ppq)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums 3/4", time=0))
+
+    absolute: list[tuple[int, int, mido.Message]] = []
+    order = 0
+    absolute.append((
+        0, order,
+        mido.MetaMessage("time_signature", numerator=3, denominator=4, time=0),
+    ))
+    order += 1
+
+    duration = sixteenth // 3
+    for bar in range(n_bars):
+        bar_start = bar * steps_per_bar * sixteenth
+        for step in range(steps_per_bar):
+            tick = bar_start + step * sixteenth
+            pitch = _KICK if step == 0 else (_SNARE if step == 6 else _HAT)
+            absolute.append((
+                tick, order,
+                mido.Message("note_on", channel=9, note=pitch, velocity=100, time=0),
+            ))
+            order += 1
+            absolute.append((
+                tick + duration, order,
+                mido.Message("note_off", channel=9, note=pitch, velocity=0, time=0),
+            ))
+            order += 1
+
+    prev = 0
+    for t, _order, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+        track.append(msg.copy(time=max(0, t - prev)))
+        prev = t
+    mid.tracks.append(track)
+
+    path = tmp_path / "synthetic_3_4.mid"
+    mid.save(str(path))
+
+    result = learn_mod.learn([str(path)], "drums", researched_at="2026-09-03")
+    fills = result.measurements["dimensions"]["fill_density"]
+
+    # Real: ~16 compassos de 3/4. Formula antiga (assume 4/4 sempre) teria
+    # relatado ~16 * 3/4 = 12 compassos — uma diferenca de 25%, longe da
+    # tolerancia usada abaixo.
+    assert fills["value"]["bars_total"] == pytest.approx(n_bars, abs=0.5)
+    wrong_4_4_bars = n_bars * 3 / 4
+    assert fills["value"]["bars_total"] != pytest.approx(wrong_4_4_bars, abs=0.5)
+
+
+# --- regressao: offset de grade usa o tempo vigente no tick da nota --------
+
+
+def test_timing_offset_uses_tempo_active_at_each_note_not_first_tempo(
+    tmp_path,
+) -> None:
+    """Arquivo com mudanca de tempo ANTES de qualquer nota: `first_tempo`
+    (o tempo do primeiro `set_tempo` do arquivo) nao e o tempo vigente onde
+    as notas de fato estao. O bug antigo convertia ticks->ms com o tempo
+    errado (o primeiro, 500000us/120bpm) para notas que na verdade tocam
+    sob 100000us/600bpm — um fator de 5x no offset em ms calculado."""
+    ppq = 480
+    sixteenth = ppq // 4
+    offset_ticks = 15  # deslocamento fixo em relacao a grade de semicolcheia
+    n_notes = 24
+
+    mid = mido.MidiFile(ticks_per_beat=ppq)
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("track_name", name="Drums tempo change", time=0))
+
+    absolute: list[tuple[int, int, mido.Message]] = []
+    order = 0
+    absolute.append((
+        0, order, mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+    ))
+    order += 1
+    # Tempo muda bem antes da primeira nota (tick 50 < tick 2000 abaixo).
+    absolute.append((
+        50, order, mido.MetaMessage("set_tempo", tempo=100_000, time=0),
+    ))
+    order += 1
+
+    duration = sixteenth // 3
+    for i in range(n_notes):
+        # `20 + i` semicolcheias inteiras: base sempre um multiplo exato
+        # de `sixteenth`, para o offset REAL em relacao a grade ser
+        # exatamente `offset_ticks` (tick 2400+ esta bem depois da mudanca
+        # de tempo no tick 50).
+        grid_tick = (20 + i) * sixteenth
+        note_tick = grid_tick + offset_ticks
+        absolute.append((
+            note_tick, order,
+            mido.Message("note_on", channel=9, note=_SNARE, velocity=100, time=0),
+        ))
+        order += 1
+        absolute.append((
+            note_tick + duration, order,
+            mido.Message("note_off", channel=9, note=_SNARE, velocity=0, time=0),
+        ))
+        order += 1
+
+    prev = 0
+    for t, _order, msg in sorted(absolute, key=lambda item: (item[0], item[1])):
+        track.append(msg.copy(time=max(0, t - prev)))
+        prev = t
+    mid.tracks.append(track)
+
+    path = tmp_path / "synthetic_tempo_change.mid"
+    mid.save(str(path))
+
+    result = learn_mod.learn([str(path)], "drums", researched_at="2026-09-03")
+    median_ms = (
+        result.measurements["dimensions"]["timing_offset_ms"]["value"]["median_ms"]
     )
+
+    correct_ms = offset_ticks * 100_000 / (ppq * 1000.0)  # tempo vigente: 100000us
+    wrong_ms = offset_ticks * 500_000 / (ppq * 1000.0)  # bug antigo: first_tempo
+    assert median_ms == pytest.approx(correct_ms, abs=0.05)
+    assert median_ms != pytest.approx(wrong_ms, abs=0.05)
