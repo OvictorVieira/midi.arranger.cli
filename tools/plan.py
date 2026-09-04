@@ -755,12 +755,33 @@ def _validate_style_parameters_against_techniques(
     techniques: list[Any],
     base: str,
     warnings: list[str],
+    *,
+    declared_techniques: list[Any] | None = None,
 ) -> None:
+    """Valida `FamilyStyle.parameters` (legado) contra a receita de cada
+    tecnica da familia.
+
+    `declared_techniques` (issue #72, achado #2 do Codex no PR #108) e a
+    lista de `StyleTechnique` do PLANO, na MESMA ordem/posicao de
+    `techniques` (as tecnicas resolvidas do manual) — usada so para saber
+    se a tecnica tem override `parameters[key]` proprio. Quando tem, o
+    valor legado nao se aplica a ELA (precedencia: nivel de tecnica manda
+    sobre nivel de familia, ja documentada em AGENTS.md), entao ela sai da
+    checagem de faixa para essa chave; o legado continua checado contra
+    QUALQUER outra tecnica da familia que nao tenha declarado a mesma
+    chave.
+    """
+    overrides_by_position: dict[int, set[str]] = {}
+    if declared_techniques is not None:
+        for i, declared in enumerate(declared_techniques):
+            if isinstance(declared, StyleTechnique) and declared.parameters:
+                overrides_by_position[i] = set(declared.parameters)
     for key, value in parameters.items():
         path = f"{base}.parameters.{key}"
         declarations = [
             (technique, parameter)
-            for technique in techniques
+            for i, technique in enumerate(techniques)
+            if key not in overrides_by_position.get(i, ())
             for parameter in technique.parameters
             if parameter.name == key
         ]
@@ -825,13 +846,23 @@ def _validate_technique_parameters_against_manual(
     """
     declared = {parameter.name: parameter for parameter in resolved_technique.parameters}
     for key, value in parameters.items():
+        path = f"{technique_base}.parameters.{key}"
         parameter = declared.get(key)
         if parameter is None:
-            # Nome sem declaracao no manual desta tecnica: nada para
-            # validar contra — mesma postura do contrato legado (so nomes
-            # que casam um parametro documentado sao checados).
-            continue
-        path = f"{technique_base}.parameters.{key}"
+            # Nome sem declaracao no manual desta tecnica: schema aceita,
+            # mas o aplicador nunca le essa chave (le o nome CORRETO do
+            # manual e cai no proprio default/receita) — o override do
+            # usuario seria silenciosamente ignorado. Mesma categoria de
+            # parametro mentiroso que AGENTS.md ja rejeita em outros
+            # lugares: erro explicito de validacao, nunca passagem muda.
+            raise PlanValidationError(
+                path,
+                (
+                    f"parameter {key!r} is not declared by "
+                    f"{resolved_technique.canonical}; expected one of "
+                    f"{sorted(declared) or '[]'}"
+                ),
+            )
         if parameter.range is not None:
             lo, hi = float(parameter.range[0]), float(parameter.range[1])
             values = _style_parameter_values(value)
@@ -1077,6 +1108,7 @@ def _validate_style(
             resolved_techniques,
             base,
             warnings,
+            declared_techniques=entry.techniques,
         )
         _warn_style_parameter_conflicts(base, entry.techniques, entry.parameters, warnings)
     return warnings

@@ -326,6 +326,102 @@ def test_no_conflict_warning_when_parameter_names_differ(tmp_path: Path):
     assert not any("overrides legacy" in w for w in warnings)
 
 
+def test_legacy_family_value_skips_range_check_for_technique_with_own_override(
+    tmp_path: Path,
+):
+    """Achado #2 do Codex no PR #108: `style.bass.parameters.velocity=80` e
+    valido para `bass.palm_mute` ([60, 100]) mas invalido para
+    `bass.ghost_notes` ([25, 50]) sozinho. Quando `ghost_notes` declara o
+    PROPRIO override (`techniques[].parameters.velocity=30`), o legado nao
+    se aplica a ela — a precedencia (nivel de tecnica manda sobre nivel de
+    familia) tem que valer TAMBEM na checagem de faixa do legado, nao so na
+    aplicacao em render. Sem o fix, isso levantava
+    `PlanValidationError` mesmo com a tecnica que colide tendo seu proprio
+    override valido."""
+    plan = _minimal_plan()
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[
+                StyleTechnique(name="bass.palm_mute"),
+                StyleTechnique(
+                    name="bass.ghost_notes", parameters={"velocity": 30},
+                ),
+            ],
+            parameters={"velocity": 80},
+        )
+    }
+    plan.brief_ref = _write_brief(
+        tmp_path, {"bass": ["bass.palm_mute", "bass.ghost_notes"]},
+    )
+    validate(plan)  # nao levanta: ghost_notes tem override proprio
+
+
+def test_legacy_family_value_still_checked_against_technique_without_override(
+    tmp_path: Path,
+):
+    """Mesmo cenario acima, mas `ghost_notes` NAO declara override proprio —
+    o legado ainda precisa ser checado contra a faixa dela, porque nao ha
+    nivel de tecnica pra suplantar."""
+    plan = _minimal_plan()
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[
+                StyleTechnique(name="bass.palm_mute"),
+                StyleTechnique(name="bass.ghost_notes"),
+            ],
+            parameters={"velocity": 80},
+        )
+    }
+    plan.brief_ref = _write_brief(
+        tmp_path, {"bass": ["bass.palm_mute", "bass.ghost_notes"]},
+    )
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.bass.parameters.velocity"
+    assert "bass.ghost_notes.velocity" in exc.value.message
+
+
+# --- nome de parametro nao declarado pela tecnica ---------------------------
+
+
+def test_technique_level_undeclared_parameter_name_is_rejected(tmp_path: Path):
+    """Achado #3 do Codex no PR #108: `bass.ghost_notes.parameters.veloctiy`
+    (erro de digitacao de `velocity`) nao casa nome nenhum documentado pela
+    propria tecnica no manual. Antes do fix isso passava em silencio,
+    o valor ia parar em `context.parameters["veloctiy"]` e o aplicador,
+    que le `context.parameters["velocity"]`, nunca via o override do
+    usuario — parametro mentiroso: aceito e ignorado."""
+    plan = _minimal_plan()
+    plan.style = {
+        "bass": FamilyStyle(
+            reference="James Jamerson",
+            researched_at="2026-08-24",
+            sources=["https://example.test/bass"],
+            confidence="high",
+            techniques=[
+                StyleTechnique(
+                    name="bass.ghost_notes", parameters={"veloctiy": 30},
+                ),
+            ],
+            parameters={},
+        )
+    }
+    plan.brief_ref = _write_brief(tmp_path, {"bass": ["bass.ghost_notes"]})
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+    assert exc.value.path == "style.bass.techniques[0].parameters.veloctiy"
+    assert "veloctiy" in exc.value.message
+    assert "bass.ghost_notes" in exc.value.message
+
+
 # --- intensity e evidence_refs: forma valida --------------------------------
 
 

@@ -193,3 +193,28 @@ def test_technique_level_parameter_wins_over_conflicting_family_level_parameter(
         "technique-level parameters devem vencer o legado de familia", velocities,
     )
     assert not any(20 <= v <= 25 for v in velocities)
+
+
+def test_scalar_technique_parameter_is_normalized_to_exact_value_pair(tmp_path: Path):
+    """Achado #1 do Codex no PR #108: `drums.ghost_notes.parameters.velocity`
+    aceita um numero escalar (40) porque esta dentro do range do manual
+    (20-45) — `plan.validate()` ja prova isso em
+    `tests/test_style_technique_contract.py`. Mas `_apply_drums_ghost_notes`
+    exige `[min, max]` de verdade e explodia com `ValueError` ao receber o
+    escalar cru. O render tem que suceder e honrar o valor como EXATO
+    (`[40, 40]`), nao crashar."""
+    src = _build_flat_drum_source(tmp_path)
+    plan = _plan_with_ghost_notes(
+        src,
+        technique=StyleTechnique(
+            name="drums.ghost_notes", parameters={"velocity": 40},
+        ),
+        family_parameters={},
+    )
+    _attach_authorized_brief(plan, tmp_path)
+    out = tmp_path / "out.mid"
+    render(plan, out)  # nao pode levantar ValueError
+
+    velocities = _ghost_note_velocities(out)
+    assert velocities, "esperado ao menos um ghost note"
+    assert all(v == 40 for v in velocities), velocities

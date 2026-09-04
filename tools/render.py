@@ -96,6 +96,7 @@ from .plan import (
 from .plan import (
     validate as validate_plan,
 )
+from .style_schema import is_style_parameter_scalar
 from .techniques import (
     TechniqueApplyResult,
     TechniqueContractError,
@@ -969,6 +970,34 @@ def _tempo_track_from_pretty_midi(pm: pretty_midi.PrettyMIDI) -> mido.MidiTrack:
     return track
 
 
+def _normalize_range_scalar_parameters(
+    parameters: dict[str, float | list[float]],
+    resolved_technique: Any,
+) -> dict[str, float | list[float]]:
+    """Normaliza escalar para `[value, value]` quando a PROPRIA tecnica
+    declara `range` para esse nome (achado #1 do Codex no PR #108).
+
+    `plan.validate` aceita numero escalar dentro do `range` do manual como
+    forma valida de `StyleTechnique.parameters` (`is_style_parameter_value`
+    em `style_schema.py`) — um numero escalar e um par degenerado
+    `[value, value]`. Mas aplicadores como `_apply_drums_ghost_notes`
+    exigem `[min, max]` de verdade e explodem em `ValueError` quando
+    recebem o escalar cru. Normalizar aqui, no ponto onde o dict funde e
+    chega em `context.parameters`, cobre TODO consumidor de parametro
+    range-shaped, nao so `ghost_notes` — a mesma barreira que ja rejeita
+    parametro mentiroso: aceito pela validacao mas nao honrado no render.
+    """
+    declared = {parameter.name: parameter for parameter in resolved_technique.parameters}
+    normalized: dict[str, float | list[float]] = {}
+    for key, value in parameters.items():
+        parameter = declared.get(key)
+        if parameter is not None and parameter.range is not None and is_style_parameter_scalar(value):
+            normalized[key] = [float(value), float(value)]
+        else:
+            normalized[key] = value
+    return normalized
+
+
 def _run_style_pipeline(
     current: mido.MidiFile,
     *,
@@ -1040,6 +1069,17 @@ def _run_style_pipeline(
         # aplicador: o dict resultante nao carrega parametro de OUTRA
         # tecnica da mesma familia.
         merged_parameters = {**style.parameters, **technique.parameters}
+        resolved_technique = index.get(canonical)
+        if resolved_technique is not None:
+            # achado #1 do Codex no PR #108: escalar dentro do range do
+            # manual e forma valida em `plan.validate`, mas aplicadores
+            # range-shaped (ex.: `_apply_drums_ghost_notes`) exigem
+            # `[min, max]` de verdade. Normaliza ANTES do despacho, nao so
+            # para `technique.parameters` — o legado
+            # `style.<familia>.parameters` fundido acima tem o MESMO risco.
+            merged_parameters = _normalize_range_scalar_parameters(
+                merged_parameters, resolved_technique,
+            )
         try:
             applied: TechniqueApplyResult = apply_technique_with_warnings(
                 canonical,
