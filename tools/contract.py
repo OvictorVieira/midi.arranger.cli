@@ -23,6 +23,8 @@ from typing import Any
 import pretty_midi
 
 from . import analyze as analyze_mod
+from . import influence as influence_mod
+from . import influence_compile as influence_compile_mod
 from . import learn as learn_mod
 from . import plan as plan_mod
 from . import plugins as plugins_mod
@@ -57,7 +59,11 @@ from .plan import (
     SourceMidi,
 )
 from .registry import Tool, ToolError, register
-from .style_schema import ISO_DATE_PATTERN, style_technique_schema
+from .style_schema import (
+    ISO_DATE_PATTERN,
+    STYLE_TECHNIQUE_STYLE_VALUES,
+    style_technique_schema,
+)
 from .tracks import TrackNameError, name_for_element
 from .validators import (
     RenderedNote,
@@ -2830,6 +2836,190 @@ LEARN_TOOL = Tool(
 )
 
 
+# --- influence.compile (issue #73) -----------------------------------
+
+INFLUENCE_COMPILE_DESCRIPTION = (
+    "Traduz um `InfluenceProfile` (tools/influence.py — achados de pesquisa "
+    "sobre COMPORTAMENTO, ja pesquisados e normalizados por voce, nunca "
+    "conteudo musical) em sugestoes de tecnica canonica do motor "
+    "(`SUPPORTED_TECHNIQUES`): traco semantico -> `style.<familia>."
+    "techniques[].name` + intensidade + parametros + rationale + os "
+    "`finding_ids` que justificam cada sugestao. Achado sem tecnica "
+    "compativel no motor sai em `unmapped_findings`, nunca descartado nem "
+    "virando sugestao generica inventada; achado com `intensity: off` que "
+    "bateria uma regra sai em `not_recommended` (a referencia "
+    "explicitamente NAO usa aquele comportamento). Sem LLM, sem rede: e "
+    "lookup determinístico contra uma tabela fixa (`mapping_version` na "
+    "saida para auditoria/reproducao) — mesma entrada e mesma versao do "
+    "dicionario sempre devolvem a mesma saida. Esta tool NAO aplica "
+    "tecnica nenhuma e NAO autoriza nada: a sugestao so vira "
+    "`style.<familia>.suggested_techniques[]` do brief; e o USUARIO, na "
+    "entrevista, que marca `authorized_techniques[]`. Opcionalmente aceita "
+    "`target_tools` (`{familia: ferramenta}`, ex.: `{\"bass\": \"modo_bass\"}`) "
+    "para considerar receita especifica do plugin-alvo; sem receita "
+    "especifica cai no fallback `generic` do manual com warning explicito "
+    "`W_NO_TOOL_RECIPE`."
+)
+
+
+def _influence_finding_to_dict(finding: Any) -> dict[str, Any]:
+    """Serializa `InfluenceFinding` para a forma de `unmapped_findings` na
+    saida. Nao reusa `influence_mod.to_dict` (que serializa o `InfluenceProfile`
+    inteiro) nem o helper privado do modulo — os campos sao exatamente os de
+    `_INFLUENCE_FINDING_OUTPUT_SCHEMA`, listados aqui uma vez so."""
+    return {
+        "id": finding.id,
+        "family": finding.family,
+        "dimension": finding.dimension,
+        "semantic_value": finding.semantic_value,
+        "intensity": finding.intensity,
+        "confidence": finding.confidence,
+        "source_ids": list(finding.source_ids),
+        "user_stated": finding.user_stated,
+        "summary": finding.summary,
+    }
+
+
+def _influence_compile_impl(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    raw_profile = payload["profile"]
+    try:
+        influence_mod.validate(raw_profile)
+        profile = influence_mod.from_dict(raw_profile)
+    except influence_mod.InfluenceValidationError as exc:
+        raise ToolError(
+            exc.code, exc.message, path=f"profile.{exc.path}" if exc.path else "profile",
+            hint=exc.hint,
+        ) from None
+
+    target_tools = payload.get("target_tools") or {}
+    for family in target_tools:
+        if family not in STYLE_FAMILIES:
+            raise ToolError(
+                "E_INFLUENCE_COMPILE_UNKNOWN_FAMILY",
+                f"target_tools tem familia {family!r} fora de STYLE_FAMILIES",
+                path="target_tools",
+                hint=f"familias aceitas: {list(STYLE_FAMILIES)}",
+            )
+
+    result = influence_compile_mod.compile_influence(
+        profile, target_tools=target_tools,
+    )
+    data = result.to_dict(_influence_finding_to_dict)
+    return data, list(result.warnings)
+
+
+_INFLUENCE_FINDING_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "family": {"enum": list(STYLE_FAMILIES)},
+        "dimension": {"enum": list(influence_mod.INFLUENCE_DIMENSIONS)},
+        "semantic_value": {"type": "string", "minLength": 1},
+        "intensity": {"enum": list(influence_mod.INFLUENCE_INTENSITIES)},
+        "confidence": {"enum": list(influence_mod.CONFIDENCE_LEVELS)},
+        "source_ids": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "user_stated": {"type": "boolean"},
+        "summary": {"type": "string"},
+    },
+    "required": [
+        "id", "family", "dimension", "semantic_value", "intensity",
+        "confidence", "source_ids", "user_stated", "summary",
+    ],
+}
+
+
+INFLUENCE_COMPILE_TOOL = Tool(
+    name="influence.compile",
+    description=INFLUENCE_COMPILE_DESCRIPTION,
+    input_schema={
+        "type": "object",
+        "properties": {
+            "profile": {"type": "object", "additionalProperties": True},
+            "target_tools": {
+                "type": "object",
+                "additionalProperties": {"type": "string", "minLength": 1},
+            },
+        },
+        "required": ["profile"],
+    },
+    output_schema={
+        "type": "object",
+        "properties": {
+            "mapping_version": {"type": "string", "minLength": 1},
+            "suggestions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "family": {"enum": list(STYLE_FAMILIES)},
+                        "name": {"type": "string", "minLength": 1},
+                        "finding_ids": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1},
+                            "minItems": 1,
+                        },
+                        "intensity": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "rationale": {"type": "string", "minLength": 1},
+                        "mapping_version": {"type": "string", "minLength": 1},
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "oneOf": [
+                                    {"type": "number"},
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                        "minItems": 2,
+                                        "maxItems": 2,
+                                    },
+                                ],
+                            },
+                        },
+                        "style": {
+                            "oneOf": [
+                                {"type": "null"},
+                                {"enum": sorted(STYLE_TECHNIQUE_STYLE_VALUES)},
+                            ],
+                        },
+                        "tool": {"type": "string", "minLength": 1},
+                        "requested_tool": {"type": ["string", "null"]},
+                    },
+                    "required": [
+                        "family", "name", "finding_ids", "intensity",
+                        "rationale", "mapping_version", "parameters",
+                        "style", "tool", "requested_tool",
+                    ],
+                },
+            },
+            "unmapped_findings": {
+                "type": "array",
+                "items": _INFLUENCE_FINDING_OUTPUT_SCHEMA,
+            },
+            "not_recommended": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "family": {"enum": list(STYLE_FAMILIES)},
+                        "finding_id": {"type": "string", "minLength": 1},
+                        "technique": {"type": "string", "minLength": 1},
+                        "reason": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["family", "finding_id", "technique", "reason"],
+                },
+            },
+        },
+        "required": [
+            "mapping_version", "suggestions", "unmapped_findings",
+            "not_recommended",
+        ],
+    },
+    func=_influence_compile_impl,
+)
+
+
 # --- registro --------------------------------------------------------------
 
 def bootstrap() -> None:
@@ -2842,7 +3032,7 @@ def bootstrap() -> None:
         ANALYZE_TOOL, PLAN_SKELETON_TOOL, PLAN_VALIDATE_TOOL,
         RENDER_TOOL, VALIDATE_TOOL, PLUGINS_SCAN_TOOL, PRESETS_SCAN_TOOL,
         TECHNIQUES_LIST_TOOL, TECHNIQUES_DESCRIBE_TOOL,
-        BRIEF_VALIDATE_TOOL, LEARN_TOOL,
+        BRIEF_VALIDATE_TOOL, LEARN_TOOL, INFLUENCE_COMPILE_TOOL,
     ):
         if _get(tool.name) is None:
             register(tool)
@@ -2856,6 +3046,7 @@ bootstrap()
 __all__ = [
     "ANALYZE_TOOL",
     "BRIEF_VALIDATE_TOOL",
+    "INFLUENCE_COMPILE_TOOL",
     "LEARN_TOOL",
     "PLAN_SKELETON_TOOL",
     "PLAN_VALIDATE_TOOL",
