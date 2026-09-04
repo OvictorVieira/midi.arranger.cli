@@ -223,6 +223,41 @@ _ROLE_SPECS: dict[str, dict] = {
             "plugin": "Logic Sampler", "preset": "Sub Drop", "verified": True,
         },
     },
+    "riser": {
+        "route": "hook_eletronico_pesado",
+        "register": [48, 84],
+        "articulation": "sustained",
+        "harmony": "free",
+        "sync_role": "response",
+        "pattern": {},
+    },
+    "downer": {
+        "route": "hook_eletronico_pesado",
+        "register": [48, 84],
+        "articulation": "sustained",
+        "harmony": "free",
+        "sync_role": "response",
+        "pattern": {},
+    },
+    "impact": {
+        "route": "hook_eletronico_pesado",
+        "register": [24, 84],
+        "articulation": "staccato",
+        "harmony": "percussion",
+        "sync_role": "exact_anchor",
+        "pattern": {},
+        "instrument": {
+            "plugin": "Logic Sampler", "preset": "Impact Hit", "verified": True,
+        },
+    },
+    "reverse": {
+        "route": "hook_eletronico_pesado",
+        "register": [48, 72],
+        "articulation": "sustained",
+        "harmony": "free",
+        "sync_role": "response",
+        "pattern": {},
+    },
 }
 
 

@@ -11,6 +11,7 @@ import pytest
 
 from tools.brief_ref import brief_sha256
 from tools.plan import (
+    STYLE_FAMILIES,
     ArrangementPlan,
     BriefRef,
     Element,
@@ -778,6 +779,17 @@ def test_validate_accepts_only_supported_style_techniques_from_manual_index(tmp_
 
         with pytest.raises(PlanValidationError) as exc:
             validate(plan)
+
+        if technique.family not in STYLE_FAMILIES:
+            # Familias fora de style.<familia> (ex.: "transitions" — issue
+            # #23: riser/downer/impact/reverse sao roles gerados do zero,
+            # lidos direto do manual por `tools.palette.transitions`, nunca
+            # aplicados via `style.<familia>.techniques[]`) rejeitam na
+            # PROPRIA chave da familia, antes de chegar ao nome da tecnica.
+            assert exc.value.path == f"style.{technique.family}"
+            assert "unknown style family" in exc.value.message
+            continue
+
         assert exc.value.path == f"style.{technique.family}.techniques[0].name"
         assert "not implemented by the engine" in exc.value.message
 

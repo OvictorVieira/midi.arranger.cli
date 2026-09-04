@@ -25,6 +25,12 @@ from tools.palette.drums import DRUMS_ROLES
 from tools.palette.electronic import HAT_ELEC_ROLES, SUB_DROP_ROLES, SUB_ROLES
 from tools.palette.harmonic import DRONE_ROLES, KEYBOARD_ROLES, STRINGS_ROLES, PadNote
 from tools.palette.rhythmic import MOTOR_ROLES, RHYTHMIC_ROLES, SHADOW_ROLES
+from tools.palette.transitions import (
+    DOWNER_ROLES,
+    IMPACT_ROLES,
+    REVERSE_ROLES,
+    RISER_ROLES,
+)
 from tools.plan import Element
 from tools.render import SUPPORTED_ROLES, _notes_to_track, render
 
@@ -59,6 +65,66 @@ def _drums_element() -> Element:
     )
 
 
+def _riser_element() -> Element:
+    return Element(
+        id="riser_main",
+        role="riser",
+        sections=["MAIN"],
+        register=[48, 84],
+        layers=1,
+        sync_role="response",
+        articulation="sustained",
+        harmony="free",
+        instrument={"plugin": "Serum", "preset": "Riser FX", "verified": True},
+        rationale="Riser de transicao para o teste de cobertura de roles.",
+    )
+
+
+def _downer_element() -> Element:
+    return Element(
+        id="downer_main",
+        role="downer",
+        sections=["MAIN"],
+        register=[48, 84],
+        layers=1,
+        sync_role="response",
+        articulation="sustained",
+        harmony="free",
+        instrument={"plugin": "Omnisphere", "preset": "Downer FX", "verified": True},
+        rationale="Downer de transicao para o teste de cobertura de roles.",
+    )
+
+
+def _impact_element() -> Element:
+    return Element(
+        id="impact_main",
+        role="impact",
+        sections=["MAIN"],
+        register=[24, 84],
+        layers=1,
+        sync_role="exact_anchor",
+        articulation="staccato",
+        harmony="percussion",
+        instrument={"plugin": "Logic Sampler", "preset": "Impact Hit", "verified": True},
+        rationale="Impacto de transicao para o teste de cobertura de roles.",
+    )
+
+
+def _reverse_element() -> Element:
+    return Element(
+        id="reverse_main",
+        role="reverse",
+        sections=["MAIN"],
+        register=[48, 72],
+        layers=1,
+        sync_role="response",
+        articulation="sustained",
+        harmony="free",
+        instrument={"plugin": "Omnisphere", "preset": "Reverse Swell", "verified": True},
+        rationale="Reverse/meia-lua de transicao para o teste de cobertura de roles.",
+    )
+
+
 def _element_for_role(role: str):
     if role == "pad":
         return None
@@ -84,6 +150,14 @@ def _element_for_role(role: str):
         return _sub_element()
     if role in SUB_DROP_ROLES:
         return _sub_drop_element()
+    if role in RISER_ROLES:
+        return _riser_element()
+    if role in DOWNER_ROLES:
+        return _downer_element()
+    if role in IMPACT_ROLES:
+        return _impact_element()
+    if role in REVERSE_ROLES:
+        return _reverse_element()
     raise AssertionError(f"test helper missing role factory for {role!r}")
 
 
