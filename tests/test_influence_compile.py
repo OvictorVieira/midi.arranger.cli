@@ -142,10 +142,11 @@ def test_bass_pick_attack_maps_to_bass_attack_style_with_pick():
 
 
 def test_finding_without_compatible_technique_lands_in_unmapped_never_discarded():
-    # Guitarra nao tem NENHUMA tecnica em SUPPORTED_TECHNIQUES hoje — bom
-    # caso real de "achado sem tecnica compativel", sem precisar inventar
-    # uma tecnica fantasma so para o teste passar.
-    assert not any(t.startswith("guitar.") for t in SUPPORTED_TECHNIQUES)
+    # Whammy bar / pitch bend profundo nao tem regra de mapeamento em
+    # MAPPING_RULES (nenhuma entrada de guitarra existe la) — bom caso real
+    # de "achado sem tecnica compativel", sem precisar inventar uma tecnica
+    # fantasma so para o teste passar.
+    assert not any(rule.family == "guitar" for rule in MAPPING_RULES)
     payload = {
         "profile": _profile([
             _finding(
