@@ -314,6 +314,39 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   `tools.registry.list_tools()`; importe `tools.contract` antes, porque o registry é populado por
   efeito colateral no import.
 
+## Code review — orçamento do Codex
+
+Nenhum PR entra em `main` sem code review. O revisor padrão é o Codex (`@codex review` como
+comentário no PR), e a cota dele é **compartilhada por todas as sessões que trabalham neste
+repositório ao mesmo tempo** — por isso o ritmo abaixo é regra, não sugestão.
+
+**Nunca dispare review em leque.** Um `@codex review` por vez:
+
+1. Abra os PRs normalmente (pode ser vários), mas peça review **do menor primeiro** — o custo da
+   chamada escala com tamanho e complexidade do diff.
+2. Espere o review **chegar de verdade** antes de pedir o próximo. Review entregue → siga para o
+   PR seguinte, um a um.
+3. Bateu rate limit (`You have reached your Codex usage limits for code reviews`): **pare a
+   rodada na hora**. Não peça review nos PRs restantes e **nunca** faça retry cego — retry em
+   cima do limite gera ciclo infinito de review queimando token à toa
+   (`openai/codex-plugin-cc#306`).
+4. Espere **5 horas** antes da próxima rodada. A cota do Codex é contada em **janela móvel de 5
+   horas** (Plus: 20–50 reviews por janela; Pro 5x: 200–500; Pro 20x: 400–1.000). Há limites
+   semanais adicionais que a OpenAI não publica, então janela liberada não garante cota.
+5. **Teto de 2 chamadas por PR**: um review inicial e um re-review depois dos fixes. Precisar de
+   mais que isso é sinal de que o PR subiu cru — endureça antes, não gaste janela.
+
+**Antes de gastar a chamada, faça o review adversarial você mesmo**, com a profundidade que o
+Codex teria: procure parâmetro mentiroso, no-op silencioso, número sem fonte, invariante de
+contrato quebrada, e rode a suíte inteira. A chamada do Codex é segunda opinião sobre código já
+endurecido, nunca primeira passada.
+
+**Quando o Codex não estiver disponível** (rate limit que não abre, ou o bug conhecido em que ele
+responde "usage limits" com o dashboard mostrando cota — `openai/codex#31001`, `#8503`, `#15477`):
+o review adversarial próprio **substitui** o do Codex para efeito de merge, e o PR precisa dizer
+explicitamente que subiu sem segunda opinião do Codex. Nunca mergear em silêncio fingindo que
+houve review.
+
 ## Commits
 
 Formato `type: descrição concisa` — conventional commits, **sem scope, sem Co-Authored-By**.
