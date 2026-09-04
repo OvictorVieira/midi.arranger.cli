@@ -75,6 +75,16 @@ from .palette.rhythmic import (
     generate_rhythmic,
     generate_shadow,
 )
+from .palette.transitions import (
+    DOWNER_ROLES,
+    IMPACT_ROLES,
+    REVERSE_ROLES,
+    RISER_ROLES,
+    generate_downer,
+    generate_impact,
+    generate_reverse,
+    generate_riser,
+)
 from .plan import (
     ROLE_STYLE_FAMILIES,
     STYLE_FAMILIES,
@@ -153,6 +163,10 @@ reconhecer a track como kit em vez de instrumento melodico."""
 HAT_ELEC_CHANNEL = 0
 SUB_CHANNEL = 0
 SUB_DROP_CHANNEL = 0
+RISER_CHANNEL = 0
+DOWNER_CHANNEL = 0
+IMPACT_CHANNEL = 0
+REVERSE_CHANNEL = 0
 SUSTAIN_CC = 64
 EXPRESSION_CC = 11
 KEYBOARD_PATTERN_FIELDS: frozenset[str] = frozenset({"use_sustain_cc64"})
@@ -180,6 +194,20 @@ politica do pad."""
 HAT_ELEC_PATTERN_FIELDS: frozenset[str] = frozenset({"pattern_mode"})
 SUB_PATTERN_FIELDS: frozenset[str] = frozenset({"follow"})
 SUB_DROP_PATTERN_FIELDS: frozenset[str] = frozenset()
+RISER_PATTERN_FIELDS: frozenset[str] = frozenset({"duration_bars"})
+DOWNER_PATTERN_FIELDS: frozenset[str] = frozenset({"duration_bars"})
+IMPACT_PATTERN_FIELDS: frozenset[str] = frozenset()
+"""`impact` (issue #23) nao consome `element.pattern` nesta rodada — a
+intensidade (soft/medium/hard) cicla pela ORDEM de `element.sections`
+(`occurrence_index`), nunca por um campo declarado."""
+REVERSE_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "duration_bars", "freeze_pitch", "freeze_velocity",
+})
+"""`freeze_pitch`/`freeze_velocity` (issue #23, modo `freeze`): a IA que
+escreve o plano ja tem acesso ao ultimo evento da secao anterior (via
+`analyze`) e declara o pitch/velocity a congelar explicitamente — nenhum
+parametro sorteado sem origem declarada (AGENTS.md AC-21); o renderer
+nunca inspeciona "a secao anterior" por conta propria."""
 
 # Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
 # Exemplo literal (documentado em docs/arquitetura.md):
@@ -622,6 +650,14 @@ def _pattern_fields_for_role(role: str) -> frozenset[str]:
         return SUB_PATTERN_FIELDS
     if role in SUB_DROP_ROLES:
         return SUB_DROP_PATTERN_FIELDS
+    if role in RISER_ROLES:
+        return RISER_PATTERN_FIELDS
+    if role in DOWNER_ROLES:
+        return DOWNER_PATTERN_FIELDS
+    if role in IMPACT_ROLES:
+        return IMPACT_PATTERN_FIELDS
+    if role in REVERSE_ROLES:
+        return REVERSE_PATTERN_FIELDS
     return frozenset()
 
 
@@ -2180,6 +2216,158 @@ def _render_sub_drop_element(
     return [track], [rendered]
 
 
+def _render_riser_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera a track de riser: rampa ascendente por secao declarada,
+    terminando ANTES do downbeat daquela secao (issue #23)."""
+    register = (int(element.register[0]), int(element.register[1]))
+    pattern = element.pattern or {}
+    duration_bars = pattern.get("duration_bars")
+    degrees = tuple(element.degrees) if element.degrees else None
+
+    notes: list[RhythmicNote] = []
+    ccs: list[tuple[float, int, int]] = []
+    for section, seed in _iter_element_sections(element, plan):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        event = generate_riser(
+            analysis, boundary_s, register=register,
+            duration_bars=duration_bars, degrees=degrees, seed=seed,
+        )
+        notes.extend(event.notes)
+        ccs.extend((e.time_s, e.cc, e.value) for e in event.cc_events)
+
+    return _point_event_to_tracks(element, notes, ccs, pm, channel)
+
+
+def _render_downer_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera a track de downer: mesma mecanica do riser, invertida (issue #23)."""
+    register = (int(element.register[0]), int(element.register[1]))
+    pattern = element.pattern or {}
+    duration_bars = pattern.get("duration_bars")
+    degrees = tuple(element.degrees) if element.degrees else None
+
+    notes: list[RhythmicNote] = []
+    ccs: list[tuple[float, int, int]] = []
+    for section, seed in _iter_element_sections(element, plan):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        event = generate_downer(
+            analysis, boundary_s, register=register,
+            duration_bars=duration_bars, degrees=degrees, seed=seed,
+        )
+        notes.extend(event.notes)
+        ccs.extend((e.time_s, e.cc, e.value) for e in event.cc_events)
+
+    return _point_event_to_tracks(element, notes, ccs, pm, channel)
+
+
+def _render_impact_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera a track de impacto: hit alinhado no downbeat de cada secao
+    declarada, em camadas com caudas divergentes. `occurrence_index` segue
+    a ORDEM de `element.sections` — impactos repetidos ciclam pelas tres
+    intensidades do manual, nunca repetem identico (issue #23)."""
+    register = (int(element.register[0]), int(element.register[1]))
+
+    notes: list[RhythmicNote] = []
+    for occurrence_index, (section, seed) in enumerate(_iter_element_sections(element, plan)):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        event = generate_impact(
+            analysis, boundary_s, register=register,
+            occurrence_index=occurrence_index, seed=seed,
+        )
+        notes.extend(event.notes)
+
+    return _point_event_to_tracks(element, notes, [], pm, channel)
+
+
+def _render_reverse_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera a track de reverse/meia-lua: swell que RESOLVE exatamente no
+    downbeat de cada secao declarada (issue #23). `pattern.freeze_pitch`/
+    `freeze_velocity` (opcionais): modo `freeze` — a IA que escreve o plano
+    declara o ultimo evento da secao anterior a congelar como fonte."""
+    register = (int(element.register[0]), int(element.register[1]))
+    pattern = element.pattern or {}
+    duration_bars = pattern.get("duration_bars")
+    freeze_pitch = pattern.get("freeze_pitch")
+    freeze_velocity = pattern.get("freeze_velocity")
+
+    notes: list[RhythmicNote] = []
+    ccs: list[tuple[float, int, int]] = []
+    for section, seed in _iter_element_sections(element, plan):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        event = generate_reverse(
+            analysis, boundary_s, register=register,
+            duration_bars=duration_bars, freeze_pitch=freeze_pitch,
+            freeze_velocity=freeze_velocity, seed=seed,
+        )
+        notes.extend(event.notes)
+        ccs.extend((e.time_s, e.cc, e.value) for e in event.cc_events)
+
+    return _point_event_to_tracks(element, notes, ccs, pm, channel)
+
+
+def _point_event_to_tracks(
+    element: Element,
+    notes: list[RhythmicNote],
+    ccs: list[tuple[float, int, int]],
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Empacota as notas + CC acumuladas de um gerador de transicao
+    (riser/downer/impact/reverse) em uma unica track — sempre 1 layer,
+    mesmo padrao de `_render_sub_drop_element`. Compartilhado entre os
+    quatro roles de `tools.palette.transitions` para nao duplicar o
+    seam `_notes_to_track`/`RenderedTrack`."""
+    name = _element_track_name(element, 0, 1)
+    track = _notes_to_track(notes, pm, name, channel, cc_events=ccs or None)
+    rendered = RenderedTrack(
+        element_id=element.id,
+        track_name=name,
+        notes=tuple(
+            RenderedNote(
+                pitch=n.pitch, velocity=n.velocity,
+                start_s=n.start_s, end_s=n.end_s,
+            )
+            for n in notes
+        ),
+    )
+    return [track], [rendered]
+
+
 def _render_pad_element(
     element: Element,
     plan: ArrangementPlan,
@@ -2328,6 +2516,22 @@ def _build_role_renderers() -> dict[str, _RoleRenderer]:
         **{
             role: _RoleRenderer(_render_sub_drop_element, SUB_DROP_CHANNEL)
             for role in SUB_DROP_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_riser_element, RISER_CHANNEL)
+            for role in RISER_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_downer_element, DOWNER_CHANNEL)
+            for role in DOWNER_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_impact_element, IMPACT_CHANNEL)
+            for role in IMPACT_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_reverse_element, REVERSE_CHANNEL)
+            for role in REVERSE_ROLES
         },
     }
 
