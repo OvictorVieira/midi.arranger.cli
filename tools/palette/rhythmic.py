@@ -41,6 +41,8 @@ from ..analyze import Analysis, BarAnalysis, Chord, GuitarNote
 from ..constants import GATE_RATIOS, REGISTER_BANDS, VELOCITY_RANGES
 from ..humanize import DurationEngine, DurationRequest
 from ..plan import PlanSection
+from ..rng import assert_traceable_seed
+from ..style_profile import StyleProfile
 from .harmonic import _chord_degrees, _parse_fade_in_bars, _sine_lfo_points
 
 # --- vocabulario e constantes ----------------------------------------------
@@ -233,17 +235,17 @@ class RhythmicLayer:
 
 # --- helpers ---------------------------------------------------------------
 
-def _rhythmic_base_velocity() -> int:
-    lo, hi = VELOCITY_RANGES[RHYTHMIC_BASE_VELOCITY_BUCKET]
-    return (lo + hi) // 2
+def _rhythmic_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
+    lo, hi = velocity_ranges[RHYTHMIC_BASE_VELOCITY_BUCKET]
+    return int(lo + hi) // 2
 
 
-def _rhythmic_gate(articulation: str) -> float:
+def _rhythmic_gate(articulation: str, gate_ratios=GATE_RATIOS) -> float:
     """Fator de gate para articulacao. Articulacoes fora do mapa caem para
     staccato — arp longo demais borra o grid."""
-    ratios = GATE_RATIOS.get(articulation)
+    ratios = gate_ratios.get(articulation)
     if ratios is None:
-        ratios = GATE_RATIOS[DEFAULT_RHYTHMIC_ARTICULATION]
+        ratios = gate_ratios[DEFAULT_RHYTHMIC_ARTICULATION]
     lo, hi = ratios
     return (lo + hi) / 2.0
 
@@ -388,6 +390,7 @@ def _velocity_for_step(
     velocity_cycle_bars: int,
     dynamics: dict,
     section_kind: str,
+    velocity_ranges=VELOCITY_RANGES,
 ) -> int:
     """Velocity para um step: base + ciclo senoidal + forma dinamica
     compartilhada com o pad (fade_in_Nbars / open_at_chorus / hold).
@@ -400,7 +403,7 @@ def _velocity_for_step(
     v = base
     fade_bars = _parse_fade_in_bars(entry)
     if fade_bars > 0 and bar_pos_in_section < fade_bars:
-        floor = VELOCITY_RANGES["ghost"][0]
+        floor = velocity_ranges["ghost"][0]
         frac = (bar_pos_in_section + 1) / fade_bars
         v = round(floor + (base - floor) * frac)
 
@@ -478,6 +481,7 @@ def _emit_snake_step_note(
     dyn: dict,
     section_kind: str,
     is_interlocked: bool = False,
+    velocity_ranges=VELOCITY_RANGES,
 ) -> RhythmicNote | None:
     """Monta uma RhythmicNote no snake up-down. Devolve None quando o
     candidato ultrapassa o fim do bar. Compartilhado por generate_rhythmic
@@ -489,6 +493,7 @@ def _emit_snake_step_note(
     velocity = _velocity_for_step(
         base_velocity, bar_pos, step_i,
         velocity_cycle_bars, dyn, section_kind,
+        velocity_ranges=velocity_ranges,
     )
     note_dur = step_dur_s * gate
     if note_dur < MIN_NOTE_DURATION_S:
@@ -521,6 +526,7 @@ def _generate_snake_layers(
     filter_cycle_bars: int,
     timing_jitter_ms: tuple[float, float],
     filter_steps_per_cycle: int = RHYTHMIC_FILTER_STEPS_PER_CYCLE,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Loop principal compartilhado por generate_rhythmic e generate_motor.
     `steps_for_bar(bar_pos)` devolve o padrao de STEPS_PER_BAR pares (0/1)
@@ -528,6 +534,7 @@ def _generate_snake_layers(
     devolve (candidate_ajustado, is_interlocked) ou None quando o
     candidato precisa ser descartado. Motor passa `resolve_interlock=None`
     porque nao interlock."""
+    resolved_profile = profile or StyleProfile.default()
     result: list[RhythmicLayer] = []
     for layer_idx in range(layers):
         stagger_s = stagger_offsets_s[layer_idx]
@@ -564,6 +571,7 @@ def _generate_snake_layers(
                     velocity_cycle_bars=velocity_cycle_bars,
                     dyn=dyn, section_kind=section_kind,
                     is_interlocked=is_interlocked,
+                    velocity_ranges=resolved_profile.velocity_ranges,
                 )
                 if note is None:
                     continue
@@ -585,6 +593,7 @@ def _generate_snake_layers(
             articulation=articulation,
             fallback_end_s=section_end_s,
             seed=seed + (layer_idx + 1) * 1_000_009,
+            profile=resolved_profile,
         )
         result.append(RhythmicLayer(
             index=layer_idx, notes=tuple(notes), cc_events=cc_events,
@@ -598,6 +607,7 @@ def _apply_duration_engine(
     articulation: str,
     fallback_end_s: float,
     seed: int,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicNote]:
     """Reescreve `end_s` de cada nota da camada via `DurationEngine`.
 
@@ -611,7 +621,7 @@ def _apply_duration_engine(
     if not notes:
         return notes
     art = articulation if articulation in GATE_RATIOS else DEFAULT_RHYTHMIC_ARTICULATION
-    engine = DurationEngine(seed=seed)
+    engine = DurationEngine(seed=seed, profile=profile)
     result: list[RhythmicNote] = []
     for i, note in enumerate(notes):
         next_start = (
@@ -645,6 +655,7 @@ def generate_rhythmic(
     velocity_cycle_bars: int = RHYTHMIC_VELOCITY_CYCLE_DEFAULT_BARS,
     custom_steps: tuple[int, ...] | list[int] | None = None,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Gera camadas de arp / rhythmic machine para uma secao.
 
@@ -672,6 +683,10 @@ def generate_rhythmic(
         catalogo. Deve ter comprimento pattern_bars * STEPS_PER_BAR e conter
         lacuna >= RHYTHMIC_GAP_MIN_STEPS.
       seed: seed determinstica.
+      profile: `StyleProfile` opcional — sobrepoe a faixa de velocity base
+        e `gate_ratios[articulation]` lidos de `tools/constants.py`. Sem
+        `profile`, usa `StyleProfile.default()` (chamador antigo continua
+        byte-identico).
 
     Raises:
       ValueError: layers < 1, role fora de RHYTHMIC_ROLES, pattern_bars
@@ -680,6 +695,7 @@ def generate_rhythmic(
         RHYTHMIC_FILTER_CYCLE_BARS_ALLOWED, velocity_cycle_bars < 1, ou
         custom_steps sem lacuna.
     """
+    assert_traceable_seed(seed, source="palette.rhythmic.generate_rhythmic")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if role not in RHYTHMIC_ROLES:
@@ -713,8 +729,9 @@ def generate_rhythmic(
     if not bars:
         return _empty_rhythmic_layers(layers)
 
-    base = _rhythmic_base_velocity()
-    gate = _rhythmic_gate(articulation)
+    resolved_profile = profile or StyleProfile.default()
+    base = _rhythmic_base_velocity(resolved_profile.velocity_ranges)
+    gate = _rhythmic_gate(articulation, resolved_profile.gate_ratios)
 
     # Catalogo / custom
     if custom_steps is not None:
@@ -772,6 +789,7 @@ def generate_rhythmic(
         section_start_s=section_start_s, section_end_s=section_end_s,
         filter_cycle_bars=filter_cycle_bars,
         timing_jitter_ms=RHYTHMIC_TIMING_JITTER_MS,
+        profile=resolved_profile,
     )
 
 
@@ -878,17 +896,17 @@ def _assert_motor_catalog_has_gaps() -> None:
 _assert_motor_catalog_has_gaps()
 
 
-def _motor_base_velocity() -> int:
-    lo, hi = VELOCITY_RANGES[MOTOR_BASE_VELOCITY_BUCKET]
-    return (lo + hi) // 2
+def _motor_base_velocity(velocity_ranges=VELOCITY_RANGES) -> int:
+    lo, hi = velocity_ranges[MOTOR_BASE_VELOCITY_BUCKET]
+    return int(lo + hi) // 2
 
 
-def _motor_gate(articulation: str) -> float:
+def _motor_gate(articulation: str, gate_ratios=GATE_RATIOS) -> float:
     """Gate para articulacao do motor. Articulacoes fora do mapa caem para
     staccato — mesma politica do arp."""
-    ratios = GATE_RATIOS.get(articulation)
+    ratios = gate_ratios.get(articulation)
     if ratios is None:
-        ratios = GATE_RATIOS[MOTOR_DEFAULT_ARTICULATION]
+        ratios = gate_ratios[MOTOR_DEFAULT_ARTICULATION]
     lo, hi = ratios
     return (lo + hi) / 2.0
 
@@ -918,6 +936,7 @@ def generate_motor(
     velocity_cycle_bars: int = RHYTHMIC_VELOCITY_CYCLE_DEFAULT_BARS,
     custom_steps: tuple[int, ...] | list[int] | None = None,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Gera camadas de motor (figura ritmica de apoio) para uma secao.
 
@@ -940,12 +959,17 @@ def generate_motor(
         e lacuna >= MOTOR_GAP_MIN_STEPS. Para subdivision='eighth', so
         ativa steps pares.
       seed: seed determinstica.
+      profile: `StyleProfile` opcional — sobrepoe a faixa de velocity base
+        e `gate_ratios[articulation]` lidos de `tools/constants.py`. Sem
+        `profile`, usa `StyleProfile.default()` (chamador antigo continua
+        byte-identico).
 
     Raises:
       ValueError: layers < 1, role != 'motor', subdivision fora do
         vocabulario, filter_cycle_bars fora de MOTOR_FILTER_CYCLE_BARS_ALLOWED,
         velocity_cycle_bars < 1, ou custom_steps invalido.
     """
+    assert_traceable_seed(seed, source="palette.rhythmic.generate_motor")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if role not in MOTOR_ROLES:
@@ -973,8 +997,9 @@ def generate_motor(
     if not bars:
         return _empty_rhythmic_layers(layers)
 
-    base = _motor_base_velocity()
-    gate = _motor_gate(articulation)
+    resolved_profile = profile or StyleProfile.default()
+    base = _motor_base_velocity(resolved_profile.velocity_ranges)
+    gate = _motor_gate(articulation, resolved_profile.gate_ratios)
 
     if custom_steps is not None:
         pattern = _validate_motor_custom_steps(
@@ -1005,6 +1030,7 @@ def generate_motor(
         filter_cycle_bars=filter_cycle_bars,
         timing_jitter_ms=MOTOR_TIMING_JITTER_MS,
         filter_steps_per_cycle=MOTOR_FILTER_STEPS_PER_CYCLE,
+        profile=resolved_profile,
     )
 
 
@@ -1206,6 +1232,7 @@ def generate_shadow(
     velocity_offset: int = SHADOW_DEFAULT_VELOCITY_OFFSET,
     note_duration_s: float = SHADOW_DEFAULT_DURATION_S,
     seed: int = 0,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Gera camadas de shadow — dobra o FIM das frases de guitarra.
 
@@ -1231,11 +1258,15 @@ def generate_shadow(
       note_duration_s: duracao base da nota do shadow. Corte se a proxima
         nota de guitarra chega antes.
       seed: seed determinstica.
+      profile: `StyleProfile` opcional — sobrepoe `gate_ratios[articulation]`
+        lido de `tools/constants.py`. Sem `profile`, usa
+        `StyleProfile.default()` (chamador antigo continua byte-identico).
 
     Raises:
       ValueError: layers < 1, role != 'shadow', octave_shift fora de
         {-12, +12}, tail_notes < 1 ou phrase_end_gap_s <= 0.
     """
+    assert_traceable_seed(seed, source="palette.rhythmic.generate_shadow")
     if layers < 1:
         raise ValueError(f"layers must be >= 1; got {layers}")
     if role not in SHADOW_ROLES:
@@ -1284,9 +1315,10 @@ def generate_shadow(
         SHADOW_MIN_VELOCITY,
         min(SHADOW_MAX_VELOCITY, SHADOW_MAX_VELOCITY + velocity_offset),
     )
-    articulation_ratios = GATE_RATIOS.get(articulation)
+    resolved_profile = profile or StyleProfile.default()
+    articulation_ratios = resolved_profile.gate_ratios.get(articulation)
     if articulation_ratios is None:
-        articulation_ratios = GATE_RATIOS[SHADOW_DEFAULT_ARTICULATION]
+        articulation_ratios = resolved_profile.gate_ratios[SHADOW_DEFAULT_ARTICULATION]
     gate = (articulation_ratios[0] + articulation_ratios[1]) / 2.0
 
     rng = random.Random(seed)

@@ -16,8 +16,9 @@ import random
 from dataclasses import dataclass, replace
 
 from ..analyze import Analysis, BarAnalysis, find_bar
-from ..constants import VELOCITY_RANGES
 from ..plan import PlanSection
+from ..rng import assert_traceable_seed
+from ..style_profile import StyleProfile
 from ..techniques.index import TechniqueError, build_index
 from ..validators.harmony import degrees_pcs
 
@@ -115,7 +116,12 @@ def generate_hat_elec(
     """Hi-hat eletronico: pitch fixo, gate de semicolcheia escalando com o
     BPM real do arquivo, velocity ~N(95, 8) clampada em [79, 113], offset
     ~N(-4, 8)ms clampado em +-20ms. 100% monofonico — ver `_enforce_monophony`.
+
+    Nao aceita `profile`: todo numero vem do manual via `_technique_params`
+    (`knowledge/tecnicas/tecnicas_eletronico_midi.md`), nao de
+    `tools/constants.py` — nao ha faixa de `StyleProfile` para sobrepor aqui.
     """
+    assert_traceable_seed(seed, source="palette.electronic.generate_hat_elec")
     params = _technique_params("drums.hat_elec")
     pitch = int(params["pitch"])
     reference_bpm = float(params["reference_bpm"])
@@ -184,6 +190,7 @@ def generate_sub(
     follow: str = "tonic",
     degrees: tuple[int, ...] | None = None,
     seed: int,
+    profile: StyleProfile | None = None,
 ) -> list[RhythmicLayer]:
     """Sub-bass monofonico de breakdown. `follow`:
 
@@ -196,7 +203,12 @@ def generate_sub(
     Nota unica sempre — nunca acorde, sem excecao nem flag: cada branch
     abaixo emite no maximo uma nota por onset, sempre a mesma unica layer.
     O primeiro impacto da secao recebe `first_impact_velocity_boost`.
+
+    `profile`: `StyleProfile` opcional — sobrepoe a faixa de velocity base
+    (bucket `normal`) lida de `tools/constants.py`. Sem `profile`, usa
+    `StyleProfile.default()` (chamador antigo continua byte-identico).
     """
+    assert_traceable_seed(seed, source="palette.electronic.generate_sub")
     if follow not in SUB_FOLLOW_MODES:
         raise ElectronicGeneratorError(
             f"follow must be one of {SUB_FOLLOW_MODES}; got {follow!r}"
@@ -204,8 +216,9 @@ def generate_sub(
     params = _technique_params("bass.sub")
     boost = int(params["first_impact_velocity_boost"])
     jitter = int(params["repeat_velocity_jitter"])
-    base_lo, base_hi = VELOCITY_RANGES["normal"]
-    base_velocity = (base_lo + base_hi) // 2
+    resolved_profile = profile or StyleProfile.default()
+    base_lo, base_hi = resolved_profile.velocity_ranges["normal"]
+    base_velocity = int(base_lo + base_hi) // 2
     jitter_rng = random.Random(seed)
 
     bars = bars_in_section(section, analysis)
@@ -289,6 +302,7 @@ def generate_sub_drop(
     *,
     register: tuple[int, int],
     seed: int,
+    profile: StyleProfile | None = None,
 ) -> SubDropEvent:
     """Evento pontual de sub-drop na fronteira `boundary_s` (inicio de
     secao). Nota unica no fundo de `register`, com curva de pitch bend
@@ -296,7 +310,13 @@ def generate_sub_drop(
     `pitch_bend_curve_ms`, seguida de um reset final para 0 (pitch bend e
     estado persistente de CANAL — sem reset, todo evento seguinte no mesmo
     canal soaria desafinado). Nunca gera acorde — e sempre exatamente uma
-    nota, por construcao (nao ha branch que emita mais de uma)."""
+    nota, por construcao (nao ha branch que emita mais de uma).
+
+    `profile`: `StyleProfile` opcional — sobrepoe a faixa de velocity
+    (bucket `accent`) lida de `tools/constants.py`. Sem `profile`, usa
+    `StyleProfile.default()` (chamador antigo continua byte-identico).
+    """
+    assert_traceable_seed(seed, source="palette.electronic.generate_sub_drop")
     params = _technique_params("bass.sub_drop")
     duration_beats = float(params["duration_beats"])
     curve_ms = float(params["pitch_bend_curve_ms"])
@@ -307,8 +327,9 @@ def generate_sub_drop(
     dur_s = max(MIN_NOTE_DURATION_S, duration_beats * beat_dur_s)
 
     pitch = register[0]
-    velocity_lo, velocity_hi = VELOCITY_RANGES["accent"]
-    velocity = (velocity_lo + velocity_hi) // 2
+    resolved_profile = profile or StyleProfile.default()
+    velocity_lo, velocity_hi = resolved_profile.velocity_ranges["accent"]
+    velocity = int(velocity_lo + velocity_hi) // 2
     note = RhythmicNote(
         pitch=pitch, velocity=velocity,
         start_s=boundary_s, end_s=boundary_s + dur_s,
