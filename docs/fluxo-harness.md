@@ -228,7 +228,62 @@ início de execução.
 
 ---
 
-## 7. Manter em dia
+## 7. `doctor` e `test-drive`
+
+Dois subcomandos deterministicos (issue #78) que existem para o musico validar o ambiente local
+antes de rodar `brief`/`run` de verdade — nenhum dos dois invoca a CLI de IA.
+
+```mermaid
+flowchart LR
+    D([midi-arranger doctor]) --> DP[bin resolve o binario<br/>do provider via PATH]
+    DP --> DM["python3 -m tools.doctor<br/>(exec — troca o processo)"]
+    DM --> DR[[python, deps, registry,<br/>tecnicas/roles derivados,<br/>provider, permissao de escrita]]
+
+    T([midi-arranger test-drive]) --> TM["python3 -m tools.test_drive<br/>(exec)"]
+    TM --> TF[copia fixture versionado<br/>para workspace isolado]
+    TF --> TA[analyze -> plan.validate<br/>-> render -> validate<br/>com perfil MOCKADO]
+
+    style DM fill:#e8d5f2,stroke:#7d4b9e,color:#000
+    style TM fill:#e8d5f2,stroke:#7d4b9e,color:#000
+```
+
+`bin/midi-arranger` so resolve o que ja resolvia antes (o binario do provider escolhido via
+`--tool`, com a mesma logica de `tool_binary_path`) e delega o resto a `tools/doctor.py` e
+`tools/test_drive.py` via `exec python3 -m <modulo>` — o processo bash e substituido, entao o codigo
+de saida do modulo em Python vira o codigo de saida do comando, sem passar pelos sysexits do resto
+deste script. A invocacao roda com `PYTHONSAFEPATH=1` (Python >= 3.11): sem isso, `python3 -m`
+insere o diretorio de trabalho corrente na frente de `PYTHONPATH`, e rodar o comando de dentro de um
+diretorio que por acaso tem seu proprio pacote `tools/` (outro checkout, por exemplo) carregaria
+esse `tools/` em vez do instalado.
+
+`doctor` confere Python >= 3.11, as dependencias `mido`/`pretty_midi`, se o registry de tools importa
+e registra sem erro, o inventario de tecnicas/roles CURRENTE do motor (derivado de
+`tools.techniques.engine.SUPPORTED_TECHNIQUES` e `tools.render.SUPPORTED_ROLES`, nunca hardcoded),
+se o binario do provider escolhido esta em PATH e e executavel, e permissao de escrita na raiz do
+projeto e em `.midiarranger/`. Ele so declara que a capacidade de pesquisa web depende da propria CLI
+de IA do usuario — nunca testa acesso de rede de verdade.
+
+`test-drive` copia o fixture default (`tools/fixtures/test_drive/ENTRE NÓS.mid` — copia de
+`tests/fixtures/corpus_drums/ENTRE NÓS.mid`, dentro de `tools/` de proposito porque `install.sh`
+nunca instala `tests/`) ou `--fixture` informado para um workspace temporario isolado — o fixture
+original nunca e aberto para escrita — e roda o subconjunto do fluxo de 10 passos que ja e
+maquinario puro hoje: `analyze` → (perfil de estilo MOCKADO, sem pesquisa) → `plan.validate` →
+`render` → `validate`. Produz MIDI renderizado, plano e relatorio no workspace; sem `--keep`, o
+workspace e apagado ao final. Track de bateria sem `track_name` na origem recebe um nome sintetico
+deterministico (`test_drive.SYNTHETIC_DRUM_TRACK_NAME`) gravado na copia de trabalho, nunca no
+fixture original, porque `plan.edits[].track` exige string nao-vazia.
+
+Codigo de saida dos dois, documentado em `python -m tools.doctor`/`python -m tools.test_drive`:
+
+| Codigo | Significado |
+|---|---|
+| `0` | ambiente saudavel / fluxo completo sem erro de validacao musical |
+| `1` | (so `test-drive`) o fluxo rodou, mas um validador reportou severidade `error` |
+| `2` | falha de ambiente — dependencia faltando, provider ausente, fixture ausente, sem permissao de escrita |
+
+---
+
+## 8. Manter em dia
 
 Este documento é verificado por teste. O hash abaixo é o do `bin/midi-arranger` no momento em que a
 doc foi revisada pela última vez.
@@ -242,4 +297,4 @@ Ao mexer no harness:
 Se você pular o passo 1, o teste ainda vai passar — o hash não sabe se o texto ficou correto. O que
 ele garante é que **ninguém muda o harness sem passar por aqui e olhar**. O resto é honestidade.
 
-<!-- harness-sha256: cf6f96057edc825d0fa2c649a259571a2fa305cbf04b71b56f69ac92bdb4df08 -->
+<!-- harness-sha256: c2328cf38c5ff6e281be4c1977405e7e6737b170099d85243fa1ac679e078c68 -->

@@ -979,6 +979,159 @@ def test_run_does_not_archive_when_brief_hash_matches_last_run(tmp_path: Path) -
     assert "## run started " in progress
 
 
+def test_help_documents_doctor_and_test_drive_subcommands() -> None:
+    result = run_cli("--help")
+
+    assert result.returncode == 0
+    assert "doctor" in result.stdout
+    assert "test-drive" in result.stdout
+    assert "--fixture PATH" in result.stdout
+    assert "--keep" in result.stdout
+    assert "environment problem" in result.stdout
+
+
+def test_doctor_rejects_positional_arguments(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    result = run_cli("doctor", "extra-arg", "--cwd", str(project))
+
+    assert result.returncode == 64
+    assert "doctor does not accept positional arguments." in result.stderr
+
+
+def test_doctor_exits_ok_when_provider_is_installed(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    _, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("doctor", "--cwd", str(project), "--tool", "claude", env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "midi-arranger doctor" in result.stdout
+    assert "[OK] provider: 'claude' encontrado e executavel" in result.stdout
+    assert "ambiente saudavel" in result.stdout
+
+
+def test_doctor_exits_with_environment_code_when_provider_is_absent(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    # instala um mock para um provider DIFERENTE do escolhido, para o PATH
+    # continuar valido (inclusive para o proprio python3) sem que 'gemini'
+    # esteja nele.
+    _, env = install_mock_binary(tmp_path, "claude")
+
+    result = run_cli("doctor", "--cwd", str(project), "--tool", "gemini", env=env)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "nao encontrado em PATH" in result.stdout
+    assert "ambiente com problema" in result.stdout
+
+
+def test_doctor_reports_derived_techniques_and_roles_inventory(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    _, env = install_mock_binary(tmp_path, "codex")
+
+    result = run_cli("doctor", "--cwd", str(project), "--tool", "codex", env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "drums.ghost_notes" in result.stdout
+    assert "roles renderizaveis" in result.stdout
+    assert "midi-arranger nao testa acesso web" in result.stdout
+
+
+def test_test_drive_rejects_positional_arguments(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    result = run_cli("test-drive", "extra-arg", "--cwd", str(project))
+
+    assert result.returncode == 64
+    assert "test-drive does not accept positional arguments." in result.stderr
+
+
+def test_test_drive_happy_path_exits_ok_and_reports_artifacts(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    result = run_cli("test-drive", "--cwd", str(project))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "test-drive OK" in result.stdout
+    assert "midi renderizado:" in result.stdout
+    assert "workspace temporario removido" in result.stdout
+
+
+def test_test_drive_environment_failure_for_missing_fixture(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    missing_fixture = tmp_path / "no-such-file.mid"
+
+    result = run_cli(
+        "test-drive", "--cwd", str(project), "--fixture", str(missing_fixture),
+    )
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "FALHOU (environment)" in result.stderr
+    assert "fixture nao encontrado" in result.stderr
+
+
+def test_test_drive_keep_flag_preserves_workspace(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    result = run_cli("test-drive", "--cwd", str(project), "--keep")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    workspace_line = next(
+        line for line in result.stdout.splitlines() if "workspace:" in line
+    )
+    workspace_path = Path(workspace_line.split("workspace:")[1].strip())
+    try:
+        assert workspace_path.exists()
+        assert (workspace_path / "arranged.mid").exists()
+        assert (workspace_path / "arrangement-plan.json").exists()
+        assert (workspace_path / "test-drive-report.json").exists()
+    finally:
+        shutil.rmtree(workspace_path, ignore_errors=True)
+
+
+def test_doctor_loads_installed_tools_package_not_a_decoy_in_cwd(tmp_path: Path) -> None:
+    """Regressao (review PR #111, achado 3). `python3 -m tools.doctor` sem
+    protecao insere o diretorio de trabalho corrente na frente de
+    `PYTHONPATH` — rodar o comando de dentro de um diretorio que por acaso
+    tem seu proprio pacote `tools/` (por exemplo outro checkout) carregaria
+    ESSE `tools/` em vez do de `$INSTALL_ROOT`. `PYTHONSAFEPATH=1` em
+    `run_python_module` (bin/midi-arranger) impede isso."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+
+    decoy_cwd = tmp_path / "decoy-cwd"
+    decoy_pkg = decoy_cwd / "tools"
+    decoy_pkg.mkdir(parents=True)
+    (decoy_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (decoy_pkg / "doctor.py").write_text(
+        "raise SystemExit('DECOY TOOLS PACKAGE LOADED INSTEAD OF THE INSTALLED ONE')\n",
+        encoding="utf-8",
+    )
+
+    result = run_cli("doctor", "--cwd", str(project), cwd=decoy_cwd)
+
+    assert "DECOY" not in (result.stdout + result.stderr), result.stdout + result.stderr
+    assert "midi-arranger doctor" in result.stdout
+    assert result.returncode in (0, 2), result.stdout + result.stderr
+
+
 def test_shellcheck_passes_for_bin_and_shell_scripts() -> None:
     shellcheck = shutil.which("shellcheck")
     if shellcheck is None:

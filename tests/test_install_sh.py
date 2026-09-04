@@ -128,6 +128,34 @@ def test_shim_resolves_prompts_from_installed_body(tmp_path):
     assert str(REPO_ROOT / "prompts") not in (result.stdout + result.stderr)
 
 
+def test_shim_test_drive_uses_fixture_bundled_in_installed_body(tmp_path):
+    """`test-drive` sem `--fixture` tem que funcionar rodando so o corpo
+    instalado — `tests/` nao esta entre os diretorios instalados (topo deste
+    arquivo), entao o fixture default nao pode viver la (regressao: issue
+    #78 review, achado 1)."""
+    _run(tmp_path)
+    shim = _bin(tmp_path) / "midi-arranger"
+    home = _home(tmp_path)
+    assert not (home / "tests").exists()
+
+    project = tmp_path / "projeto"
+    project.mkdir()
+    result = subprocess.run(
+        [str(shim), "test-drive", "--cwd", str(project)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "test-drive OK" in result.stdout
+    # O fixture usado tem que vir de dentro do corpo instalado, nunca do
+    # checkout de onde `install.sh` rodou (antes desta correcao, o fixture
+    # default apontava para `<checkout>/tests/fixtures/...`, inexistente no
+    # corpo instalado, e o comando falhava com exit 2).
+    assert str(REPO_ROOT / "tests") not in (result.stdout + result.stderr)
+
+
 def test_shim_reports_missing_body(tmp_path):
     _run(tmp_path)
     shim = _bin(tmp_path) / "midi-arranger"
