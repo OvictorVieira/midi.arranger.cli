@@ -1217,14 +1217,57 @@ def _apply_drums_ghost_notes(
     # compasso — mesmo contrato que as demais tecnicas deste motor ja
     # davam a `density` (`density<=0.0` desliga por completo, escala
     # monotonica). Quando o plano NAO declara `density`, a fracao passa a
-    # ser 100% derivada do eixo `densidade` da secao (o caminho default
-    # descrito abaixo) — e isso, no caminho sem override, que fecha o
-    # defeito da issue #45 (quantidade vinha de uma constante fixa por
-    # musica inteira, nunca da secao).
+    # ser derivada do eixo `densidade` da secao (o caminho default
+    # descrito abaixo), modulada por `intensity` quando o plano a declara
+    # (issue #123, bloco logo adiante) — e isso, no caminho sem override,
+    # que fecha o defeito da issue #45 (quantidade vinha de uma constante
+    # fixa por musica inteira, nunca da secao).
     density_param = context.parameters.get("density")
-    explicit_density = density_param is not None
+    # `density_declared` (canal separado, escrito por
+    # `render._style_technique_parameters`) diz se o numero em `density` foi
+    # DECLARADO pelo plano em `style.<familia>.techniques[].density` ou se e
+    # apenas o eco de `techniques[].intensity`. Chamada direta do motor (fora
+    # do pipeline de `tools.render`, ex. testes unitarios) nao manda a chave:
+    # o default e "declarado", que preserva o contrato historico de quem
+    # chama a tecnica passando `density` na mao.
+    declared_flag = context.parameters.get("density_declared")
+    explicit_density = density_param is not None and (
+        bool(declared_flag) if declared_flag is not None else True
+    )
     explicit_fraction = (
         max(0.0, min(1.0, float(density_param))) if explicit_density else 0.0
+    )
+
+    # --- issue #123: `intensity` COMPOE com o eixo de secao, nao o substitui -
+    # `intensity` (0.0-1.0) e `plan.sections[].energy.densidade` (0-10) sao
+    # grandezas DIFERENTES: a primeira e quanto a tecnica se manifesta, a
+    # segunda e quanto material aquele trecho da musica pede. Como
+    # `influence.compile` SEMPRE emite `intensity`, tratar o eco dela como
+    # override total apagava o eixo de secao em todo plano vindo do fluxo
+    # real de pesquisa — trocar `densidade` de 9 para 1 devolvia MIDI
+    # byte-identico, com os dois parametros validados e um deles ignorado
+    # (parametro mentiroso, mesma categoria de `_identity_apply`).
+    #
+    # A composicao e MULTIPLICATIVA, e a escolha nao e arbitraria: as duas
+    # grandezas viram FRACAO da mesma coisa (quanto de um compasso vira
+    # ghost), e fracoes independentes compoem por produto. Multiplicar e a
+    # unica das tres composicoes obvias em que os DOIS parametros comandam
+    # sempre:
+    #   - somar sai da faixa (0,9 + 0,55 satura em 1,0 e volta a apagar a
+    #     secao no topo da escala) e, pior, `intensity=0` deixaria de
+    #     desligar a tecnica, contra a regra explicita do AGENTS.md;
+    #   - tomar o minimo faz o MAIOR dos dois virar parametro mentiroso —
+    #     mexer nele nao muda nada enquanto o outro for menor, que e
+    #     exatamente o defeito desta issue com outro nome.
+    # Nenhuma constante nova entra aqui: `intensity` ja e uma fracao 0-1
+    # declarada no plano, e o eixo de secao ja e normalizado por
+    # `energy_axis_max`. Ausencia de `intensity` e fator neutro 1.0 — plano
+    # que nao declara o campo sai byte-identico ao de antes desta correcao.
+    intensity_param = context.parameters.get("intensity")
+    intensity_scale = (
+        max(0.0, min(1.0, float(intensity_param)))
+        if intensity_param is not None
+        else 1.0
     )
 
     # `sections` chega em `context.parameters` — nao em `style.parameters`
@@ -1285,7 +1328,9 @@ def _apply_drums_ghost_notes(
             densidade_axis = window["densidade"]
             kind = window.get("kind")
         multiplier = kind_density_multiplier.get(kind, default_kind_multiplier)
-        return max(0.0, min(1.0, (densidade_axis / energy_axis_max) * multiplier))
+        return max(0.0, min(1.0, (
+            (densidade_axis / energy_axis_max) * multiplier * intensity_scale
+        )))
 
     def bar_target(bar_start_tick):
         fraction = bar_fraction(bar_start_tick)

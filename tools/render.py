@@ -911,16 +911,31 @@ def _style_technique_parameters(
     intensity: float | None = None,
 ) -> dict[str, Any]:
     parameters: dict[str, Any] = dict(style_parameters)
-    if density is not None:
-        parameters["density"] = float(density)
+    # `density` aqui e o valor DECLARADO em `StyleTechnique.density` (None
+    # quando o plano nao declarou); `intensity` e `StyleTechnique.intensity`.
+    # A resolucao dos dois canais mora TODA neste ponto:
+    #
+    # - `density` declarado continua comandando sozinho (issue #72,
+    #   retrocompatibilidade byte-a-byte: plano v1 nunca declara `intensity`);
+    # - sem `density`, `intensity` assume o papel de magnitude no dicionario
+    #   (`context.parameters["density"]`), como a issue #72 estabeleceu — os
+    #   aplicadores que so leem `density` continuam obedecendo a intensidade;
+    # - `density_declared` diz ao aplicador QUAL dos dois casos e este. Sem
+    #   essa distincao, um aplicador que tem um segundo eixo (hoje so
+    #   `drums.ghost_notes`, que le `plan.sections[].energy.densidade`) nao
+    #   tem como saber se o numero em `density` e uma ordem explicita do
+    #   plano (override total) ou o eco de `intensity` (que precisa COMPOR
+    #   com o eixo de secao, issue #123). Chave booleana, canal separado —
+    #   mesma natureza de `sections`/`bars`/`drum_bar_quota`, nunca vem de
+    #   `style.parameters`.
+    effective_density = density if density is not None else intensity
+    if effective_density is not None:
+        parameters["density"] = float(effective_density)
+        parameters["density_declared"] = density is not None
     if intensity is not None:
         # Intensidade semantica explicita de `StyleTechnique.intensity`
-        # (issue #72) — canal separado de `density` (que ja comanda o
-        # liga/desliga acima; ver `_run_style_pipeline`, que resolve
-        # `effective_density` com `density` tendo precedencia sobre
-        # `intensity` quando os dois estao declarados). Sempre exposta para
-        # o aplicador que quiser ler o valor bruto, mesmo quando `density`
-        # tambem esta presente.
+        # (issue #72), sempre exposta em bruto para o aplicador que quiser
+        # compor com ela, mesmo quando `density` declarado tem precedencia.
         parameters["intensity"] = float(intensity)
     if sections:
         # Mesmo canal separado de `tuning` logo abaixo: janelas de tick de
@@ -1094,10 +1109,11 @@ def _run_style_pipeline(
     before_bytes = _midi_bytes(current)
     for technique in style.techniques:
         canonical = _canonical_style_technique(index, family, technique.name)
-        # issue #72: `density` continua tendo precedencia quando declarado
-        # (retrocompatibilidade byte-a-byte — plano v1 nunca declara
-        # `intensity`); `intensity` so assume o papel de liga/desliga e de
-        # magnitude quando `density` esta ausente.
+        # Liga/desliga: `density` declarado manda; sem ele, `intensity`
+        # zerada tambem desliga a tecnica por completo (AGENTS.md —
+        # intensidade zerada e "desligar", nunca "minimo de um"). A
+        # MAGNITUDE dos dois canais e resolvida em
+        # `_style_technique_parameters`, que recebe os valores crus.
         effective_density = (
             technique.density if technique.density is not None else technique.intensity
         )
@@ -1132,7 +1148,7 @@ def _run_style_pipeline(
                 ),
                 parameters=_style_technique_parameters(
                     merged_parameters,
-                    effective_density,
+                    technique.density,
                     technique.style,
                     tuning,
                     family_section_windows,
