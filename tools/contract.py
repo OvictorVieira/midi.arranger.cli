@@ -3318,8 +3318,20 @@ def _report_validator_runs(
       isso com todas as letras. Logo, a cobertura desses tres e so a das
       tracks de elemento (e o harmony ainda pula `harmony="percussion"`,
       que ele nao verifica);
-    - `anticopia` itera todas as tracks renderizadas, inclusive as de
-      origem/edicao — a cobertura dele e o conjunto inteiro;
+    - `anticopia` iteraria QUALQUER track que lhe fosse entregue (e o unico
+      per_track que nao filtra por elemento do plano la dentro), entao o
+      recorte tem que vir daqui: ele recebe `element_tracks`, exatamente o
+      mesmo conjunto que `tools.render.render()` lhe entrega no render
+      fresco — la o `rendered_tracks` do momento da chamada so tem track de
+      elemento, e as tracks de origem/edicao so entram DEPOIS, e so para
+      `validate_transitions` (issue #124). Julgar track de origem por
+      anti-copia acusava o usuario de copiar o proprio material: track nao
+      declarada em `plan.edits` sai byte-identica por contrato, e mesmo a
+      declarada tem as notas ESTRUTURAIS do usuario — o arranjador so
+      acrescenta ornamento sobre elas, entao a janela que casa com o corpus
+      nao foi escrita por ele. Cobertura declarada = so as tracks de
+      elemento; para as demais o relatorio responde `sem_cobertura`, que e
+      resposta legitima, em vez de um veredito de copia sem base;
     - `persona`, `colisao` e `conformidade` sao de ESCOPO GLOBAL: persona
       recebe `rendered_tracks` marcado `# noqa: ARG001 - reservado` e nao
       consome track nenhuma, colisao so recebe o plano, conformidade
@@ -3335,7 +3347,6 @@ def _report_validator_runs(
         t for t in rendered_tracks if t.element_id in elements_by_id
     ]
     section_labels = {s.label for s in plan_obj.sections}
-    todas = tuple(t.track_name for t in rendered_tracks)
     # Harmonia so examina modo harmonico que ela mesma verifica; `percussion`
     # sai por `continue` antes de qualquer regra.
     cobertura_harmonia = tuple(
@@ -3353,6 +3364,9 @@ def _report_validator_runs(
         )
     )
     cobertura_artificialidade = tuple(t.track_name for t in element_tracks)
+    # Mesmo recorte, mesma razao: o anticopia so julga o que o arranjador
+    # escreveu (issue #124).
+    cobertura_anticopia = tuple(t.track_name for t in element_tracks)
 
     runs: list[report_mod.ValidatorRun] = [
         report_mod.ValidatorRun(
@@ -3386,9 +3400,16 @@ def _report_validator_runs(
     if corpus_paths:
         corpus = load_reference_sequences([str(p) for p in corpus_paths])
         runs.append(report_mod.ValidatorRun(
-            name="anticopia", executed=True, covered_tracks=todas,
+            name="anticopia", executed=True,
+            covered_tracks=cobertura_anticopia,
+            note=(
+                "roda so sobre as tracks de `plan.elements[]` — as mesmas "
+                "que `render` julga. Track de origem (declarada ou nao em "
+                "`plan.edits`) carrega material do usuario, nao do "
+                "arranjador, e fica sem cobertura em vez de acusada"
+            ),
             issues=tuple(validate_anticopy(
-                rendered_tracks, plan_obj, analysis, corpus=corpus,
+                element_tracks, plan_obj, analysis, corpus=corpus,
             )),
         ))
     else:

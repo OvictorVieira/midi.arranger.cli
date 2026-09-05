@@ -814,6 +814,29 @@ Todo elo que falta vira entrada em `missing_links` com código estável (`source
 `mapping`, `technique`, `track`, `metric`), caminho e motivo — o relatório nunca preenche elo
 ausente com suposição, nem trata ausência de informação como aprovação.
 
+**Escopo dos validadores no relatório (issue #124).** `report.build` audita um MIDI já escrito, e
+`tools.contract._rendered_tracks_from_midi` reconstrói por eliminação toda track do arquivo que não
+casa com elemento do plano como `RenderedTrack` sintética `source:<nome>`. Essa lista completa serve
+a `validate_transitions` (fronteira também vem de track de origem) e a `compliance` (compara origem
+com renderizado), mas **não** ao anti-cópia. Quem decide o alcance de cada validador é
+`_report_validator_runs`, do lado da fachada — nenhuma assinatura de validador muda:
+
+| Validador | Escopo | O que percorre |
+|---|---|---|
+| `harmonia`, `placement`, `artificialidade` | `per_track` | só track de elemento — eles mesmos pulam o resto por `elements_by_id.get(...) is None` |
+| `anticopia` | `per_track` | só track de elemento — é o único que percorreria qualquer lista que recebesse, então o recorte vem da fachada |
+| `persona`, `colisao`, `conformidade` | `global` | track nenhuma; erro deles não carrega campo `track` e rebaixa todo alvo |
+
+O recorte do anti-cópia é o mesmo que `tools.render.render()` sempre usou: lá o `rendered_tracks` do
+momento da chamada só tem track de elemento, e as tracks de origem/edição entram depois, só para
+`validate_transitions`. A razão é musical, não de implementação: track não declarada em `plan.edits`
+sai byte-idêntica por contrato, e mesmo a declarada tem as notas ESTRUTURAIS do usuário — o nível
+`technique` só acrescenta ornamento sobre elas. A janela que casa com o corpus de referência não foi
+escrita pelo arranjador, e acusá-la é acusar o usuário de copiar o próprio material. Consequência
+aceita: track de `plan.edits` não recebe cobertura de validador POR TRACK nenhum, e a técnica
+aplicada nela sai `aplicada_nao_verificavel` — `nao_verificavel` é resposta legítima, e é melhor que
+veredito errado.
+
 Anticópia: `InfluenceFinding.summary` **nunca** é copiado (só `summary_present`/`summary_chars`);
 `semantic_value` é citado apenas até `MAX_QUOTE_CHARS` e passa pela mesma barreira de conteúdo
 musical do perfil (`tools.influence._validate_free_string`) — string recusada vira `null` com nota
@@ -866,8 +889,9 @@ velocity 127). Cinco cenários: remodelar bateria e baixo existentes; criar a fa
 aplicar `keys.expression`; receber um achado de guitarra que o dicionário de `influence.compile` não
 mapeia e degradar em `unmapped_findings`; e respeitar `brief.excluded_families`.
 
-**Quatro achados do motor**, todos com repro concreto e `xfail(strict=True)` no arquivo — nenhum
-consertado nesta rodada, e cada marcador quebra o build no dia em que o defeito sair:
+**Quatro achados do motor**, todos com repro concreto. Os de número 1, 2 e 4 seguem com
+`xfail(strict=True)` no arquivo — cada marcador quebra o build no dia em que o defeito sair. O de
+número 3 foi corrigido na issue #124 e seu teste hoje é regressão comum:
 
 1. `drums.microtiming` não roda em take de bateria real com releases sobrepostos: o contrato
    `humanize` congela a ORDEM GLOBAL dos `note_off` (`_MidiContentSnapshot.note_pairs`), e deslocar
@@ -877,10 +901,12 @@ consertado nesta rodada, e cada marcador quebra o build no dia em que o defeito 
 2. `render` e `validate` divergem sobre o MESMO arquivo e o MESMO plano: o render que gerou a linha
    de baixo declara zero erro harmônico e o `validate` sobre o arquivo que ele acabou de escrever
    acusa sete, em notas a poucos milissegundos da borda de compasso.
-3. O anti-cópia de `report.build` julga as tracks que o arranjador NÃO escreveu
-   (`_rendered_tracks_from_midi` reconstrói cada track de origem como `source:<nome>`), enquanto o de
-   `render` só olha as tracks de elemento. Com o mesmo corpus: zero contra dezenove, e esses erros
-   rebaixam o status de TODA técnica do relatório para `aplicada_com_erro`.
+3. **CORRIGIDO (issue #124).** O anti-cópia de `report.build` julgava as tracks que o arranjador
+   NÃO escreveu (`_rendered_tracks_from_midi` reconstrói cada track de origem como `source:<nome>`),
+   enquanto o de `render` só olha as tracks de elemento. Com o mesmo corpus: zero contra dezenove, e
+   esses erros rebaixavam o status de TODA técnica do relatório para `aplicada_com_erro`. Hoje a
+   fachada entrega ao `validate_anticopy` o mesmo conjunto que o `render` lhe entrega — ver
+   "Escopo dos validadores no relatório", acima.
 4. `StyleTechnique.intensity` sequestra o canal de `density` e desliga a densidade por seção da
    issue #45. Como `influence.compile` sempre emite `intensity`, todo plano montado pelo caminho real
    de pesquisa perde o eixo `plan.sections[].energy.densidade`: trocar 9 por 1 entre as duas metades
