@@ -30,7 +30,7 @@ from tools import report as report_mod
 from tools.brief_ref import brief_sha256
 from tools.influence import InfluenceFinding, InfluenceProfile, InfluenceSource
 from tools.influence_compile import compile_influence
-from tools.plan import ArrangementPlan, BriefRef, StyleTechnique
+from tools.plan import ArrangementPlan, BriefRef, Element, StyleTechnique
 from tools.registry import call
 from tools.render import render
 from tools.report import ValidatorRun, build_report, parse_stamp, read_stamps
@@ -42,12 +42,14 @@ def _neutral_corpus(tmp_path: Path) -> list[str]:
     """Corpus de referencia REAL, porem sem parentesco com o material do
     teste: uma escala de piano.
 
-    Serve para fazer o `anticopia` EXECUTAR — ele e o unico dos sete
-    validadores que percorre tambem as tracks de `plan.edits`/origem, entao
-    e o unico que pode dar cobertura objetiva a uma track de edicao. Com o
-    corpus real de bateria (`tests/fixtures/corpus_drums`), a bateria chapada
-    da fixture casa de verdade e o veredito vira `com_erro` — cenario do
-    teste de erro, nao do caminho feliz.
+    Serve para fazer o `anticopia` EXECUTAR sem que ele acuse nada. Desde a
+    issue #124 ele julga so as tracks de `plan.elements[]` — as mesmas que o
+    `render` julga —, entao track de `plan.edits`/origem nao ganha cobertura
+    de validador nenhum e sai `sem_cobertura`, que e a resposta honesta. Com
+    o corpus real de bateria (`tests/fixtures/corpus_drums`), a bateria
+    chapada da fixture casa de verdade e o veredito de um ELEMENTO de
+    bateria viraria `com_erro` — cenario do teste de erro, nao do caminho
+    feliz.
     """
     import pretty_midi
 
@@ -120,6 +122,47 @@ def _rendered_project(tmp_path: Path) -> tuple[Path, Path, Path, ArrangementPlan
     return src, out, brief_path, plan
 
 
+def _rendered_project_com_elemento_de_bateria(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, ArrangementPlan]:
+    """Render real em que `drums.ghost_notes` cai num ELEMENTO gerado.
+
+    O caminho feliz precisa de um alvo que algum validador POR TRACK
+    realmente percorra. Desde a issue #124 esse alvo e sempre track de
+    elemento: o `anticopia` — como o `render` sempre fez — nao julga track
+    de origem, declarada ou nao em `plan.edits`, porque as notas dela sao do
+    usuario. Sem `plan.edits`, a bateria da origem sai byte-identica.
+    """
+    src = _build_flat_metal_drums_source(tmp_path)
+    plan = _plan_with_full_drum_pipeline(src)
+    plan.edits = []
+    plan.elements.append(Element(
+        id="drums_main",
+        role="drums",
+        sections=["MAIN"],
+        register=[35, 59],
+        layers=1,
+        sync_role="exact_anchor",
+        articulation="staccato",
+        harmony="percussion",
+        dynamics={"shape": "hold"},
+        instrument={
+            "plugin": "Superior 3", "preset": "Metal Kit", "verified": True,
+        },
+        rationale="Levada nova de bateria para sustentar o refrao.",
+    ))
+    brief_path = _brief_file(
+        tmp_path, authorized=[GHOST], suggested=[GHOST, "drums.flam"],
+    )
+    plan.brief_ref = BriefRef(path=str(brief_path), sha256=brief_sha256(brief_path))
+    plan.style["drums"].techniques = [
+        StyleTechnique(name=GHOST, evidence_refs=["f-ghost"]),
+    ]
+    out = tmp_path / "out-elemento.mid"
+    render(plan, out)
+    return src, out, brief_path, plan
+
+
 def _build_via_tool(
     src: Path,
     out: Path,
@@ -163,15 +206,16 @@ def _link(report: dict, technique: str) -> dict:
 def test_cadeia_completa_liga_fonte_achado_mapeamento_tecnica_track_metrica(tmp_path):
     """O caminho feliz inteiro, com todos os artefatos presentes.
 
-    A track alvo e `Drums`, de `plan.edits`. Dos sete validadores, o UNICO
-    que a percorre e o `anticopia` — harmonia, placement e artificialidade
-    pulam por `elements_by_id.get(track.element_id) is None`, e persona,
-    colisao e conformidade sao de escopo global. Por isso o caminho feliz
-    passa um corpus de referencia: sem ele nao existe cobertura real
-    nenhuma, e o status honesto e `aplicada_nao_verificavel` (ver
-    `test_track_de_edit_sem_validador_por_track_nao_pode_sair_verificada`).
+    A track alvo e um ELEMENTO de bateria — o unico tipo de alvo que algum
+    validador POR TRACK percorre. Track de `plan.edits`/origem nunca chega a
+    `aplicada_verificada`: harmonia, placement e artificialidade a pulam por
+    `elements_by_id.get(track.element_id) is None`, persona/colisao/
+    conformidade sao de escopo global, e o `anticopia` deixou de julga-la na
+    issue #124 (as notas sao do usuario, nao do arranjador). O status
+    honesto dela e `aplicada_nao_verificavel` — ver
+    `test_track_de_edit_sem_validador_por_track_nao_pode_sair_verificada`.
     """
-    src, out, brief_path, plan = _rendered_project(tmp_path)
+    src, out, brief_path, plan = _rendered_project_com_elemento_de_bateria(tmp_path)
     report = _build_via_tool(
         src, out, plan, brief_path=brief_path, influence=_influence_profile(),
         reference_corpus=_neutral_corpus(tmp_path),
@@ -197,8 +241,10 @@ def test_cadeia_completa_liga_fonte_achado_mapeamento_tecnica_track_metrica(tmp_
 
     # elo 5: track carimbada pelo render
     targets = link["targets"]
-    assert [t["track_name"] for t in targets] == ["Drums"]
-    assert targets[0]["kind"] == "edit"
+    assert [t["track_name"] for t in targets] == [
+        "drums_main - Superior 3 / Metal Kit *",
+    ]
+    assert targets[0]["kind"] == "element"
 
     # elo 6: metrica medida no MIDI final + veredito de validador
     metrics = targets[0]["metrics"]
@@ -206,9 +252,10 @@ def test_cadeia_completa_liga_fonte_achado_mapeamento_tecnica_track_metrica(tmp_
     assert metrics["velocity_min"] is not None
     evidence = targets[0]["validator_evidence"]
     assert evidence["veredito"] == "limpo"
-    # `anticopia` e o unico validador que REALMENTE percorreu esta track.
-    # Harmonia nunca aparece aqui: ela pula track de `plan.edits`.
-    assert evidence["validadores"] == ["anticopia"]
+    # Os validadores que REALMENTE percorreram esta track. Harmonia nao
+    # aparece: ela pula `harmony="percussion"`, e a cobertura declarada em
+    # `_report_validator_runs` diz isso.
+    assert evidence["validadores"] == ["anticopia", "artificialidade", "placement"]
     assert "harmonia" not in evidence["validadores"]
     assert evidence["erros_globais"] == []
 
@@ -904,3 +951,98 @@ def test_carimbo_ilegivel_vira_elo_ausente_em_vez_de_sumir(tmp_path):
         for m in report["missing_links"]
     ), "carimbo que o leitor nao entende tem que virar elo ausente declarado"
     assert _link(report, GHOST)["status"] != "aplicada_verificada"
+
+
+# --- regressao da issue #124: escopo do anticopia no relatorio --------------
+#
+# `_rendered_tracks_from_midi` reconstroi CADA track do MIDI renderizado que
+# nao casa com um elemento do plano como `RenderedTrack` sintetica
+# `source:<nome>`. O `report.build` entregava essa lista inteira ao
+# `validate_anticopy`, enquanto o `render` so lhe entrega as tracks de
+# elemento. Resultado sobre o mesmo arquivo e o mesmo corpus: o `render`
+# acusava zero copia e o relatorio acusava dezenove — todas em tracks
+# copiadas byte a byte do MIDI do proprio usuario —, e como erro de
+# validador rebaixa o alvo, TODA tecnica do relatorio virava
+# `aplicada_com_erro`.
+
+
+def _corpus_do_proprio_render(out: Path) -> list[str]:
+    """Corpus adversarial: o proprio MIDI renderizado.
+
+    Toda track do arquivo casa consigo mesma, entao o `anticopia` acusa
+    exatamente aquilo que ele julga — o que torna a lista de acusadas uma
+    fotografia direta do escopo dele, sem depender de parentesco musical.
+    """
+    return [str(out)]
+
+
+def test_anticopia_do_relatorio_nao_julga_track_que_o_arranjador_nao_escreveu(
+    tmp_path,
+):
+    """Nem a track de origem intocada (`Piano`, `Bass` — fora de
+    `plan.edits`, byte-identicas por contrato), nem a track editada
+    (`Drums`, em `plan.edits`, cujas notas ESTRUTURAIS continuam sendo as do
+    usuario) podem ser acusadas de copia. O elemento gerado (`pad_main`),
+    esse sim escrito pelo arranjador, continua sendo julgado."""
+    src, out, brief_path, plan = _rendered_project(tmp_path)
+    report = _build_via_tool(
+        src, out, plan, brief_path=brief_path, influence=_influence_profile(),
+        reference_corpus=_corpus_do_proprio_render(out),
+    )
+    anticopia = report["validators"]["anticopia"]
+    assert anticopia["executado"] is True
+
+    acusadas = {i["track"] for i in anticopia["issues"]}
+    assert acusadas == {"pad_main - Omnisphere / Desert Wind *"}, (
+        f"tracks acusadas fora do que o arranjador escreveu: {sorted(acusadas)}"
+    )
+    # nenhuma track sintetica de origem/edicao entra na conta...
+    assert not [
+        i for i in anticopia["issues"]
+        if any(e.startswith("source:") for e in i["element_ids"])
+    ]
+    # ...e a cobertura declarada nao pode afirmar que elas foram olhadas.
+    assert anticopia["tracks_cobertas"] == ["pad_main - Omnisphere / Desert Wind *"]
+    for nome in ("Piano", "Bass", "Drums"):
+        assert nome not in anticopia["tracks_cobertas"]
+
+
+def test_anticopia_do_relatorio_continua_julgando_track_de_elemento(tmp_path):
+    """A metade que NAO pode ser perdida junto com a correcao: quando a copia
+    esta numa track que o arranjador escreveu de fato, o relatorio acusa."""
+    src, out, brief_path, plan = _rendered_project_com_elemento_de_bateria(tmp_path)
+    report = _build_via_tool(
+        src, out, plan, brief_path=brief_path, influence=_influence_profile(),
+        reference_corpus=_corpus_do_proprio_render(out),
+    )
+    anticopia = report["validators"]["anticopia"]
+    acusadas = {i["track"] for i in anticopia["issues"]}
+    assert "drums_main - Superior 3 / Metal Kit *" in acusadas
+    assert anticopia["erros"] >= 1
+
+    link = _link(report, GHOST)
+    assert link["targets"][0]["kind"] == "element"
+    assert link["status"] == "aplicada_com_erro"
+
+
+def test_copia_falsa_em_track_de_origem_nao_rebaixa_o_status_da_tecnica(tmp_path):
+    """O efeito colateral que motivou a issue: a acusacao falsa em track de
+    origem nao carregava so um erro solto — ela rebaixava para
+    `aplicada_com_erro` o status de TODA tecnica do relatorio, afirmando
+    FALHA sem base. Hoje a tecnica aplicada na track de `plan.edits` sai
+    `aplicada_nao_verificavel`: ninguem a percorreu, e isso e o que o
+    relatorio diz."""
+    src, out, brief_path, plan = _rendered_project(tmp_path)
+    report = _build_via_tool(
+        src, out, plan, brief_path=brief_path, influence=_influence_profile(),
+        reference_corpus=_corpus_do_proprio_render(out),
+    )
+    link = _link(report, GHOST)
+    evidencia = link["targets"][0]["validator_evidence"]
+
+    assert link["targets"][0]["track_name"] == "Drums"
+    assert evidencia["erros"] == []
+    assert evidencia["erros_globais"] == []
+    assert evidencia["veredito"] == "sem_cobertura"
+    assert link["status"] == "aplicada_nao_verificavel"
+    assert report["techniques"]["por_status"]["aplicada_com_erro"] == []
