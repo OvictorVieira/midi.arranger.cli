@@ -846,6 +846,46 @@ puras e testadas no mesmo módulo (`false_downbeat_delay_s`, `generate_subdivisi
 `half_time_drum_pattern`) — cobrem a mecânica descrita, mas NÃO ganharam role/campo de plano próprio
 nesta rodada (mesmo corte de escopo que `electronic.py` já documenta para `perc_elec`/`vox_chop`).
 
+### Prova ponta a ponta com influência mockada (issue #79)
+
+`tests/test_e2e_influencias.py` exercita o produto inteiro sem web e sem modelo: um
+`InfluenceProfile` fixo, escrito no próprio arquivo de teste, faz o papel da pesquisa; daí para baixo
+tudo é real e passa pelo mesmo `tools.registry.call` do CLI —
+`analyze` → `tools.influence.validate` → `influence.compile` → `brief.validate` → `plan.validate` →
+`render` → `validate` (+ `compliance.validate` e `report.build`).
+
+**Divergência declarada:** a issue pede `influence.validate` como fachada. Ela não existe no
+registry — a validação do perfil é função de módulo (`tools.influence.validate`), como esta seção já
+documenta. O teste `test_influence_validate_nao_e_fachada_do_registry` fixa a divergência para que
+ela seja decisão visível, não esquecimento.
+
+As duas origens são fixtures reais: `tests/fixtures/ancora_arranjo_atual.mid` (arranjo feito à mão,
+com `Bass`, `Drums`, guitarras, teclas e marcadores de seção) e
+`tests/fixtures/corpus_drums/ENTRE NÓS.mid` (a bateria mais chapada do acervo — 1037 notas todas em
+velocity 127). Cinco cenários: remodelar bateria e baixo existentes; criar a família baixo ausente;
+aplicar `keys.expression`; receber um achado de guitarra que o dicionário de `influence.compile` não
+mapeia e degradar em `unmapped_findings`; e respeitar `brief.excluded_families`.
+
+**Quatro achados do motor**, todos com repro concreto e `xfail(strict=True)` no arquivo — nenhum
+consertado nesta rodada, e cada marcador quebra o build no dia em que o defeito sair:
+
+1. `drums.microtiming` não roda em take de bateria real com releases sobrepostos: o contrato
+   `humanize` congela a ORDEM GLOBAL dos `note_off` (`_MidiContentSnapshot.note_pairs`), e deslocar
+   o hi-hat alguns ms troca a ordem do release dele com o de outra peça. `ancora_arranjo_atual.mid`
+   tem 16 re-ataques de 42/46 com a nota anterior ainda soando e falha; os MIDIs de `corpus_drums`
+   não têm nenhum e passam.
+2. `render` e `validate` divergem sobre o MESMO arquivo e o MESMO plano: o render que gerou a linha
+   de baixo declara zero erro harmônico e o `validate` sobre o arquivo que ele acabou de escrever
+   acusa sete, em notas a poucos milissegundos da borda de compasso.
+3. O anti-cópia de `report.build` julga as tracks que o arranjador NÃO escreveu
+   (`_rendered_tracks_from_midi` reconstrói cada track de origem como `source:<nome>`), enquanto o de
+   `render` só olha as tracks de elemento. Com o mesmo corpus: zero contra dezenove, e esses erros
+   rebaixam o status de TODA técnica do relatório para `aplicada_com_erro`.
+4. `StyleTechnique.intensity` sequestra o canal de `density` e desliga a densidade por seção da
+   issue #45. Como `influence.compile` sempre emite `intensity`, todo plano montado pelo caminho real
+   de pesquisa perde o eixo `plan.sections[].energy.densidade`: trocar 9 por 1 entre as duas metades
+   do arquivo devolve MIDI byte-idêntico.
+
 ### Conclusão
 
 O agente emite a sentinela de conclusão no stdout quando o arranjo está pronto e validado. Ela é
