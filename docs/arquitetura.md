@@ -89,6 +89,7 @@ Contexto limpo a cada iteração significa que **todo estado vive em arquivo**.
 | Arquivo | Papel | Quem escreve |
 |---|---|---|
 | `arrangement-brief.json` | O que o usuário quer: demanda, respostas da entrevista, perfis de estilo pesquisados com `sources`, `researched_at` e `confidence` | fase `brief` |
+| `influence-profile.json` | A pesquisa desta música: `sources[]` e `findings[]` do `InfluenceProfile` (`tools/influence.py`) | fase `brief` |
 | `arrangement-plan.json` | O que será construído: seções, elementos, `style`, `edits`, `rationale` por elemento | fase `run` |
 | `arrangement-report.json` | Relatório de proveniência: a cadeia da influência ao resultado MIDI | tool `report.build`, depois do `render` |
 | `progress.txt` | Log append-only: o que cada iteração fez | fase `run` |
@@ -249,6 +250,47 @@ Guitarra em `unmapped_findings` (comportamento válido, motor ainda não executa
   "summary": "Tecnica levantada mas ainda nao executada pelo motor"
 }
 ```
+
+### A skill `midi-brief` como coordenadora (issue #76)
+
+A entrevista deixou de ser só um formulário: `skills/midi-brief/SKILL.md` coordena o MVP
+*reference-driven* inteiro. A divisão é a mesma de sempre — **a IA do usuário pesquisa e decide; o
+maquinário determinístico valida e executa** —, agora com os dez passos explícitos na skill:
+
+1. `analyze` → 2. entrevista → 3. pesquisa das referências citadas → 4. registro de fontes e
+achados no `InfluenceProfile` → 5. validação do perfil → 6. `influence.compile` → 7. apresentação
+dos mapeamentos e dos achados **não suportados** → 8. autorização explícita → 9. brief +
+`influence-profile.json` gravados → 10. `midi-arranger run` renderiza, valida, corrige e entrega.
+
+Regras que a skill carrega e que o maquinário faz valer:
+
+- **Linguagem do produto.** Arranjo *influenciado por características de performance*. Nunca
+  "clone", "cópia" ou "reprodução exata" — posicionamento legal, não preferência estética.
+- **Nada de número inventado a partir de prosa.** O perfil registra comportamento em vocabulário
+  fechado; número de MIDI e parâmetro de execução vêm do manual (`techniques.describe`) ou de
+  `influence.compile`. `tools.influence._validate_free_string` recusa nota e sequência MIDI dentro
+  de `semantic_value`/`summary`.
+- **Só se oferece o que o motor executa.** As sugestões saem restritas a `SUPPORTED_TECHNIQUES`;
+  técnica apenas documentada (`implemented: false`) não pode ser oferecida nem autorizada —
+  `brief.validate` recusa em `E_BRIEF_TECHNIQUE_NOT_IMPLEMENTED`.
+- **Autorização em uma ação, lista canônica completa.** O usuário pode autorizar o conjunto
+  recomendado de uma vez, mas o brief grava nome por nome em `authorized_techniques[]`; não existe
+  marcador de "todas". Silêncio ou dúvida não autoriza nada.
+- **Achado não suportado permanece visível.** `unmapped_findings` é apresentado ao usuário e
+  declarado em `assumptions`; nunca é descartado nem vira sugestão genérica.
+- **Ausência de pesquisa é lacuna, não decisão.** "A referência não usa isso" só existe com fonte
+  (`intensity: off`, que sai em `not_recommended`).
+- **Sem acesso à web, três saídas.** Fornecer as fontes manualmente, usar a persona default (com a
+  ausência declarada em `assumptions`), ou cancelar aquela referência. Memória do modelo não é
+  fonte e não entra em `sources[]`.
+- **Veto manda mais que sugestão.** Antirreferência e veto do usuário derrubam a sugestão
+  compilada; veto de família inteira vira `excluded_families[]`.
+- **A skill não renderiza.** Render é o passo 10, na fase `run`, e só depois da autorização
+  gravada.
+
+O perfil vive em `influence-profile.json`, no projeto daquela música, ao lado do brief — nunca em
+`knowledge/`, nunca como persona reutilizável. É ele que a fase `run` passa a `report.build` para
+fechar a cadeia de proveniência.
 
 ### Bloco `style`
 

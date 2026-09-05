@@ -192,3 +192,20 @@ def test_all_drivers_restrict_completion_sentinel_to_validated_delivery() -> Non
         assert "`render` passou" in text
         assert "relatorio de\nvalidadores foi lido" in text
         assert "Nunca emita a sentinela para encerrar cedo" in text
+
+
+def test_all_drivers_carry_the_influence_contract() -> None:
+    """Issue #76: a fase `run` herda o mesmo contrato da skill de brief —
+    linguagem do produto, perfil de influencia somente leitura, nada de numero
+    inventado a partir de prosa, achado nao suportado visivel e execucao
+    restrita ao que o usuario autorizou. Os sete drivers dizem a mesma coisa."""
+    for name in DRIVER_NAMES:
+        text = _driver_text(name)
+
+        assert "influenciado por caracteristicas de performance" in text, name
+        assert "clone, copia ou reproducao exata" in text, name
+        assert "influence-profile.json" in text, name
+        assert "Nunca invente numero MIDI nem parametro tecnico a partir de prosa" in text, name
+        assert "unmapped_findings" in text, name
+        assert "authorized_techniques" in text, name
+        assert "Sugestao nao\nautoriza, silencio nao autoriza" in text, name
