@@ -585,6 +585,12 @@ def test_render_applies_style_techniques_to_generated_tracks(
     assert calls[0]["parameters"] == {
         "sem_sinal_tipico_ms": [25, 40],
         "density": 0.4,
+        # issue #123: `density_declared` acompanha todo `density` no
+        # despacho e diz se o numero veio de `StyleTechnique.density`
+        # (override explicito, `True` aqui) ou e apenas o eco de
+        # `StyleTechnique.intensity` — sem essa distincao o aplicador com
+        # segundo eixo (secao) nao tem como compor os dois.
+        "density_declared": True,
     }
     assert calls[0]["seed"] != plan.seed
     assert any("W_TEST_TECHNIQUE" in w for w in report.warnings)
