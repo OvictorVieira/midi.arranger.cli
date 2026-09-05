@@ -661,8 +661,11 @@ nenhum novo:
   o onset, uma nota terminando cinco ticks antes do tempo passava na guarda e o
   `note_on` da fundamental do acorde nascia ANTES do `note_off` dela — o
   sintetizador cortava a fundamental. Acorde cujo `note_off` deslocado cruzaria
-  o `note_off` de uma nota de fora também fica de fora, porque `note_pairs`
-  congela a ordem dos `note_off` da track inteira.
+  o `note_off` de uma nota de fora também fica de fora — guarda conservadora
+  herdada de quando o contrato `humanize` congelava a ordem global dos
+  `note_off`. Desde a issue #125 o pareamento é por track/canal/altura e essa
+  travessia deixou de ser violação, mas a guarda permanece: removê-la mudaria a
+  saída de MIDIs que já passam, e byte-identidade manda mais que a limpeza.
 - `keys.human_articulation`: aplica a razão de articulação medida (0,75) ao
   tell nº 2 do manual, a nota colada com 100% da duração nominal. A razão é
   medida contra o INTERVALO ATÉ O PRÓXIMO ATAQUE, não contra a duração escrita:
@@ -866,14 +869,20 @@ velocity 127). Cinco cenários: remodelar bateria e baixo existentes; criar a fa
 aplicar `keys.expression`; receber um achado de guitarra que o dicionário de `influence.compile` não
 mapeia e degradar em `unmapped_findings`; e respeitar `brief.excluded_families`.
 
-**Quatro achados do motor**, todos com repro concreto e `xfail(strict=True)` no arquivo — nenhum
-consertado nesta rodada, e cada marcador quebra o build no dia em que o defeito sair:
+**Quatro achados do motor**, todos com repro concreto. O primeiro foi corrigido na issue #125 e
+hoje é teste de regressão; os outros três seguem com `xfail(strict=True)` no arquivo, e cada
+marcador quebra o build no dia em que o defeito sair:
 
-1. `drums.microtiming` não roda em take de bateria real com releases sobrepostos: o contrato
-   `humanize` congela a ORDEM GLOBAL dos `note_off` (`_MidiContentSnapshot.note_pairs`), e deslocar
-   o hi-hat alguns ms troca a ordem do release dele com o de outra peça. `ancora_arranjo_atual.mid`
-   tem 16 re-ataques de 42/46 com a nota anterior ainda soando e falha; os MIDIs de `corpus_drums`
-   não têm nenhum e passam.
+1. **CORRIGIDO (issue #125).** `drums.microtiming` não rodava em take de bateria real com releases
+   sobrepostos: o contrato `humanize` congelava a ORDEM GLOBAL dos `note_off`, e deslocar o hi-hat
+   alguns ms trocava a ordem do release dele com o de outra peça. `ancora_arranjo_atual.mid` tem 16
+   re-ataques de 42/46 com a nota anterior ainda soando e falhava; os MIDIs de `corpus_drums` não
+   têm nenhum e sempre passaram. O snapshot passou a contar pares FECHADOS por
+   (track, canal, altura) — `_MidiContentSnapshot.closed_pairs_by_key` —, que é a leitura literal da
+   regra do `AGENTS.md`. `note_off` órfão e `note_on` sem fechamento continuam sendo levantados por
+   `from_midi` na leitura, antes de qualquer comparação, e
+   `tests/test_humanize_contract_releases.py` prova, uma a uma, que contagem, pitch, ordem de
+   `note_on`, órfão e nota presa continuam sendo pegos num MIDI com releases sobrepostos.
 2. `render` e `validate` divergem sobre o MESMO arquivo e o MESMO plano: o render que gerou a linha
    de baixo declara zero erro harmônico e o `validate` sobre o arquivo que ele acabou de escrever
    acusa sete, em notas a poucos milissegundos da borda de compasso.

@@ -385,7 +385,29 @@ class _MidiContentSnapshot:
     note_on_count: int
     pitch_multiset: tuple[int, ...]
     note_on_sequence: tuple[tuple[int, int, int], ...]
-    note_pairs: tuple[tuple[int, int, int], ...]
+    closed_pairs_by_key: tuple[tuple[tuple[int, int, int], int], ...]
+    """Quantos pares FECHADOS cada (track, canal, altura) tem.
+
+    O `AGENTS.md` define a nota do contrato `humanize` como par FECHADO:
+    `note_off` e `note_on` com velocity 0 sao equivalentes, e `note_off`
+    orfao ou `note_on` sem fechamento sao violacao. Ele NAO pede que o
+    entrelacamento dos releases entre alturas DIFERENTES fique congelado --
+    e nao poderia, porque mudar duracao e eixo livre nesse nivel.
+
+    Ate a issue #125 este campo guardava a ordem GLOBAL dos `note_off` da
+    track. Bateria real de biblioteca re-ataca hi-hat com a peca anterior
+    ainda soando; deslocar essas notas alguns milissegundos (o proposito de
+    `drums.microtiming`) inverte essa ordem global sem tocar em contagem,
+    pitch nem ordem de `note_on`, e a checagem acusava violacao onde nao
+    havia. A contagem por (track, canal, altura) e a leitura literal da
+    regra escrita. O que a ordem global pegava alem disso -- inversao de
+    release entre alturas diferentes -- e apenas mudanca de duracao, que o
+    nivel `humanize` autoriza.
+
+    As duas violacoes estruturais que o pareamento existe para pegar
+    (`note_off` orfao e `note_on` sem fechamento) sao levantadas por
+    `from_midi` no momento da leitura, antes de qualquer comparacao.
+    """
 
     @classmethod
     def from_midi(
@@ -395,7 +417,7 @@ class _MidiContentSnapshot:
         canonical: str,
     ) -> _MidiContentSnapshot:
         events: list[tuple[int, int, int]] = []
-        pairs: list[tuple[int, int, int]] = []
+        closed: dict[tuple[int, int, int], int] = {}
         pitches: list[int] = []
         for track_index, track in enumerate(mid.tracks):
             pending: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
@@ -417,7 +439,8 @@ class _MidiContentSnapshot:
                             f"contrato humanize violado por {canonical}: "
                             "note_off orfao encontrado"
                         )
-                    pairs.append(stack.pop(0))
+                    event = stack.pop(0)
+                    closed[event] = closed.get(event, 0) + 1
             unclosed = [
                 event
                 for stack in pending.values()
@@ -432,7 +455,7 @@ class _MidiContentSnapshot:
             note_on_count=len(events),
             pitch_multiset=tuple(sorted(pitches)),
             note_on_sequence=tuple(events),
-            note_pairs=tuple(pairs),
+            closed_pairs_by_key=tuple(sorted(closed.items())),
         )
 
 
@@ -628,10 +651,10 @@ def _validate_humanize_contract(
             f"contrato humanize violado por {canonical}: ordem dos note_on "
             "por track/canal/altura mudou"
         )
-    if after.note_pairs != before.note_pairs:
+    if after.closed_pairs_by_key != before.closed_pairs_by_key:
         raise TechniqueContractError(
             f"contrato humanize violado por {canonical}: pareamento de "
-            "note_on/note_off mudou"
+            "note_on/note_off por track/canal/altura mudou"
         )
 
 
@@ -6016,10 +6039,13 @@ def _apply_keys_rolled_chord(
         nascendo antes desse `note_off` fazia o sintetizador cortar a
         fundamental do acorde no `note_off` da nota velha.
       - Acorde cujo `note_off` deslocado cruzaria o `note_off` de uma nota de
-        FORA do acorde fica de fora: `_MidiContentSnapshot.note_pairs` guarda
-        os pares na ordem dos `note_off` da track inteira, e o contrato
-        `humanize` congela essa ordem. Nota de mesma altura soando por cima do
-        acorde tambem barra o rolo — o pareamento FIFO dela e ambiguo.
+        FORA do acorde fica de fora. Era exigencia do contrato `humanize`,
+        que congelava a ordem global dos `note_off` da track; desde a issue
+        #125 o pareamento e por (track, canal, altura) e essa travessia
+        deixou de ser violacao. A guarda ficou por byte-identidade: remove-la
+        mudaria a saida de MIDIs que ja passam. Nota de mesma altura soando
+        por cima do acorde tambem barra o rolo — o pareamento FIFO dela e
+        ambiguo, e esse caso continua sendo violacao de verdade.
       - A decisao de rolar e o espalhamento sorteado saem da seed mais a
         IDENTIDADE do acorde (canal, tick, alturas), nao da posicao dele num
         pool. Acorde rolado deixa de ser simultaneo e some do pool; com

@@ -1551,27 +1551,26 @@ def test_bateria_real_nao_repete_o_defeito_de_ghost_em_86_por_cento_dos_compasso
 
 # --- achados: bugs do motor expostos por este fluxo ------------------------
 #
-# Os quatro testes abaixo estao marcados `xfail(strict=True)`: eles afirmam o
-# comportamento CORRETO e falham hoje. Nao ha conserto de motor nesta rodada
-# (issue #79 e de teste); cada um carrega o repro concreto e quebra o build no
-# dia em que o defeito for corrigido, obrigando a remover o marcador.
+# Os tres testes marcados `xfail(strict=True)` abaixo afirmam o comportamento
+# CORRETO e falham hoje. Nao ha conserto de motor nesta rodada (issue #79 e de
+# teste); cada um carrega o repro concreto e quebra o build no dia em que o
+# defeito for corrigido, obrigando a remover o marcador. O quarto, o do
+# `drums.microtiming` com releases sobrepostos, foi corrigido na issue #125 e
+# hoje passa como regressao.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drums.microtiming nao roda em take de bateria real com releases "
-        "sobrepostos: o contrato humanize congela a ORDEM GLOBAL dos "
-        "note_off (`_MidiContentSnapshot.note_pairs`), e deslocar o hi-hat "
-        "alguns ms troca a ordem do release dele com o de outra peca. "
-        "`ancora_arranjo_atual.mid` tem 16 re-ataques de 42/46 com a nota "
-        "anterior ainda soando; DEIXE IR/ENTRE NOS/FARDO nao tem nenhum e "
-        "por isso passam. O AGENTS.md exige que a nota seja par FECHADO, "
-        "nao que o entrelacamento de releases entre alturas diferentes "
-        "fique congelado."
-    ),
-)
 def test_bug_microtiming_em_bateria_real_com_releases_sobrepostos() -> None:
+    """Regressao da issue #125.
+
+    `ancora_arranjo_atual.mid` tem 16 re-ataques de 42/46 com a nota anterior
+    ainda soando; DEIXE IR/ENTRE NOS/FARDO nao tem nenhum e por isso sempre
+    passaram. O contrato `humanize` congelava a ORDEM GLOBAL dos `note_off`,
+    e deslocar o hi-hat alguns ms trocava a ordem do release dele com o de
+    outra peca. O `AGENTS.md` exige que a nota seja par FECHADO por
+    track/canal/altura, nao que o entrelacamento de releases entre alturas
+    diferentes fique congelado.
+    """
+
     from tools.techniques import apply_technique
 
     fonte = mido.MidiFile(str(ANCORA))
