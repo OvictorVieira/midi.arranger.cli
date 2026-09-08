@@ -346,7 +346,10 @@ class ValidatorRun:
     - `issues`: os objetos de issue do proprio validador (dataclasses com
       `severity` e, quando o validador e por track, `track`). Vereditos de
       conformidade (`RequisitoVerdict`) tambem entram aqui.
-    - `note`: motivo, quando `executed=False`.
+    - `note`: motivo, quando `executed=False`; com `executed=True`, a
+      ressalva de alcance que `covered_tracks` sozinho nao explica (ex.: o
+      anticopia so julga track de elemento, issue #124). Nunca uma
+      afirmacao de resultado.
     """
 
     name: str

@@ -1620,20 +1620,13 @@ def test_bug_harmonia_muda_de_veredito_entre_render_em_memoria_e_arquivo(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "report.build julga por anti-copia as tracks que o arranjador NAO "
-        "escreveu: `_rendered_tracks_from_midi` reconstroi cada track de "
-        "origem como `source:<nome>` e o anticopia percorre todas, enquanto "
-        "o `render` so olha as tracks de elemento. Com o mesmo corpus, o "
-        "render acusa zero e o relatorio acusa dezenove — todas em tracks "
-        "copiadas byte a byte do MIDI do proprio usuario. O efeito colateral "
-        "e grave: esses erros rebaixam o status de TODA tecnica do relatorio "
-        "para `aplicada_com_erro`."
-    ),
-)
-def test_bug_anticopia_do_relatorio_julga_track_copiada_da_origem(
+# Regressao da issue #124: o anticopia do relatorio julgava as tracks que o
+# arranjador NAO escreveu (`_rendered_tracks_from_midi` reconstroi cada track
+# de origem como `source:<nome>`), acusando dezenove copias onde o `render`
+# acusava zero — e rebaixando o status de TODA tecnica para
+# `aplicada_com_erro`. Hoje a fachada entrega ao anticopia so as tracks de
+# elemento, o mesmo conjunto que o `render` lhe entrega.
+def test_anticopia_do_relatorio_nao_julga_track_copiada_da_origem(
     remodelagem: dict[str, Any],
 ) -> None:
     corpus = [str(CORPUS_DRUMS / nome) for nome in CORPUS_REFERENCIA]
