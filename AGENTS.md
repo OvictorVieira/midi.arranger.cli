@@ -346,9 +346,16 @@ repositório ao mesmo tempo** — por isso o ritmo abaixo é regra, não sugest�
    rodada na hora**. Não peça review nos PRs restantes e **nunca** faça retry cego — retry em
    cima do limite gera ciclo infinito de review queimando token à toa
    (`openai/codex-plugin-cc#306`).
-4. Espere **5 horas** antes da próxima rodada. A cota do Codex é contada em **janela móvel de 5
-   horas** (Plus: 20–50 reviews por janela; Pro 5x: 200–500; Pro 20x: 400–1.000). Há limites
-   semanais adicionais que a OpenAI não publica, então janela liberada não garante cota.
+4. Não tente de novo na mesma rodada. A cota é contada em **janela móvel de 5 horas** (Plus:
+   20–50 reviews por janela; Pro 5x: 200–500; Pro 20x: 400–1.000), mas **esperar a janela não
+   resolve sozinho**: nesta base já sondamos duas vezes com **7h30 de intervalo** e as duas
+   voltaram `usage limits`. Ou o limite semanal — que a OpenAI não publica — está esgotado, ou é
+   o bug conhecido em que o limitador acusa esgotamento com cota disponível no dashboard
+   (`openai/codex#31001`, `#8503`, `#15477`).
+
+   Portanto: gaste **UMA sonda por rodada de trabalho**, no menor PR de código. Voltou limite,
+   siga com review adversarial próprio e **não fique esperando janela** — a evidência diz que
+   esperar não é o gargalo. Vale sondar de novo no próximo lote de PRs, não antes.
 5. **Teto de 2 chamadas por PR**: um review inicial e um re-review depois dos fixes. Precisar de
    mais que isso é sinal de que o PR subiu cru — endureça antes, não gaste janela.
 
