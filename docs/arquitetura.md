@@ -326,6 +326,27 @@ nunca vira arquivo em `knowledge/`. Cada família declara:
   de `density` no despacho (liga/desliga a técnica e entra em `context.parameters["density"]`) —
   sempre exposta também em `context.parameters["intensity"]`. `density`, quando declarado, continua
   tendo precedência (retrocompatibilidade: plano v1 nunca declara `intensity`).
+
+  **Composição com o eixo de seção (issue #123).** `intensity` (quanto a técnica se manifesta) e
+  `plan.sections[].energy.densidade` (quanto material aquele trecho pede) são grandezas diferentes
+  e precisam **compor**, não uma sobrescrever a outra. Como o eco de `intensity` chegava no mesmo
+  `context.parameters["density"]` que `drums.ghost_notes` trata como override total da fração por
+  compasso, e `influence.compile` SEMPRE emite `intensity`, todo plano vindo do fluxo real de
+  pesquisa perdia a modulação por seção da issue #45 — trocar `densidade` de 9 para 1 devolvia MIDI
+  byte-idêntico, com os dois parâmetros validados e um deles ignorado (parâmetro mentiroso).
+  `render._style_technique_parameters` passou a receber os dois valores CRUS e a escrever, além de
+  `density`/`intensity`, a chave booleana `density_declared` — canal separado, mesma natureza de
+  `sections`/`bars`/`drum_bar_quota`, que diz ao aplicador se o número em `density` é ordem
+  explícita do plano (override) ou eco de `intensity`. `_apply_drums_ghost_notes` então multiplica
+  a fração derivada da seção por `intensity`. A composição é **multiplicativa** porque as duas
+  grandezas viram fração da mesma coisa (quanto de um compasso vira ghost) e frações independentes
+  compõem por produto; é também a única das três composições óbvias em que os dois parâmetros
+  sempre comandam — somar satura em 1,0 (volta a apagar a seção no topo da escala) e faria
+  `intensity=0` deixar de desligar a técnica, e tomar o mínimo faz o MAIOR dos dois virar parâmetro
+  mentiroso, que é o mesmo defeito com outro nome. Nenhuma constante nova: `intensity` já é fração
+  0-1 do plano e o eixo de seção já é normalizado por `energy_axis_max`. Ausência de `intensity` é
+  fator neutro `1.0`, então plano v1 sai byte-idêntico; chamada direta do motor sem
+  `density_declared` continua tratando `density` como override (contrato histórico).
 - `techniques[].evidence_refs` (issue #72): lista de ids de achados (`InfluenceFinding.id`,
   `tools/influence.py`) que justificaram a técnica — rastreabilidade pura, validada só
   estruturalmente (strings não vazias); sem cruzamento contra um `InfluenceProfile` carregado

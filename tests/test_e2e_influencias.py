@@ -1551,11 +1551,10 @@ def test_bateria_real_nao_repete_o_defeito_de_ghost_em_86_por_cento_dos_compasso
 
 # --- achados: bugs do motor expostos por este fluxo ------------------------
 #
-# Os tres testes marcados `xfail(strict=True)` abaixo afirmam o comportamento
-# CORRETO e falham hoje. Nao ha conserto de motor nesta rodada (issue #79 e de
-# teste); cada um carrega o repro concreto e quebra o build no dia em que o
-# defeito for corrigido, obrigando a remover o marcador. O quarto, o do
-# `drums.microtiming` com releases sobrepostos, foi corrigido na issue #125 e
+# Os testes marcados `xfail(strict=True)` abaixo afirmam o comportamento
+# CORRETO e falham hoje. Cada um carrega o repro concreto e quebra o build no
+# dia em que o defeito for corrigido, obrigando a remover o marcador. O
+# `drums.microtiming` com releases sobrepostos foi corrigido na issue #125 e
 # hoje passa como regressao.
 
 
@@ -1649,22 +1648,21 @@ def test_anticopia_do_relatorio_nao_julga_track_copiada_da_origem(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "`StyleTechnique.intensity` sequestra o canal de `density` e desliga "
-        "a densidade por secao da issue #45. `influence.compile` SEMPRE emite "
-        "`intensity` (a traducao de off|subtle|medium|strong), entao todo "
-        "plano montado pelo caminho real de pesquisa perde o eixo "
-        "`plan.sections[].energy.densidade`: trocar 9 por 1 entre as duas "
-        "metades do arquivo devolve MIDI byte-identico. Sem `intensity` o "
-        "mesmo plano responde a troca (ver "
-        "`test_bateria_real_densidade_de_ghost_acompanha_a_energia_da_secao`)."
-    ),
-)
-def test_bug_intensity_do_compile_desliga_a_densidade_por_secao(
+# --- corrigido: issue #123 (era o quarto xfail desta secao) ----------------
+
+
+def test_intensity_do_compile_nao_desliga_a_densidade_por_secao(
     bateria_real: dict[str, Any],
 ) -> None:
+    """Regressao da issue #123.
+
+    `influence.compile` SEMPRE emite `intensity` — antes da correcao, o eco
+    dela no canal de `density` era tratado como override total e apagava
+    `plan.sections[].energy.densidade`: trocar 9 por 1 entre as duas metades
+    devolvia MIDI byte-identico (48 ghosts dos dois lados). Agora os dois
+    parametros compoem por produto, entao a metade densa continua recebendo
+    mais material COM `intensity` declarada.
+    """
     a_alta, _ = _ghost_por_metade(bateria_real, "com_intensity")
     a_baixa, _ = _ghost_por_metade(bateria_real, "com_intensity_trocada")
     assert a_alta > a_baixa, (
