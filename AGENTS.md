@@ -50,7 +50,11 @@ garante isso. As tools precisam rodar e ser testadas sem modelo nenhum.
   técnicas desse nível podem mudar timing, velocity e duração, mas não contagem, pitches ou ordem de
   `note_on` por track/canal/altura. A fotografia do contrato trata nota como par fechado:
   `note_off` e `note_on` com velocity 0 são equivalentes, e `note_off` órfão ou `note_on` sem
-  fechamento são violação.
+  fechamento são violação. O pareamento é contado por track/canal/altura: a ordem GLOBAL dos
+  `note_off` da track NÃO é congelada, porque invertê-la entre alturas diferentes só muda duração,
+  que é eixo livre nesse nível. Bateria real de biblioteca re-ataca hi-hat com a peça anterior ainda
+  soando, e congelar a ordem global reprovava `drums.microtiming` nesse material legítimo
+  (issue #125).
 - O contrato do nível `technique` também é checado em `TechniqueRegistry.apply`: pode acrescentar
   ornamentos, CC e pitch bend, mas pitch e posição das notas estruturais são intocáveis; velocity e
   duração estrutural só mudam com flags explícitas no registro da técnica.
