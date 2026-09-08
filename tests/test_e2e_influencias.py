@@ -1551,27 +1551,25 @@ def test_bateria_real_nao_repete_o_defeito_de_ghost_em_86_por_cento_dos_compasso
 
 # --- achados: bugs do motor expostos por este fluxo ------------------------
 #
-# Os tres testes abaixo estao marcados `xfail(strict=True)`: eles afirmam o
-# comportamento CORRETO e falham hoje. Nao ha conserto de motor nesta rodada
-# (issue #79 e de teste); cada um carrega o repro concreto e quebra o build no
-# dia em que o defeito for corrigido, obrigando a remover o marcador.
+# Os testes marcados `xfail(strict=True)` abaixo afirmam o comportamento
+# CORRETO e falham hoje. Cada um carrega o repro concreto e quebra o build no
+# dia em que o defeito for corrigido, obrigando a remover o marcador. O
+# `drums.microtiming` com releases sobrepostos foi corrigido na issue #125 e
+# hoje passa como regressao.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "drums.microtiming nao roda em take de bateria real com releases "
-        "sobrepostos: o contrato humanize congela a ORDEM GLOBAL dos "
-        "note_off (`_MidiContentSnapshot.note_pairs`), e deslocar o hi-hat "
-        "alguns ms troca a ordem do release dele com o de outra peca. "
-        "`ancora_arranjo_atual.mid` tem 16 re-ataques de 42/46 com a nota "
-        "anterior ainda soando; DEIXE IR/ENTRE NOS/FARDO nao tem nenhum e "
-        "por isso passam. O AGENTS.md exige que a nota seja par FECHADO, "
-        "nao que o entrelacamento de releases entre alturas diferentes "
-        "fique congelado."
-    ),
-)
 def test_bug_microtiming_em_bateria_real_com_releases_sobrepostos() -> None:
+    """Regressao da issue #125.
+
+    `ancora_arranjo_atual.mid` tem 16 re-ataques de 42/46 com a nota anterior
+    ainda soando; DEIXE IR/ENTRE NOS/FARDO nao tem nenhum e por isso sempre
+    passaram. O contrato `humanize` congelava a ORDEM GLOBAL dos `note_off`,
+    e deslocar o hi-hat alguns ms trocava a ordem do release dele com o de
+    outra peca. O `AGENTS.md` exige que a nota seja par FECHADO por
+    track/canal/altura, nao que o entrelacamento de releases entre alturas
+    diferentes fique congelado.
+    """
+
     from tools.techniques import apply_technique
 
     fonte = mido.MidiFile(str(ANCORA))
@@ -1620,20 +1618,13 @@ def test_bug_harmonia_muda_de_veredito_entre_render_em_memoria_e_arquivo(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "report.build julga por anti-copia as tracks que o arranjador NAO "
-        "escreveu: `_rendered_tracks_from_midi` reconstroi cada track de "
-        "origem como `source:<nome>` e o anticopia percorre todas, enquanto "
-        "o `render` so olha as tracks de elemento. Com o mesmo corpus, o "
-        "render acusa zero e o relatorio acusa dezenove — todas em tracks "
-        "copiadas byte a byte do MIDI do proprio usuario. O efeito colateral "
-        "e grave: esses erros rebaixam o status de TODA tecnica do relatorio "
-        "para `aplicada_com_erro`."
-    ),
-)
-def test_bug_anticopia_do_relatorio_julga_track_copiada_da_origem(
+# Regressao da issue #124: o anticopia do relatorio julgava as tracks que o
+# arranjador NAO escreveu (`_rendered_tracks_from_midi` reconstroi cada track
+# de origem como `source:<nome>`), acusando dezenove copias onde o `render`
+# acusava zero — e rebaixando o status de TODA tecnica para
+# `aplicada_com_erro`. Hoje a fachada entrega ao anticopia so as tracks de
+# elemento, o mesmo conjunto que o `render` lhe entrega.
+def test_anticopia_do_relatorio_nao_julga_track_copiada_da_origem(
     remodelagem: dict[str, Any],
 ) -> None:
     corpus = [str(CORPUS_DRUMS / nome) for nome in CORPUS_REFERENCIA]
