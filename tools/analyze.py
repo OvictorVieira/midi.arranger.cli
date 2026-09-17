@@ -177,14 +177,29 @@ class Analysis:
     discarded_annotations: list[DiscardedAnnotation] = field(default_factory=list)
 
 
+# Tolerancia a jitter de PONTO FLUTUANTE (nao de timing musical) em
+# fronteira de compasso. Nota gerada exatamente em `bar.start` (ex.: pad
+# `follow_chords` que reataca em cada troca de acorde) pode, apos o
+# round-trip por tick que `render()` faz antes de validar (issue #126),
+# imprimir um valor identico a `bar.start` mas bit a bit ~1e-14s ABAIXO
+# dele (erro de arredondamento float64, medido em
+# tests/test_analyze.py::test_find_bar_tolerates_float64_jitter_at_boundary) —
+# `bar.start <= onset_s` falha por essa fracao e a nota cai no compasso
+# ANTERIOR, com o acorde errado. 1 microssegundo e ~10 ordens de grandeza
+# maior que esse ruido e ~1000x menor que a duracao de um tick (mesmo a
+# 300bpm/960ppq), entao nao pode mascarar deslocamento musical real.
+_BAR_BOUNDARY_JITTER_EPS_S = 1e-6
+
+
 def find_bar(analysis: Analysis, onset_s: float) -> BarAnalysis | None:
     """Compasso cujo intervalo contem `onset_s`. None se fora do range.
 
     Helper compartilhado por harmony_validator/placement/artifice — a busca
     linear e barata (musicas cabem em dezenas/centenas de bars) e o codigo
     fica em um lugar so."""
+    nudged = onset_s + _BAR_BOUNDARY_JITTER_EPS_S
     for bar in analysis.bars:
-        if bar.start <= onset_s < bar.end:
+        if bar.start <= nudged < bar.end:
             return bar
     return None
 

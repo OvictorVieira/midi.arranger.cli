@@ -1285,9 +1285,7 @@ def test_cenario_2_conformidade_mede_a_criacao_com_evidencia_numerica(
 ) -> None:
     """O requisito de criacao sai medido, nao opinado.
 
-    O veredito e conferido aqui pelos numeros que ele publica; o status
-    `atendido` esta bloqueado pela divergencia harmonica registrada em
-    `test_bug_render_e_validate_discordam_do_campo_harmonico`.
+    O veredito e conferido aqui pelos numeros que ele publica.
     """
     veredito = _veredito_criacao(criacao)
     evidencia = veredito["evidencia"]
@@ -1306,7 +1304,8 @@ def test_cenario_2_track_criada_e_coberta_por_validador_por_track(
     E o contraponto de `test_relatorio_nao_afirma_verificada_sem_validador_por_track`:
     la o status era `aplicada_nao_verificavel` porque ninguem tinha olhado a
     track; aqui os tres validadores por track olharam, e o status reflete o
-    que eles acharam.
+    que eles acharam — sem erro harmonico (issue #126 corrigida), o veredito
+    e `aplicada_verificada`.
     """
     relatorio = criacao["report"]
     nome_track, = {
@@ -1322,9 +1321,8 @@ def test_cenario_2_track_criada_e_coberta_por_validador_por_track(
         elo["technique"]: elo["status"] for elo in relatorio["chain"]
         if elo["technique"] in relatorio["techniques"]["aplicadas"]
     }
-    assert status == {"bass.velocity_contour": "aplicada_com_erro"}, status
-    # E o erro que rebaixou o status e o harmonico — nao um erro qualquer.
-    assert relatorio["validators"]["harmonia"]["erros"] > 0
+    assert status == {"bass.velocity_contour": "aplicada_verificada"}, status
+    assert relatorio["validators"]["harmonia"]["erros"] == 0
 
 
 # --- a bateria real: densidade por secao, sem atulhar o arquivo -----------
