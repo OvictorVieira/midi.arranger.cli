@@ -1645,6 +1645,51 @@ def _notes_to_track(
     return tr
 
 
+def _quantize_rendered_note_seconds(
+    start_s: float, end_s: float, pm: pretty_midi.PrettyMIDI,
+) -> tuple[float, float]:
+    """Arredonda `start_s`/`end_s` para o TICK inteiro que `_notes_to_track`
+    vai gravar no arquivo final, e devolve os segundos que aquele tick
+    representa — mesma conta, mesmo tempo map (`pm`).
+
+    `render()` promete no MIDI final o que esta nos ticks, nao os segundos
+    'ideais' que o gerador de paleta calculou em ponto flutuante
+    (`bar_start_s + offset_beats * seconds_per_beat`). Sem esta quantizacao,
+    `validate_harmony`/`validate_placement`/etc. em memoria enxergam um
+    instante diferente do que o arquivo salvo vai conter, e perto de
+    fronteira de compasso isso muda a qual compasso a nota pertence — a
+    causa raiz da issue #126.
+    """
+    start_tick = int(round(pm.time_to_tick(start_s)))
+    end_tick = int(round(pm.time_to_tick(end_s)))
+    if end_tick <= start_tick:
+        end_tick = start_tick + 1
+    return (
+        float(pm.tick_to_time(start_tick)),
+        float(pm.tick_to_time(end_tick)),
+    )
+
+
+def _quantize_rendered_tracks(
+    tracks: Iterable[RenderedTrack], pm: pretty_midi.PrettyMIDI,
+) -> list[RenderedTrack]:
+    """Aplica `_quantize_rendered_note_seconds` a cada nota de cada
+    `RenderedTrack`. Idempotente sobre tracks reconstruidas a partir do
+    MIDI ja salvo (`_rendered_tracks_from_midi_tracks`/
+    `_rendered_tracks_from_source_tracks`): o segundo round-trip por tick
+    devolve o mesmo valor, porque a nota ja nasceu do tick gravado."""
+    quantized: list[RenderedTrack] = []
+    for track in tracks:
+        notes = []
+        for note in track.notes:
+            q_start, q_end = _quantize_rendered_note_seconds(
+                note.start_s, note.end_s, pm,
+            )
+            notes.append(replace(note, start_s=q_start, end_s=q_end))
+        quantized.append(replace(track, notes=tuple(notes)))
+    return quantized
+
+
 def _rendered_tracks_from_midi_tracks(
     element: Element,
     tracks: list[mido.MidiTrack],
@@ -2899,6 +2944,16 @@ def render(
     )
 
     warnings.extend(check_tutti_uniqueness(plan))
+
+    # Quantiza start_s/end_s de cada nota renderizada para o TICK inteiro
+    # que vai efetivamente parar no arquivo (issue #126) — sem isso, a
+    # validacao em memoria abaixo enxerga os segundos "ideais" que o
+    # gerador de paleta calculou, nao os que `out_mid.save()` vai gravar, e
+    # perto de fronteira de compasso os dois discordam sobre em qual
+    # compasso a nota cai. Track ja reconstruida a partir de MIDI salvo
+    # (`_rendered_tracks_from_midi_tracks`) atravessa a quantizacao sem
+    # mudar de valor — o round-trip por tick e idempotente.
+    rendered_tracks = _quantize_rendered_tracks(rendered_tracks, pm)
 
     harmony_issues = validate_harmony(rendered_tracks, plan, analysis)
     placement_issues = validate_placement(rendered_tracks, plan, analysis)

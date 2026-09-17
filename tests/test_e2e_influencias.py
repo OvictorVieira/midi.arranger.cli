@@ -1580,19 +1580,6 @@ def test_bug_microtiming_em_bateria_real_com_releases_sobrepostos() -> None:
     apply_technique("drums.microtiming", so_bateria, seed=SEED)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "render e validate divergem sobre o MESMO arquivo e o MESMO plano: "
-        "o `render` que gerou a linha de baixo declara zero erro harmonico, "
-        "e o `validate` sobre o arquivo que ele acabou de escrever acusa "
-        "sete. As notas reprovadas estao a poucos milissegundos da borda de "
-        "compasso — o `render` julga com os segundos que o gerador calculou "
-        "e o `validate` com os segundos que o arquivo devolve, e a atribuicao "
-        "de compasso vira. Quem le o relatorio nao tem como saber qual dos "
-        "dois vereditos vale."
-    ),
-)
 def test_bug_harmonia_muda_de_veredito_entre_render_em_memoria_e_arquivo(
     criacao: dict[str, Any], tmp_path: Path,
 ) -> None:
