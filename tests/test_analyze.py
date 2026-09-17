@@ -232,3 +232,47 @@ def test_analyze_module_lives_inside_tools():
     """analyze.py mora dentro do pacote tools."""
     here = os.path.dirname(os.path.abspath(analysis.__file__))
     assert os.path.basename(here) == "tools", here
+
+
+def _bars_for_boundary_test() -> list[analysis.BarAnalysis]:
+    return [
+        analysis.BarAnalysis(index=0, start=0.0, end=23.424640000000004, chord=None),
+        analysis.BarAnalysis(
+            index=1, start=23.424640000000004, end=24.79606400000001,
+            chord=analysis.Chord(root=1, quality="major"),
+        ),
+        analysis.BarAnalysis(index=2, start=24.79606400000001, end=30.0, chord=None),
+    ]
+
+
+def test_find_bar_tolerates_float64_jitter_at_boundary():
+    """Regressao da issue #126: nota gerada exatamente em `bar.start` que,
+    apos um round-trip por tick (`render()` quantiza antes de validar),
+    imprime o mesmo valor mas e bit a bit uma fracao de float64 (~1e-14s)
+    ABAIXO do original nao pode cair no compasso ANTERIOR."""
+    bars = _bars_for_boundary_test()
+    an = analysis.Analysis(
+        key_root=0, bars=bars, kick_positions=[], snare_positions=[],
+        guitar_unison_positions=[], track_names=[],
+    )
+    exact_boundary = bars[1].start
+    jittered_below = exact_boundary - 7.105427357601002e-15  # observado de verdade
+
+    assert analysis.find_bar(an, exact_boundary) is bars[1]
+    assert analysis.find_bar(an, jittered_below) is bars[1], (
+        "jitter de ponto flutuante na fronteira nao pode empurrar a nota "
+        "para o compasso anterior"
+    )
+
+
+def test_find_bar_does_not_bleed_into_next_bar_for_real_offset():
+    """O epsilon de tolerancia (1 microssegundo) nao pode mascarar uma nota
+    genuinamente fora do compasso — so absorve ruido de ponto flutuante,
+    nao deslocamento musical real."""
+    bars = _bars_for_boundary_test()
+    an = analysis.Analysis(
+        key_root=0, bars=bars, kick_positions=[], snare_positions=[],
+        guitar_unison_positions=[], track_names=[],
+    )
+    just_before_end = bars[0].end - 0.01  # 10ms antes da fronteira, real
+    assert analysis.find_bar(an, just_before_end) is bars[0]

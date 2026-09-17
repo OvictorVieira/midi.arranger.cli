@@ -1285,9 +1285,7 @@ def test_cenario_2_conformidade_mede_a_criacao_com_evidencia_numerica(
 ) -> None:
     """O requisito de criacao sai medido, nao opinado.
 
-    O veredito e conferido aqui pelos numeros que ele publica; o status
-    `atendido` esta bloqueado pela divergencia harmonica registrada em
-    `test_bug_render_e_validate_discordam_do_campo_harmonico`.
+    O veredito e conferido aqui pelos numeros que ele publica.
     """
     veredito = _veredito_criacao(criacao)
     evidencia = veredito["evidencia"]
@@ -1306,7 +1304,8 @@ def test_cenario_2_track_criada_e_coberta_por_validador_por_track(
     E o contraponto de `test_relatorio_nao_afirma_verificada_sem_validador_por_track`:
     la o status era `aplicada_nao_verificavel` porque ninguem tinha olhado a
     track; aqui os tres validadores por track olharam, e o status reflete o
-    que eles acharam.
+    que eles acharam — sem erro harmonico (issue #126 corrigida), o veredito
+    e `aplicada_verificada`.
     """
     relatorio = criacao["report"]
     nome_track, = {
@@ -1322,9 +1321,8 @@ def test_cenario_2_track_criada_e_coberta_por_validador_por_track(
         elo["technique"]: elo["status"] for elo in relatorio["chain"]
         if elo["technique"] in relatorio["techniques"]["aplicadas"]
     }
-    assert status == {"bass.velocity_contour": "aplicada_com_erro"}, status
-    # E o erro que rebaixou o status e o harmonico — nao um erro qualquer.
-    assert relatorio["validators"]["harmonia"]["erros"] > 0
+    assert status == {"bass.velocity_contour": "aplicada_verificada"}, status
+    assert relatorio["validators"]["harmonia"]["erros"] == 0
 
 
 # --- a bateria real: densidade por secao, sem atulhar o arquivo -----------
@@ -1580,19 +1578,6 @@ def test_bug_microtiming_em_bateria_real_com_releases_sobrepostos() -> None:
     apply_technique("drums.microtiming", so_bateria, seed=SEED)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "render e validate divergem sobre o MESMO arquivo e o MESMO plano: "
-        "o `render` que gerou a linha de baixo declara zero erro harmonico, "
-        "e o `validate` sobre o arquivo que ele acabou de escrever acusa "
-        "sete. As notas reprovadas estao a poucos milissegundos da borda de "
-        "compasso — o `render` julga com os segundos que o gerador calculou "
-        "e o `validate` com os segundos que o arquivo devolve, e a atribuicao "
-        "de compasso vira. Quem le o relatorio nao tem como saber qual dos "
-        "dois vereditos vale."
-    ),
-)
 def test_bug_harmonia_muda_de_veredito_entre_render_em_memoria_e_arquivo(
     criacao: dict[str, Any], tmp_path: Path,
 ) -> None:
