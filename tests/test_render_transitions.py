@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import mido
 import pretty_midi
 import pytest
 
@@ -195,6 +196,68 @@ def test_downer_element_ends_before_section_b_downbeat(tmp_path):
     assert max(n.end for n in track.notes) < boundary_s
     filt = [cc.value for cc in sorted(track.control_changes, key=lambda c: c.time) if cc.number == 74]
     assert filt == sorted(filt, reverse=True)
+
+
+# --- subdivision flip: densidade muda antes da fronteira --------------------
+
+def _subdivision_flip_element() -> Element:
+    return Element(
+        id="flip_to_b", role="subdivision_flip", sections=["B"],
+        register=[60, 60], layers=1,
+        sync_role="response", articulation="tight", harmony="free",
+        pattern={
+            "pitch": 60,
+            "velocity": 96,
+            "base_subdivision": "eighth",
+            "flip_subdivision": "sixteenth",
+            "flip_bars_before_boundary": 1.0,
+        },
+        instrument=_instrument("Omnisphere", "Desert Wind"),
+        rationale="Aumenta a subdivisao no compasso antes do refrao.",
+    )
+
+
+def test_subdivision_flip_element_materializes_expected_density_and_stamp(tmp_path):
+    src = _build_source(tmp_path)
+    out = tmp_path / "out.mid"
+    render(_build_plan(src, [_subdivision_flip_element()]), out)
+
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    track = next(i for i in out_pm.instruments if "flip_to_b" in (i.name or ""))
+    notes = sorted(track.notes, key=lambda note: note.start)
+
+    # A janela de dois compassos vai de 4s ate a fronteira B em 8s. O
+    # primeiro compasso permanece em colcheias e o segundo vira semicolcheias.
+    before_flip = [note for note in notes if note.start < 6.0]
+    after_flip = [note for note in notes if note.start >= 6.0]
+    assert len(before_flip) == 8
+    assert len(after_flip) == 16
+    assert {(note.pitch, note.velocity) for note in notes} == {(60, 96)}
+    assert {round(b.start - a.start, 6) for a, b in zip(before_flip, before_flip[1:])} == {0.25}
+    assert {round(b.start - a.start, 6) for a, b in zip(after_flip, after_flip[1:])} == {0.125}
+
+    out_mid = mido.MidiFile(str(out))
+    midi_track = next(
+        midi_track for midi_track in out_mid.tracks
+        if any(msg.type == "track_name" and msg.name == track.name for msg in midi_track)
+    )
+    stamps = [msg.text for msg in midi_track if msg.type == "text"]
+    assert stamps == [
+        "midi-arranger v1|role=subdivision_flip|plugin=Omnisphere|"
+        "preset=Desert Wind|verified=true"
+    ]
+
+
+def test_subdivision_flip_element_is_deterministic_byte_for_byte(tmp_path):
+    src = _build_source(tmp_path)
+    plan = _build_plan(src, [_subdivision_flip_element()])
+    out1 = tmp_path / "out1.mid"
+    out2 = tmp_path / "out2.mid"
+
+    render(plan, out1)
+    render(plan, out2)
+
+    assert out1.read_bytes() == out2.read_bytes()
 
 
 # --- avisos de pattern nao suportado ----------------------------------------
