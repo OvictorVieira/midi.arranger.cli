@@ -18,6 +18,7 @@ consiga achar o campo sem ler o traceback inteiro.
 from __future__ import annotations
 
 import json
+import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -1228,6 +1229,28 @@ def _is_half_time_magnifier_role(role: str) -> bool:
     return role in HALF_TIME_MAGNIFIER_ROLES
 
 
+def _validate_false_downbeat_pattern(pattern: object, path: str) -> None:
+    """Valida o atraso opcional de entrada de um elemento com pattern.
+
+    O campo e compartilhado pelos roles que ja consomem ``pattern``; o
+    renderer resolve a fronteira real da secao antes de aplicar o atraso.
+    """
+    if not isinstance(pattern, dict) or "false_downbeat_beats" not in pattern:
+        return
+
+    beats = pattern["false_downbeat_beats"]
+    if isinstance(beats, bool) or not isinstance(beats, (int, float)):
+        raise PlanValidationError(
+            f"{path}.false_downbeat_beats",
+            f"must be number > 0, got {beats!r}",
+        )
+    if not math.isfinite(beats) or beats <= 0:
+        raise PlanValidationError(
+            f"{path}.false_downbeat_beats",
+            f"must be > 0, got {beats!r}",
+        )
+
+
 def style_families_used_by_plan(plan: ArrangementPlan) -> tuple[str, ...]:
     """Familias de `style` que o plano efetivamente usa.
 
@@ -1595,6 +1618,7 @@ def validate(
             _validate_subdivision_flip_pattern(e.pattern, f"{base}.pattern")
         if _is_half_time_magnifier_role(e.role):
             _validate_half_time_magnifier_pattern(e.pattern, f"{base}.pattern")
+        _validate_false_downbeat_pattern(e.pattern, f"{base}.pattern")
 
         # BLOQUEIO (issue #17): veto de criacao de familia. `plan.elements`
         # e sempre conteudo GERADO (nunca a edicao de uma track existente,

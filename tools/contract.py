@@ -332,7 +332,15 @@ def _plan_schema() -> dict[str, Any]:
                         "pattern": {
                             "oneOf": [
                                 {"type": "null"},
-                                {"type": "object", "additionalProperties": True},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "false_downbeat_beats": {
+                                            "type": "number", "exclusiveMinimum": 0,
+                                        },
+                                    },
+                                    "additionalProperties": True,
+                                },
                             ],
                         },
                         "degrees": {
@@ -1216,7 +1224,8 @@ PLAN_VALIDATE_DESCRIPTION = (
     "MIDI, register em 0-127, layers>=1, protagonista unico por secao, "
     "rationale nao vazio e contratos de pattern por role (por exemplo, "
     "subdivision_flip exige pitch e subdivisoes conhecidas; "
-    "half_time_magnifier exige base_pattern binario). Use SEMPRE "
+    "half_time_magnifier exige base_pattern binario; false_downbeat_beats "
+    "deve ser numero > 0). Use SEMPRE "
     "antes de chamar render — plano invalido "
     "no render vira erro tarde. O plano pode ser passado inline em `plan` ou "
     "por caminho em `plan_path` — exatamente um dos dois."

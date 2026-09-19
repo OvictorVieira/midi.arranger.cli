@@ -893,7 +893,9 @@ nessas tabelas antes desta rodada.
 e seed dos risers/downers. `half_time_magnifier` também é role declarável: exige
 `pattern.base_pattern`, uma sequência binária de steps, e materializa apenas os steps pares no canal
 GM de bateria, reusando pitch, velocity e gate do hat/ride de `generate_drums`. `false_downbeat`
-continua função pura e testada no mesmo módulo (`false_downbeat_delay_s`), sem campo de plano próprio.
+é campo opcional `pattern.false_downbeat_beats` de roles que já consomem pattern: resolve a mesma
+fronteira de seção dos transientes com `false_downbeat_delay_s` e suprime ataques até o instante
+atrasado, sem estender o riff para a seção seguinte.
 
 ### Prova ponta a ponta com influência mockada (issue #79)
 

@@ -13,7 +13,9 @@ import mido
 import pretty_midi
 import pytest
 
+from tools.analyze import analyze
 from tools.palette.drums import GM_HAT_CLOSED
+from tools.palette.transitions import false_downbeat_delay_s
 from tools.plan import ArrangementPlan, Element, PlanSection, SourceMidi, Transition
 from tools.render import SUPPORTED_ROLES, render
 
@@ -310,6 +312,31 @@ def test_half_time_magnifier_materializes_only_even_declared_steps(tmp_path):
         msg.channel for msg in midi_track
         if msg.type == "note_on" and msg.velocity > 0
     } == {9}
+
+
+# --- false downbeat: riff entra depois da transicao ------------------------
+
+def test_false_downbeat_delays_pattern_role_entry_from_section_boundary(tmp_path):
+    src = _build_source(tmp_path)
+    element = Element(
+        id="false_downbeat_b", role="half_time_magnifier", sections=["B"],
+        register=[0, 127], layers=1,
+        sync_role="exact_anchor", articulation="tight", harmony="percussion",
+        pattern={"base_pattern": [1] * 16, "false_downbeat_beats": 1.0},
+        instrument=_instrument("Superior Drummer", "Metal Kit"),
+        rationale="A bateria entra um tempo depois do impacto da transicao.",
+    )
+    out = tmp_path / "out.mid"
+    render(_build_plan(src, [element]), out)
+
+    analysis = analyze(src)
+    boundary_s = 8.0
+    expected_start_s = false_downbeat_delay_s(analysis, boundary_s, beats=1.0)
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    track = next(i for i in out_pm.instruments if "false_downbeat_b" in (i.name or ""))
+
+    assert min(note.start for note in track.notes) == pytest.approx(expected_start_s)
+    assert all(note.start >= expected_start_s for note in track.notes)
 
 
 # --- avisos de pattern nao suportado ----------------------------------------

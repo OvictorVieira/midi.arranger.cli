@@ -179,6 +179,25 @@ def test_validate_rejects_subdivision_flip_without_pitch():
     assert "missing required pitch" in str(exc.value)
 
 
+def test_validate_accepts_positive_false_downbeat_beats_on_pattern_role():
+    plan = _valid_plan()
+    plan.elements[1].pattern["false_downbeat_beats"] = 1.5
+
+    validate(plan)
+
+
+@pytest.mark.parametrize("beats", [0.0, -1.0])
+def test_validate_rejects_non_positive_false_downbeat_beats(beats: float):
+    plan = _valid_plan()
+    plan.elements[1].pattern["false_downbeat_beats"] = beats
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "elements[1].pattern.false_downbeat_beats"
+    assert "must be > 0" in exc.value.message
+
+
 def _half_time_magnifier_element(pattern: dict[str, object]) -> Element:
     return Element(
         id="half_time_before_chorus",

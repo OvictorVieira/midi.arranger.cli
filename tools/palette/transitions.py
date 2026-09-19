@@ -26,7 +26,8 @@ numero que caracteriza o comportamento vem de
 sao roles declaraveis: o primeiro ancora uma troca de subdivisao na
 fronteira de secao; o segundo preserva apenas os steps pares de uma grade de
 bateria declarada. `false_downbeat` continua funcao pura e testada, sem
-campo de plano proprio nesta rodada.
+role proprio: `element.pattern.false_downbeat_beats` adia a entrada de um
+role que ja consome pattern.
 """
 
 from __future__ import annotations
@@ -404,8 +405,8 @@ def generate_reverse(
 
 
 # --- false_downbeat / subdivision_flip / half_time_magnifier ---------------
-# Mecanicas menores da issue #23 (ultima secao). Funcoes puras e testadas,
-# sem role/campo de plano proprio nesta rodada — ver docstring do modulo.
+# Mecanicas menores da issue #23 (ultima secao). Funcoes puras e testadas;
+# `false_downbeat` e consumida pelo renderer como campo de `element.pattern`.
 
 def false_downbeat_delay_s(
     analysis: Analysis, boundary_s: float, *, beats: float = 1.0,

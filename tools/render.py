@@ -92,6 +92,7 @@ from .palette.transitions import (
     REVERSE_ROLES,
     RISER_ROLES,
     SUBDIVISION_FLIP_ROLES,
+    false_downbeat_delay_s,
     generate_downer,
     generate_impact,
     generate_reverse,
@@ -230,6 +231,7 @@ SUBDIVISION_FLIP_PATTERN_FIELDS: frozenset[str] = frozenset({
     "flip_bars_before_boundary",
 })
 HALF_TIME_MAGNIFIER_PATTERN_FIELDS: frozenset[str] = frozenset({"base_pattern"})
+FALSE_DOWNBEAT_PATTERN_FIELD = "false_downbeat_beats"
 
 # Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
 # Exemplo literal (documentado em docs/arquitetura.md):
@@ -650,43 +652,46 @@ def _element_track_name(element: Element, layer_index: int, layers: int) -> str:
 def _pattern_fields_for_role(role: str) -> frozenset[str]:
     if role == "pad":
         return frozenset()
+    fields = frozenset()
     if role in KEYBOARD_ROLES:
-        return KEYBOARD_PATTERN_FIELDS
-    if role in STRINGS_ROLES:
-        return STRINGS_PATTERN_FIELDS
-    if role in DRONE_ROLES:
-        return DRONE_PATTERN_FIELDS
-    if role in RHYTHMIC_ROLES:
-        return RHYTHMIC_PATTERN_FIELDS
-    if role in MOTOR_ROLES:
-        return MOTOR_PATTERN_FIELDS
-    if role in SHADOW_ROLES:
-        return SHADOW_PATTERN_FIELDS
-    if role in DRUMS_ROLES:
-        return DRUMS_PATTERN_FIELDS
-    if role in BASS_ROLES:
-        return BASS_PATTERN_FIELDS
-    if role in GUITAR_ROLES:
-        return GUITAR_PATTERN_FIELDS
-    if role in HAT_ELEC_ROLES:
-        return HAT_ELEC_PATTERN_FIELDS
-    if role in SUB_ROLES:
-        return SUB_PATTERN_FIELDS
-    if role in SUB_DROP_ROLES:
-        return SUB_DROP_PATTERN_FIELDS
-    if role in RISER_ROLES:
-        return RISER_PATTERN_FIELDS
-    if role in DOWNER_ROLES:
-        return DOWNER_PATTERN_FIELDS
-    if role in IMPACT_ROLES:
-        return IMPACT_PATTERN_FIELDS
-    if role in REVERSE_ROLES:
-        return REVERSE_PATTERN_FIELDS
-    if role in SUBDIVISION_FLIP_ROLES:
-        return SUBDIVISION_FLIP_PATTERN_FIELDS
-    if role in HALF_TIME_MAGNIFIER_ROLES:
-        return HALF_TIME_MAGNIFIER_PATTERN_FIELDS
-    return frozenset()
+        fields = KEYBOARD_PATTERN_FIELDS
+    elif role in STRINGS_ROLES:
+        fields = STRINGS_PATTERN_FIELDS
+    elif role in DRONE_ROLES:
+        fields = DRONE_PATTERN_FIELDS
+    elif role in RHYTHMIC_ROLES:
+        fields = RHYTHMIC_PATTERN_FIELDS
+    elif role in MOTOR_ROLES:
+        fields = MOTOR_PATTERN_FIELDS
+    elif role in SHADOW_ROLES:
+        fields = SHADOW_PATTERN_FIELDS
+    elif role in DRUMS_ROLES:
+        fields = DRUMS_PATTERN_FIELDS
+    elif role in BASS_ROLES:
+        fields = BASS_PATTERN_FIELDS
+    elif role in GUITAR_ROLES:
+        fields = GUITAR_PATTERN_FIELDS
+    elif role in HAT_ELEC_ROLES:
+        fields = HAT_ELEC_PATTERN_FIELDS
+    elif role in SUB_ROLES:
+        fields = SUB_PATTERN_FIELDS
+    elif role in SUB_DROP_ROLES:
+        fields = SUB_DROP_PATTERN_FIELDS
+    elif role in RISER_ROLES:
+        fields = RISER_PATTERN_FIELDS
+    elif role in DOWNER_ROLES:
+        fields = DOWNER_PATTERN_FIELDS
+    elif role in IMPACT_ROLES:
+        fields = IMPACT_PATTERN_FIELDS
+    elif role in REVERSE_ROLES:
+        fields = REVERSE_PATTERN_FIELDS
+    elif role in SUBDIVISION_FLIP_ROLES:
+        fields = SUBDIVISION_FLIP_PATTERN_FIELDS
+    elif role in HALF_TIME_MAGNIFIER_ROLES:
+        fields = HALF_TIME_MAGNIFIER_PATTERN_FIELDS
+    if not fields:
+        return fields
+    return fields | {FALSE_DOWNBEAT_PATTERN_FIELD}
 
 
 def _unsupported_pattern_warnings(element: Element) -> list[str]:
@@ -1848,6 +1853,9 @@ def _layers_to_tracks(
     pm: pretty_midi.PrettyMIDI,
     channel: int,
     layer_ccs: list[list[tuple[float, int, int]]] | None = None,
+    *,
+    plan: ArrangementPlan,
+    analysis: Analysis,
 ) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
     """Converte as notas acumuladas por layer em MidiTrack + RenderedTrack.
 
@@ -1855,13 +1863,16 @@ def _layers_to_tracks(
     `layer_ccs` (CC64 do teclado, CC11 das strings, ambos como
     `(time_s, cc, value)`). Assinatura duck-typed: qualquer nota com
     pitch/velocity/start_s/end_s serve."""
+    windows = _false_downbeat_windows(element, plan, analysis)
     midi_tracks: list[mido.MidiTrack] = []
     rendered: list[RenderedTrack] = []
     for i, notes in enumerate(layer_notes):
         name = _element_track_name(element, i, element.layers)
         ccs = layer_ccs[i] if layer_ccs is not None else None
+        filtered_notes = _without_false_downbeat_attacks(notes, windows)
+        filtered_ccs = _without_false_downbeat_attacks(ccs or [], windows)
         midi_tracks.append(_notes_to_track(
-            notes, pm, name, channel, cc_events=ccs or None,
+            filtered_notes, pm, name, channel, cc_events=filtered_ccs or None,
         ))
         rendered.append(RenderedTrack(
             element_id=element.id,
@@ -1871,10 +1882,55 @@ def _layers_to_tracks(
                     pitch=n.pitch, velocity=n.velocity,
                     start_s=n.start_s, end_s=n.end_s,
                 )
-                for n in notes
+                for n in filtered_notes
             ),
         ))
     return midi_tracks, rendered
+
+
+def _false_downbeat_windows(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+) -> tuple[tuple[float, float], ...]:
+    """Resolve as janelas silenciosas de entrada atrasada por secao.
+
+    A fronteira e obtida pelo mesmo primeiro compasso que os renderers de
+    transicao usam. Os geradores da paleta recebem secoes em barras, portanto
+    o inicio resolvido vira uma janela de render: eventos entre o downbeat e
+    o ataque atrasado nao sao materializados. Isso preserva o fim original da
+    secao e impede o riff de vazar para a secao seguinte.
+    """
+    pattern = element.pattern
+    if (
+        not isinstance(pattern, dict)
+        or FALSE_DOWNBEAT_PATTERN_FIELD not in pattern
+        or FALSE_DOWNBEAT_PATTERN_FIELD not in _pattern_fields_for_role(element.role)
+    ):
+        return ()
+
+    beats = float(pattern[FALSE_DOWNBEAT_PATTERN_FIELD])
+    windows: list[tuple[float, float]] = []
+    for section, _seed in _iter_element_sections(element, plan):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        start_s = false_downbeat_delay_s(analysis, boundary_s, beats=beats)
+        windows.append((boundary_s, start_s))
+    return tuple(windows)
+
+
+def _without_false_downbeat_attacks(events, windows: tuple[tuple[float, float], ...]):
+    """Remove eventos que cairiam antes do ataque atrasado da secao."""
+    if not windows:
+        return events
+
+    def starts_in_silent_window(event) -> bool:
+        start_s = event.start_s if hasattr(event, "start_s") else event[0]
+        return any(boundary_s <= start_s < delayed_s for boundary_s, delayed_s in windows)
+
+    return [event for event in events if not starts_in_silent_window(event)]
 
 
 def _iter_element_sections(
@@ -1929,7 +1985,9 @@ def _render_keyboard_element(
             for p in layer.pedal_events:
                 layer_ccs[i].append((p.time_s, SUSTAIN_CC, p.value))
 
-    return _layers_to_tracks(element, layer_notes, pm, channel, layer_ccs)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, layer_ccs, plan=plan, analysis=analysis,
+    )
 
 
 def _render_strings_element(
@@ -1971,7 +2029,9 @@ def _render_strings_element(
             for ev in voice.expression_events:
                 layer_ccs[i].append((ev.time_s, EXPRESSION_CC, ev.value))
 
-    return _layers_to_tracks(element, layer_notes, pm, channel, layer_ccs)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, layer_ccs, plan=plan, analysis=analysis,
+    )
 
 
 def _strings_tutti_layer_warning(element: Element) -> str | None:
@@ -2038,6 +2098,7 @@ def _drive_rhythmic_layers(
     plan: ArrangementPlan,
     pm: pretty_midi.PrettyMIDI,
     channel: int,
+    analysis: Analysis,
     per_section,
 ) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
     """Loop compartilhado de rhythmic/motor: itera secoes, chama
@@ -2047,7 +2108,7 @@ def _drive_rhythmic_layers(
         layers = per_section(section, seed)
         _accumulate_cc_layers(ctx.layer_notes, ctx.layer_ccs, layers)
     return _layers_to_tracks(
-        element, ctx.layer_notes, pm, channel, ctx.layer_ccs,
+        element, ctx.layer_notes, pm, channel, ctx.layer_ccs, plan=plan, analysis=analysis,
     )
 
 
@@ -2090,7 +2151,9 @@ def _render_drone_element(
         )
         _accumulate_cc_layers(layer_notes, layer_ccs, layers)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel, layer_ccs)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, layer_ccs, plan=plan, analysis=analysis,
+    )
 
 
 def _render_rhythmic_element(
@@ -2128,7 +2191,9 @@ def _render_rhythmic_element(
             seed=seed,
         )
 
-    return _drive_rhythmic_layers(ctx, element, plan, pm, channel, per_section)
+    return _drive_rhythmic_layers(
+        ctx, element, plan, pm, channel, analysis, per_section,
+    )
 
 
 def _render_motor_element(
@@ -2160,7 +2225,9 @@ def _render_motor_element(
             seed=seed,
         )
 
-    return _drive_rhythmic_layers(ctx, element, plan, pm, channel, per_section)
+    return _drive_rhythmic_layers(
+        ctx, element, plan, pm, channel, analysis, per_section,
+    )
 
 
 def _render_shadow_element(
@@ -2203,7 +2270,9 @@ def _render_shadow_element(
         for i, layer in enumerate(layers):
             layer_notes[i].extend(layer.notes)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_hat_elec_element(
@@ -2230,7 +2299,9 @@ def _render_hat_elec_element(
         for i, layer in enumerate(layers):
             layer_notes[i].extend(layer.notes)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_sub_element(
@@ -2260,7 +2331,9 @@ def _render_sub_element(
         )
         layer_notes.extend(layers[0].notes)
 
-    return _layers_to_tracks(element, [layer_notes], pm, channel)
+    return _layers_to_tracks(
+        element, [layer_notes], pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_sub_drop_element(
@@ -2334,7 +2407,9 @@ def _render_riser_element(
         notes.extend(event.notes)
         ccs.extend((e.time_s, e.cc, e.value) for e in event.cc_events)
 
-    return _point_event_to_tracks(element, notes, ccs, pm, channel)
+    return _point_event_to_tracks(
+        element, notes, ccs, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_downer_element(
@@ -2364,7 +2439,9 @@ def _render_downer_element(
         notes.extend(event.notes)
         ccs.extend((e.time_s, e.cc, e.value) for e in event.cc_events)
 
-    return _point_event_to_tracks(element, notes, ccs, pm, channel)
+    return _point_event_to_tracks(
+        element, notes, ccs, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_impact_element(
@@ -2392,7 +2469,9 @@ def _render_impact_element(
         )
         notes.extend(event.notes)
 
-    return _point_event_to_tracks(element, notes, [], pm, channel)
+    return _point_event_to_tracks(
+        element, notes, [], pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_reverse_element(
@@ -2427,7 +2506,9 @@ def _render_reverse_element(
         notes.extend(event.notes)
         ccs.extend((e.time_s, e.cc, e.value) for e in event.cc_events)
 
-    return _point_event_to_tracks(element, notes, ccs, pm, channel)
+    return _point_event_to_tracks(
+        element, notes, ccs, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_subdivision_flip_element(
@@ -2470,7 +2551,9 @@ def _render_subdivision_flip_element(
         # eventos negativos no SMF; nao ha material anterior a ela para virar.
         notes.extend(note for note in generated if note.start_s >= 0.0)
 
-    return _point_event_to_tracks(element, notes, [], pm, channel)
+    return _point_event_to_tracks(
+        element, notes, [], pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_half_time_magnifier_element(
@@ -2512,7 +2595,9 @@ def _render_half_time_magnifier_element(
                     end_s=start_s + DRUMS_HIT_DURATION_S,
                 ))
 
-    return _point_event_to_tracks(element, notes, [], pm, channel)
+    return _point_event_to_tracks(
+        element, notes, [], pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _point_event_to_tracks(
@@ -2521,14 +2606,22 @@ def _point_event_to_tracks(
     ccs: list[tuple[float, int, int]],
     pm: pretty_midi.PrettyMIDI,
     channel: int,
+    *,
+    plan: ArrangementPlan,
+    analysis: Analysis,
 ) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
     """Empacota as notas + CC acumuladas de um gerador de transicao
     (riser/downer/impact/reverse) em uma unica track — sempre 1 layer,
     mesmo padrao de `_render_sub_drop_element`. Compartilhado entre os
     quatro roles de `tools.palette.transitions` para nao duplicar o
     seam `_notes_to_track`/`RenderedTrack`."""
+    windows = _false_downbeat_windows(element, plan, analysis)
+    filtered_notes = _without_false_downbeat_attacks(notes, windows)
+    filtered_ccs = _without_false_downbeat_attacks(ccs, windows)
     name = _element_track_name(element, 0, 1)
-    track = _notes_to_track(notes, pm, name, channel, cc_events=ccs or None)
+    track = _notes_to_track(
+        filtered_notes, pm, name, channel, cc_events=filtered_ccs or None,
+    )
     rendered = RenderedTrack(
         element_id=element.id,
         track_name=name,
@@ -2537,7 +2630,7 @@ def _point_event_to_tracks(
                 pitch=n.pitch, velocity=n.velocity,
                 start_s=n.start_s, end_s=n.end_s,
             )
-            for n in notes
+            for n in filtered_notes
         ),
     )
     return [track], [rendered]
@@ -2571,7 +2664,9 @@ def _render_pad_element(
         for i, layer in enumerate(layers):
             layer_notes[i].extend(layer.notes)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_drums_element(
@@ -2599,7 +2694,9 @@ def _render_drums_element(
         for i, layer in enumerate(layers):
             layer_notes[i].extend(layer.notes)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_bass_element(
@@ -2630,7 +2727,9 @@ def _render_bass_element(
         for i, layer in enumerate(layers):
             layer_notes[i].extend(layer.notes)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 def _render_guitar_element(
@@ -2662,7 +2761,9 @@ def _render_guitar_element(
         for i, layer in enumerate(layers):
             layer_notes[i].extend(layer.notes)
 
-    return _layers_to_tracks(element, layer_notes, pm, channel)
+    return _layers_to_tracks(
+        element, layer_notes, pm, channel, plan=plan, analysis=analysis,
+    )
 
 
 _RenderElementFn = Callable[
