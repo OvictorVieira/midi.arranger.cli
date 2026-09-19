@@ -1,13 +1,14 @@
 """Geradores de elementos ritmicos eletronicos (issue #22).
 
-`hat_elec`, `sub` e `sub_drop`. Todo numero que caracteriza o comportamento
-vem de `knowledge/tecnicas/tecnicas_eletronico_midi.md`, lido via
-`tools.techniques.index.build_index()` — nunca hardcoded aqui (AGENTS.md:
-"parametro mentiroso" e a mesma categoria de vicio que `_identity_apply`).
+`hat_elec`, `perc_elec`, `sub` e `sub_drop`. Todo numero que caracteriza o
+comportamento vem de `knowledge/tecnicas/tecnicas_eletronico_midi.md`, lido
+via `tools.techniques.index.build_index()` — nunca hardcoded aqui
+(AGENTS.md: "parametro mentiroso" e a mesma categoria de vicio que
+`_identity_apply`).
 
-`perc_elec` e `vox_chop` (tambem previstos na issue #22) NAO estao
-implementados nesta rodada — ver corpo do PR para o motivo do corte de
-escopo. Nao ha bloco de placeholder para eles neste modulo nem no manual.
+`vox_chop` (tambem previsto na issue #22) NAO esta implementado nesta
+rodada — ver corpo do PR para o motivo do corte de escopo. Nao ha bloco de
+placeholder para ele neste modulo.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from ..validators.harmony import degrees_pcs
 from .rhythmic import MIN_NOTE_DURATION_S, STEPS_PER_BAR, RhythmicLayer, RhythmicNote
 
 HAT_ELEC_ROLES: tuple[str, ...] = ("hat_elec",)
+PERC_ELEC_ROLES: tuple[str, ...] = ("perc_elec",)
 SUB_ROLES: tuple[str, ...] = ("sub",)
 SUB_DROP_ROLES: tuple[str, ...] = ("sub_drop",)
 
@@ -169,6 +171,62 @@ def generate_hat_elec(
         notes = _enforce_monophony(notes)
         result.append(RhythmicLayer(index=layer_idx, notes=tuple(notes)))
     return result
+
+
+# --- perc_elec ----------------------------------------------------------------
+
+def generate_perc_elec(
+    analysis: Analysis,
+    section: PlanSection,
+    *,
+    seed: int,
+) -> list[RhythmicLayer]:
+    """Percussao eletronica curta (clap/hit) ancorada em
+    `analysis.snare_positions` da secao. Pitch fixo, gate curto fixo em ms
+    (nao escala com BPM: amostra tem duracao propria), velocity gaussiana
+    clampada, offset humano pequeno. 100% monofonico via
+    `_enforce_monophony`.
+
+    Secao sem `snare_positions` na janela emite ZERO notas — nao inventa
+    acento onde a origem nao poe (AGENTS.md: track de origem nao declarada
+    sai nota a nota identica; camada gerada respeita o mesmo silencio).
+    """
+    assert_traceable_seed(seed, source="palette.electronic.generate_perc_elec")
+    params = _technique_params("drums.perc_elec")
+    pitch = int(params["pitch"])
+    gate_ms = float(params["gate_ms"])
+    vel_lo, vel_hi = params["velocity_range"]
+    vel_mean = float(params["velocity_mean"])
+    vel_stdev = float(params["velocity_stdev"])
+    off_lo, off_hi = params["offset_range_ms"]
+    off_bias = float(params["offset_bias_ms"])
+    off_stdev = float(params["offset_stdev_ms"])
+
+    bars = bars_in_section(section, analysis)
+    if not bars:
+        return [RhythmicLayer(index=0, notes=())]
+    section_start_s, section_end_s = bars[0].start, bars[-1].end
+    onsets = sorted(
+        t for t in analysis.snare_positions
+        if section_start_s <= t < section_end_s
+    )
+
+    rng = random.Random(seed)
+    gate_s = gate_ms / 1000.0
+    notes: list[RhythmicNote] = []
+    for t in onsets:
+        offset_ms = rng.gauss(off_bias, off_stdev)
+        offset_ms = max(off_lo, min(off_hi, offset_ms))
+        onset = max(0.0, t + offset_ms / 1000.0)
+        velocity_f = rng.gauss(vel_mean, vel_stdev)
+        velocity = int(round(max(vel_lo, min(vel_hi, velocity_f))))
+        notes.append(RhythmicNote(
+            pitch=pitch, velocity=velocity,
+            start_s=onset, end_s=onset + max(MIN_NOTE_DURATION_S, gate_s),
+        ))
+    notes.sort(key=lambda n: n.start_s)
+    notes = _enforce_monophony(notes)
+    return [RhythmicLayer(index=0, notes=tuple(notes))]
 
 
 # --- sub ------------------------------------------------------------------
@@ -357,6 +415,7 @@ def generate_sub_drop(
 __all__ = [
     "HAT_ELEC_ROLES",
     "HAT_PATTERN_MODES",
+    "PERC_ELEC_ROLES",
     "SUB_DROP_ROLES",
     "SUB_FOLLOW_MODES",
     "SUB_ROLES",
@@ -365,6 +424,7 @@ __all__ = [
     "SubDropEvent",
     "bars_in_section",
     "generate_hat_elec",
+    "generate_perc_elec",
     "generate_sub",
     "generate_sub_drop",
 ]

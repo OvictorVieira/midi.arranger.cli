@@ -9,15 +9,17 @@ import pytest
 from tools.analyze import Analysis, BarAnalysis, Chord
 from tools.palette.electronic import (
     HAT_PATTERN_MODES,
+    PERC_ELEC_ROLES,
     SUB_FOLLOW_MODES,
     ElectronicGeneratorError,
     bars_in_section,
     generate_hat_elec,
+    generate_perc_elec,
     generate_sub,
     generate_sub_drop,
 )
 from tools.plan import PlanSection
-from tools.techniques.index import build_index
+from tools.techniques.index import TechniqueError, build_index
 
 REFERENCE_BAR_S = 60.0 / 174.0 * 4  # bar a 174bpm, mesmo BPM do manual
 
@@ -33,13 +35,14 @@ def _analysis(
     bar_s: float = REFERENCE_BAR_S,
     key_root: int = 0,
     kick_positions: list[float] | None = None,
+    snare_positions: list[float] | None = None,
 ) -> Analysis:
     bars = [_bar(i, bar_s, Chord(root=key_root, quality="minor")) for i in range(n_bars)]
     return Analysis(
         key_root=key_root,
         bars=bars,
         kick_positions=kick_positions or [],
-        snare_positions=[],
+        snare_positions=snare_positions or [],
         guitar_unison_positions=[],
         track_names=[],
     )
@@ -182,6 +185,97 @@ def test_hat_elec_rejects_unknown_pattern_mode():
     analysis = _analysis(n_bars=1)
     with pytest.raises(ElectronicGeneratorError, match="pattern_mode"):
         generate_hat_elec(analysis, _section(end_bar=1), pattern_mode="triplet", seed=1)
+
+
+# --- perc_elec ----------------------------------------------------------------
+
+def test_perc_elec_roles_exports_only_perc_elec():
+    assert PERC_ELEC_ROLES == ("perc_elec",)
+
+
+def test_perc_elec_manual_declares_expected_parameters():
+    idx = build_index()
+    t = idx.get("drums.perc_elec")
+    assert t is not None
+    names = {p.name for p in t.parameters}
+    assert names == {
+        "pitch", "gate_ms",
+        "velocity_range", "velocity_mean", "velocity_stdev",
+        "offset_range_ms", "offset_bias_ms", "offset_stdev_ms",
+    }
+
+
+def test_perc_elec_emits_one_note_per_snare_onset_with_fixed_pitch():
+    snare = [i * REFERENCE_BAR_S / 2 for i in range(8)]  # 2 hits/bar, 4 bars
+    analysis = _analysis(n_bars=4, snare_positions=snare)
+    layers = generate_perc_elec(analysis, _section(end_bar=4), seed=3)
+    assert len(layers) == 1
+    notes = layers[0].notes
+    assert len(notes) == len(snare)
+    assert {n.pitch for n in notes} == {39}
+    _assert_monophonic(sorted(notes, key=lambda n: n.start_s))
+
+
+def test_perc_elec_emits_zero_notes_when_section_has_no_snare():
+    analysis = _analysis(n_bars=4, snare_positions=[])
+    layers = generate_perc_elec(analysis, _section(end_bar=4), seed=1)
+    assert len(layers) == 1
+    assert layers[0].notes == ()
+
+
+def test_perc_elec_restricts_onsets_to_section_window():
+    """Snare fora da janela [section_start, section_end) e ignorado."""
+    snare = [-1.0, 0.0, REFERENCE_BAR_S * 2 - 0.1, REFERENCE_BAR_S * 5]
+    analysis = _analysis(n_bars=6, snare_positions=snare)
+    layers = generate_perc_elec(
+        analysis, _section(start_bar=0, end_bar=2), seed=2,
+    )
+    # 0.0 e REFERENCE_BAR_S*2-0.1 estao dentro; -1.0 e REFERENCE_BAR_S*5 nao.
+    assert len(layers[0].notes) == 2
+
+
+def test_perc_elec_is_deterministic_for_same_seed_and_plan():
+    snare = [i * REFERENCE_BAR_S / 2 for i in range(16)]
+    analysis = _analysis(n_bars=8, snare_positions=snare)
+    a = generate_perc_elec(analysis, _section(end_bar=8), seed=42)
+    b = generate_perc_elec(analysis, _section(end_bar=8), seed=42)
+    assert a[0].notes == b[0].notes
+
+
+def test_perc_elec_gate_does_not_scale_with_bpm():
+    """Sample player: duracao vive na amostra, nao no tempo do arranjo."""
+    snare_fast = [i * REFERENCE_BAR_S / 2 for i in range(8)]
+    snare_slow = [i * (REFERENCE_BAR_S * 2) / 2 for i in range(8)]
+    fast = _analysis(n_bars=4, snare_positions=snare_fast)
+    slow = _analysis(n_bars=4, bar_s=REFERENCE_BAR_S * 2, snare_positions=snare_slow)
+    fast_notes = generate_perc_elec(fast, _section(end_bar=4), seed=7)[0].notes
+    slow_notes = generate_perc_elec(slow, _section(end_bar=4), seed=7)[0].notes
+    fast_med = statistics.median(n.end_s - n.start_s for n in fast_notes)
+    slow_med = statistics.median(n.end_s - n.start_s for n in slow_notes)
+    assert abs(fast_med - slow_med) < 1e-6
+
+
+def test_perc_elec_velocity_and_offset_stay_within_manual_ranges():
+    snare = [i * REFERENCE_BAR_S / 4 for i in range(64)]
+    analysis = _analysis(n_bars=16, snare_positions=snare)
+    notes = generate_perc_elec(analysis, _section(end_bar=16), seed=11)[0].notes
+    for i, n in enumerate(notes):
+        assert 80 <= n.velocity <= 110
+        offset_ms = (n.start_s - snare[i]) * 1000
+        assert -15.5 <= offset_ms <= 15.5
+
+
+def test_perc_elec_raises_when_manual_missing(monkeypatch):
+    from tools.palette import electronic as elec
+
+    class _Idx:
+        def get(self, _name):
+            return None
+
+    monkeypatch.setattr(elec, "build_index", lambda: _Idx())
+    analysis = _analysis(n_bars=1, snare_positions=[0.0])
+    with pytest.raises(TechniqueError, match="drums.perc_elec"):
+        generate_perc_elec(analysis, _section(end_bar=1), seed=1)
 
 
 # --- sub ------------------------------------------------------------------
