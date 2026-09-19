@@ -31,6 +31,7 @@ from tools.palette.transitions import (
     IMPACT_ROLES,
     REVERSE_ROLES,
     RISER_ROLES,
+    SUBDIVISION_FLIP_ROLES,
 )
 from tools.plan import Element
 from tools.render import SUPPORTED_ROLES, _notes_to_track, render
@@ -141,6 +142,22 @@ def _reverse_element() -> Element:
     )
 
 
+def _subdivision_flip_element() -> Element:
+    return Element(
+        id="subdivision_flip_main",
+        role="subdivision_flip",
+        sections=["MAIN"],
+        register=[60, 60],
+        layers=1,
+        sync_role="response",
+        articulation="tight",
+        harmony="free",
+        pattern={"pitch": 60},
+        instrument={"plugin": "Omnisphere", "preset": "Desert Wind", "verified": True},
+        rationale="Flip ritmico de transicao para o teste de cobertura de roles.",
+    )
+
+
 def _element_for_role(role: str):
     if role == "pad":
         return None
@@ -176,6 +193,8 @@ def _element_for_role(role: str):
         return _impact_element()
     if role in REVERSE_ROLES:
         return _reverse_element()
+    if role in SUBDIVISION_FLIP_ROLES:
+        return _subdivision_flip_element()
     raise AssertionError(f"test helper missing role factory for {role!r}")
 
 
@@ -200,6 +219,10 @@ def test_every_supported_role_is_rendered(tmp_path, role):
     element = _element_for_role(role)
     if element is not None:
         plan.elements[0] = element
+    if role in SUBDIVISION_FLIP_ROLES:
+        # O gerador olha para tras a partir da fronteira; a primeira secao
+        # da musica nao tem material anterior para sofrer o flip.
+        plan.sections[0].start_bar = 4
 
     out = tmp_path / f"{role}.mid"
     report = render(plan, out)

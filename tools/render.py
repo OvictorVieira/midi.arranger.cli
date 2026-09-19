@@ -81,10 +81,12 @@ from .palette.transitions import (
     IMPACT_ROLES,
     REVERSE_ROLES,
     RISER_ROLES,
+    SUBDIVISION_FLIP_ROLES,
     generate_downer,
     generate_impact,
     generate_reverse,
     generate_riser,
+    generate_subdivision_flip,
 )
 from .plan import (
     ROLE_STYLE_FAMILIES,
@@ -211,6 +213,10 @@ escreve o plano ja tem acesso ao ultimo evento da secao anterior (via
 `analyze`) e declara o pitch/velocity a congelar explicitamente — nenhum
 parametro sorteado sem origem declarada (AGENTS.md AC-21); o renderer
 nunca inspeciona "a secao anterior" por conta propria."""
+SUBDIVISION_FLIP_PATTERN_FIELDS: frozenset[str] = frozenset({
+    "pitch", "velocity", "base_subdivision", "flip_subdivision",
+    "flip_bars_before_boundary",
+})
 
 # Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
 # Exemplo literal (documentado em docs/arquitetura.md):
@@ -663,6 +669,8 @@ def _pattern_fields_for_role(role: str) -> frozenset[str]:
         return IMPACT_PATTERN_FIELDS
     if role in REVERSE_ROLES:
         return REVERSE_PATTERN_FIELDS
+    if role in SUBDIVISION_FLIP_ROLES:
+        return SUBDIVISION_FLIP_PATTERN_FIELDS
     return frozenset()
 
 
@@ -2407,6 +2415,49 @@ def _render_reverse_element(
     return _point_event_to_tracks(element, notes, ccs, pm, channel)
 
 
+def _render_subdivision_flip_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Gera um ostinato que muda de subdivisao antes da fronteira da secao.
+
+    A resolucao da fronteira e a seed sao as mesmas de riser/downer: o
+    inicio da secao declarada e o downbeat-alvo, e cada ocorrencia recebe a
+    seed deterministica de ``_iter_element_sections``.
+    """
+    pattern = element.pattern or {}
+    pitch = int(pattern["pitch"])
+    velocity = int(pattern.get("velocity", 90))
+    base_subdivision = str(pattern.get("base_subdivision", "eighth"))
+    flip_subdivision = str(pattern.get("flip_subdivision", "sixteenth"))
+    flip_bars = float(pattern.get("flip_bars_before_boundary", 1.0))
+
+    notes: list[RhythmicNote] = []
+    for section, seed in _iter_element_sections(element, plan):
+        bars = bars_in_section(section, analysis)
+        if not bars:
+            continue
+        boundary_s = bars[0].start
+        generated = generate_subdivision_flip(
+            analysis,
+            boundary_s,
+            pitch=pitch,
+            velocity=velocity,
+            base_subdivision=base_subdivision,
+            flip_subdivision=flip_subdivision,
+            flip_bars_before_boundary=flip_bars,
+            seed=seed,
+        )
+        # Um flip cuja primeira secao comeca no tick zero nao pode escrever
+        # eventos negativos no SMF; nao ha material anterior a ela para virar.
+        notes.extend(note for note in generated if note.start_s >= 0.0)
+
+    return _point_event_to_tracks(element, notes, [], pm, channel)
+
+
 def _point_event_to_tracks(
     element: Element,
     notes: list[RhythmicNote],
@@ -2635,6 +2686,10 @@ def _build_role_renderers() -> dict[str, _RoleRenderer]:
         **{
             role: _RoleRenderer(_render_reverse_element, REVERSE_CHANNEL)
             for role in REVERSE_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_subdivision_flip_element, RHYTHMIC_CHANNEL)
+            for role in SUBDIVISION_FLIP_ROLES
         },
     }
 

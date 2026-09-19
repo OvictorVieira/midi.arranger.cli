@@ -128,6 +128,7 @@ ROLE_STYLE_FAMILIES = {
     "motor": "keys",
     "pluck": "keys",
     "riser": "keys",
+    "subdivision_flip": "keys",
     "lead_agressivo": "keys",
     "vox_chop": "keys",
 }
@@ -1120,6 +1121,75 @@ def _style_family_for_role(role: str) -> str | None:
     return ROLE_STYLE_FAMILIES.get(role)
 
 
+def _validate_subdivision_flip_pattern(pattern: object, path: str) -> None:
+    """Valida o contrato declarativo de ``subdivision_flip``.
+
+    O gerador tambem protege a sua API publica, mas esta fronteira e onde o
+    autor do plano recebe o caminho exato do campo antes de o render comecar.
+    O vocabulario vem do proprio gerador, para que schema e mecanica nao
+    possam divergir.
+    """
+    # `transitions` tambem importa validadores que usam `plan`; atrasar este
+    # import preserva a fronteira entre os modulos sem manter uma segunda
+    # lista local do vocabulario.
+    from .palette.transitions import SUBDIVISION_STEPS_PER_BEAT
+
+    if not isinstance(pattern, dict):
+        raise PlanValidationError(path, "must be an object with required field 'pitch'")
+
+    pitch_path = f"{path}.pitch"
+    if "pitch" not in pattern:
+        raise PlanValidationError(pitch_path, "missing required pitch")
+    pitch = pattern["pitch"]
+    if not isinstance(pitch, int) or isinstance(pitch, bool):
+        raise PlanValidationError(pitch_path, f"must be int, got {type(pitch).__name__}")
+    if pitch < MIDI_PITCH_MIN or pitch > MIDI_PITCH_MAX:
+        raise PlanValidationError(
+            pitch_path,
+            f"must be in {MIDI_PITCH_MIN}-{MIDI_PITCH_MAX}, got {pitch}",
+        )
+
+    velocity = pattern.get("velocity")
+    if velocity is not None:
+        if not isinstance(velocity, int) or isinstance(velocity, bool):
+            raise PlanValidationError(
+                f"{path}.velocity", f"must be int, got {type(velocity).__name__}",
+            )
+        if velocity < 1 or velocity > 127:
+            raise PlanValidationError(
+                f"{path}.velocity", f"must be in 1-127, got {velocity}",
+            )
+
+    accepted = tuple(SUBDIVISION_STEPS_PER_BEAT)
+    for field_name in ("base_subdivision", "flip_subdivision"):
+        value = pattern.get(field_name)
+        if value is not None and value not in SUBDIVISION_STEPS_PER_BEAT:
+            raise PlanValidationError(
+                f"{path}.{field_name}",
+                f"got {value!r}; must be one of {accepted!r}",
+            )
+
+    flip_bars = pattern.get("flip_bars_before_boundary")
+    if flip_bars is not None:
+        if isinstance(flip_bars, bool) or not isinstance(flip_bars, (int, float)):
+            raise PlanValidationError(
+                f"{path}.flip_bars_before_boundary",
+                f"must be number > 0, got {flip_bars!r}",
+            )
+        if flip_bars <= 0:
+            raise PlanValidationError(
+                f"{path}.flip_bars_before_boundary",
+                f"must be > 0, got {flip_bars!r}",
+            )
+
+
+def _is_subdivision_flip_role(role: str) -> bool:
+    """Consulta o registro de roles sem importar a paleta no carregamento."""
+    from .palette.transitions import SUBDIVISION_FLIP_ROLES
+
+    return role in SUBDIVISION_FLIP_ROLES
+
+
 def style_families_used_by_plan(plan: ArrangementPlan) -> tuple[str, ...]:
     """Familias de `style` que o plano efetivamente usa.
 
@@ -1483,6 +1553,8 @@ def validate(
         _require_in(e.articulation, ARTICULATIONS, f"{base}.articulation")
         _require_in(e.harmony, HARMONY_MODES, f"{base}.harmony")
         _require_nonblank_str(e.rationale, f"{base}.rationale")
+        if _is_subdivision_flip_role(e.role):
+            _validate_subdivision_flip_pattern(e.pattern, f"{base}.pattern")
 
         # BLOQUEIO (issue #17): veto de criacao de familia. `plan.elements`
         # e sempre conteudo GERADO (nunca a edicao de uma track existente,

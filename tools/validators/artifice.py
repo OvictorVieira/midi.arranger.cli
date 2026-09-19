@@ -129,6 +129,20 @@ ritmico proprio' nao se aplica porque a duplicacao E o conteudo.
   validador de duplicacao nao tem como diferenciar 'dobra intencional
   do fim' de 'copia servil do source' apenas pelo tempo de onset."""
 
+ROLE_INTENTIONAL_PATTERNS: dict[str, frozenset[str]] = {
+    "subdivision_flip": frozenset({
+        "grid_perfect", "velocity_grouped", "repeated_notes",
+    }),
+}
+"""Anti-padroes que sao a propria intencao declarada de um role.
+
+`subdivision_flip` e, por contrato, uma unica altura quantizada cuja unica
+mudanca e a taxa de subdivisao antes da fronteira. Reprová-lo por grid,
+velocity plana ou repeticao seria rejeitar exatamente o comportamento que o
+plano pediu; os outros checks (respiro, duracao e duplicacao do source)
+continuam ativos.
+"""
+
 # Chaves nomeadas dos anti-padroes — string curto usado no relatorio e em
 # `ArtificeIssue.pattern` para o consumidor filtrar por tipo sem parsear
 # mensagem. Vocabulario fechado.
@@ -442,27 +456,31 @@ def _validate_track(
     kick ainda esta gerando lixo."""
     issues: list[ArtificeIssue] = []
     sustained = element.articulation in SUSTAINED_ARTICULATIONS
+    intentional = ROLE_INTENTIONAL_PATTERNS.get(element.role, frozenset())
 
     if not sustained:
-        grid = _check_grid_perfect(element.id, track, analysis)
-        if grid is not None:
-            issues.append(grid)
+        if PATTERN_GRID not in intentional:
+            grid = _check_grid_perfect(element.id, track, analysis)
+            if grid is not None:
+                issues.append(grid)
         chain = _check_end_chain(element.id, track)
         if chain is not None:
             issues.append(chain)
         dur = _check_duration_uniform(element.id, track)
         if dur is not None:
             issues.append(dur)
-        grouped = _check_velocity_grouped(element.id, track)
-        if grouped is not None:
-            issues.append(grouped)
+        if PATTERN_VELOCITY_GROUPED not in intentional:
+            grouped = _check_velocity_grouped(element.id, track)
+            if grouped is not None:
+                issues.append(grouped)
         random_ = _check_velocity_random_no_accent(element.id, track, analysis)
         if random_ is not None:
             issues.append(random_)
 
-    repeated = _check_repeated_notes(element.id, track, analysis)
-    if repeated is not None:
-        issues.append(repeated)
+    if PATTERN_REPEATED_NOTES not in intentional:
+        repeated = _check_repeated_notes(element.id, track, analysis)
+        if repeated is not None:
+            issues.append(repeated)
     if element.role not in DUPLICATES_SOURCE_EXEMPT_ROLES:
         dupes = _check_duplicates_source(element.id, track, analysis)
         if dupes is not None:

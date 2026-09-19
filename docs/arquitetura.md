@@ -888,10 +888,10 @@ parâmetro é `CONVENCAO` declarada, não `verified: true`. `impact` já cai na 
 FR-14 de `SERUM_ALLOWED_ROLES` — os dois roles previstos pela issue #23 já tinham lugar reservado
 nessas tabelas antes desta rodada.
 
-`false_downbeat`, `subdivision_flip` e `half_time_magnifier` (a última seção da issue) são funções
-puras e testadas no mesmo módulo (`false_downbeat_delay_s`, `generate_subdivision_flip`,
-`half_time_drum_pattern`) — cobrem a mecânica descrita, mas NÃO ganharam role/campo de plano próprio
-nesta rodada (mesmo corte de escopo que `electronic.py` já documenta para `perc_elec`/`vox_chop`).
+`subdivision_flip` é role declarável: `element.pattern` exige `pitch` e pode configurar `velocity`,
+`base_subdivision`, `flip_subdivision` e `flip_bars_before_boundary`; o renderer usa a mesma fronteira
+e seed dos risers/downers. `false_downbeat` e `half_time_magnifier` continuam funções puras e testadas
+no mesmo módulo (`false_downbeat_delay_s`, `half_time_drum_pattern`), sem role/campo de plano próprio.
 
 ### Prova ponta a ponta com influência mockada (issue #79)
 

@@ -72,10 +72,11 @@ def _analysis(
 def _element(
     id: str = "arp_main",
     *,
+    role: str = "arp",
     articulation: str = "staccato",
 ) -> Element:
     return Element(
-        id=id, role="arp", sections=["MAIN"],
+        id=id, role=role, sections=["MAIN"],
         register=[48, 71], layers=1,
         sync_role="cycles", articulation=articulation,
         harmony="follow_chords",
@@ -217,6 +218,25 @@ def test_grid_check_skipped_when_note_falls_outside_bars():
     plan = _plan([_element()])
     issues = validate_artifice([tr], plan, ana)
     assert not any(i.pattern == PATTERN_GRID for i in issues)
+
+
+def test_subdivision_flip_exempts_its_intentional_grid_and_repetition():
+    """A troca de subdivisao e uma nota fixa no grid por definicao, nao
+    MIDI robotico. Outros roles com o mesmo material continuam sendo
+    reprovados pelos testes especificos de cada anti-padrao."""
+    ana = _analysis(4)
+    notes = [
+        _note(pitch=60, start_s=i * 0.125, end_s=i * 0.125 + 0.10, velocity=90)
+        for i in range(16)
+    ]
+    tr = _track(notes)
+    plan = _plan([_element(role="subdivision_flip")])
+
+    issues = validate_artifice([tr], plan, ana)
+
+    assert not {
+        PATTERN_GRID, PATTERN_VELOCITY_GROUPED, PATTERN_REPEATED_NOTES,
+    } & {issue.pattern for issue in issues}
 
 
 # --- end chain -------------------------------------------------------------

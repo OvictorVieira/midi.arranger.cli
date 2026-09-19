@@ -22,15 +22,10 @@ numero que caracteriza o comportamento vem de
 
 ## O que este modulo NAO faz nesta rodada
 
-`false_downbeat`, `subdivision_flip` e `half_time_magnifier` (issue #23,
-ultima secao) sao mecanicas menores, cada uma coberta aqui por uma funcao
-pura e testada (`false_downbeat_delay_s`, `generate_subdivision_flip`,
-`half_time_drum_pattern`) — mas NAO estao amarradas a um role/campo de
-`element.pattern` novo no plano nesta rodada (mesmo corte de escopo que
-`electronic.py` ja documenta para `perc_elec`/`vox_chop`: entregar a
-mecanica testada e determinística agora, sem inventar um schema de plano
-que nenhum consumidor real ainda usa). Nao ha bloco de placeholder pra
-elas no manual nem role fantasma em `tools/render.py`.
+`subdivision_flip` e uma mecanica menor que tambem e um role declaravel:
+o plano informa pitch e a troca de subdivisao, e o renderer a ancora na
+fronteira de secao. `false_downbeat` e `half_time_magnifier` continuam
+funcoes puras e testadas, sem role/campo de plano proprio nesta rodada.
 """
 
 from __future__ import annotations
@@ -49,6 +44,7 @@ RISER_ROLES: tuple[str, ...] = ("riser",)
 DOWNER_ROLES: tuple[str, ...] = ("downer",)
 IMPACT_ROLES: tuple[str, ...] = ("impact",)
 REVERSE_ROLES: tuple[str, ...] = ("reverse",)
+SUBDIVISION_FLIP_ROLES: tuple[str, ...] = ("subdivision_flip",)
 
 CC_EXPRESSION: int = 11
 CC_VOLUME: int = 7
@@ -502,6 +498,7 @@ __all__ = [
     "INTENSITY_LEVELS",
     "REVERSE_ROLES",
     "RISER_ROLES",
+    "SUBDIVISION_FLIP_ROLES",
     "SUBDIVISION_STEPS_PER_BEAT",
     "CCEvent",
     "ImpactEvent",

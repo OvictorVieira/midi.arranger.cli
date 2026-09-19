@@ -121,6 +121,64 @@ def test_validate_accepts_valid_plan():
     validate(_valid_plan())  # nao levanta
 
 
+def _subdivision_flip_element(pattern: dict[str, object]) -> Element:
+    return Element(
+        id="flip_before_chorus",
+        role="subdivision_flip",
+        sections=["CHORUS 1"],
+        register=[60, 60],
+        layers=1,
+        sync_role="response",
+        articulation="tight",
+        harmony="free",
+        pattern=pattern,
+        instrument={"plugin": "Omnisphere", "preset": "Desert Wind", "verified": True},
+        rationale="Aumenta a densidade ritmica antes do downbeat do refrao.",
+    )
+
+
+def test_validate_accepts_subdivision_flip_pattern():
+    plan = _valid_plan()
+    plan.elements.append(_subdivision_flip_element({
+        "pitch": 60,
+        "velocity": 96,
+        "base_subdivision": "eighth",
+        "flip_subdivision": "sixteenth",
+        "flip_bars_before_boundary": 1.0,
+    }))
+
+    validate(plan)
+
+
+@pytest.mark.parametrize("field_name", ["base_subdivision", "flip_subdivision"])
+def test_validate_rejects_unknown_subdivision_flip_subdivision(field_name: str):
+    plan = _valid_plan()
+    plan.elements.append(_subdivision_flip_element({
+        "pitch": 60,
+        field_name: "thirty_second",
+    }))
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == f"elements[2].pattern.{field_name}"
+    assert "thirty_second" in str(exc.value)
+    assert "eighth" in str(exc.value)
+    assert "triplet" in str(exc.value)
+    assert "sixteenth" in str(exc.value)
+
+
+def test_validate_rejects_subdivision_flip_without_pitch():
+    plan = _valid_plan()
+    plan.elements.append(_subdivision_flip_element({"velocity": 96}))
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "elements[2].pattern.pitch"
+    assert "missing required pitch" in str(exc.value)
+
+
 def test_round_trip_writes_and_reads_identical_object(tmp_path: Path):
     """AC: 'round-trip: escrever plano, ler plano e obter objeto identico'."""
     plan = _valid_plan()

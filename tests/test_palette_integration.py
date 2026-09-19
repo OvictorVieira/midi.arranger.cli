@@ -266,6 +266,17 @@ _ROLE_SPECS: dict[str, dict] = {
         "sync_role": "response",
         "pattern": {},
     },
+    "subdivision_flip": {
+        "route": "hook_eletronico_pesado",
+        "register": [60, 60],
+        "articulation": "tight",
+        "harmony": "free",
+        "sync_role": "response",
+        "pattern": {"pitch": 60},
+        # A mecanica acontece ANTES da fronteira de MAIN; A e MAIN precisam
+        # estar declaradas para o placement validar esses ataques reais.
+        "sections": ["A", "MAIN"],
+    },
 }
 
 
@@ -274,7 +285,7 @@ def _build_plan(source: Path, role: str) -> ArrangementPlan:
     element = Element(
         id=f"{role}_main",
         role=role,
-        sections=["MAIN"],
+        sections=list(spec.get("sections", ["MAIN"])),
         register=list(spec["register"]),
         layers=spec.get("layers", 1),
         sync_role=spec["sync_role"],
@@ -285,6 +296,39 @@ def _build_plan(source: Path, role: str) -> ArrangementPlan:
         instrument=dict(spec.get("instrument", _INSTRUMENT_OMNI)),
         rationale=f"Integration coverage for {role}.",
     )
+    sections = [
+        PlanSection(
+            label="MAIN",
+            kind="chorus",
+            start_bar=0,
+            end_bar=8,
+            source="marker",
+            protagonist="texture",
+            energy={
+                "densidade": 5, "impacto": 5, "largura": 5,
+                "altura": 5, "instabilidade": 3,
+            },
+        ),
+    ]
+    if role == "subdivision_flip":
+        sections = [
+            PlanSection(
+                label="A", kind="verse", start_bar=0, end_bar=4,
+                source="marker", protagonist="texture",
+                energy={
+                    "densidade": 5, "impacto": 5, "largura": 5,
+                    "altura": 5, "instabilidade": 3,
+                },
+            ),
+            PlanSection(
+                label="MAIN", kind="chorus", start_bar=4, end_bar=8,
+                source="marker", protagonist="texture",
+                energy={
+                    "densidade": 5, "impacto": 5, "largura": 5,
+                    "altura": 5, "instabilidade": 3,
+                },
+            ),
+        ]
     return ArrangementPlan(
         version=1,
         seed=42,
@@ -292,20 +336,7 @@ def _build_plan(source: Path, role: str) -> ArrangementPlan:
             path=str(source), sha256=_sha256_bytes(source),
         ),
         route=spec["route"],
-        sections=[
-            PlanSection(
-                label="MAIN",
-                kind="chorus",
-                start_bar=0,
-                end_bar=8,
-                source="marker",
-                protagonist="texture",
-                energy={
-                    "densidade": 5, "impacto": 5, "largura": 5,
-                    "altura": 5, "instabilidade": 3,
-                },
-            ),
-        ],
+        sections=sections,
         elements=[element],
     )
 

@@ -1214,7 +1214,9 @@ PLAN_VALIDATE_DESCRIPTION = (
     "e contra o MIDI de origem (existencia de secoes, tracks que os edits "
     "referenciam). Cobre: schema JSON, vocabularios, secoes que existem no "
     "MIDI, register em 0-127, layers>=1, protagonista unico por secao, "
-    "rationale nao vazio. Use SEMPRE antes de chamar render — plano invalido "
+    "rationale nao vazio e contratos de pattern por role (por exemplo, "
+    "subdivision_flip exige pitch e subdivisoes conhecidas). Use SEMPRE "
+    "antes de chamar render — plano invalido "
     "no render vira erro tarde. O plano pode ser passado inline em `plan` ou "
     "por caminho em `plan_path` — exatamente um dos dois."
 )
