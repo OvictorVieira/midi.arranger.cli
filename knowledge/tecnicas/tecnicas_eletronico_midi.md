@@ -74,9 +74,51 @@ semicolcheias com lacunas, ou half-time (colcheias).
 
 ---
 
-## 3. Sub de breakdown e sub-drop
+## 3. Percussao eletronica sobre a caixa
 
 ### 3.1 Comportamento
+
+`perc_elec` e uma camada percussiva curta (clap/rimshot/hit sample eletronico) que ancora
+**exatamente nos onsets da caixa do MIDI de origem** — reaproveita `analysis.snare_positions`
+(o backbeat medido do arquivo real), NAO um grid fixo em beats 2 e 4 inventado por convencao.
+Pitch fixo (um unico sample), gate curto, velocity com variacao humana pequena e o mesmo vies
+levemente adiantado do `hat_elec` (o par vive na mesma grade estilistica). Sem `snare_positions`
+detectavel na secao a camada nao emite nota — nao inventa acento onde a origem nao poe.
+
+Nenhum numero abaixo veio de medicao: a issue #22 descreve o comportamento de `perc_elec` em
+prosa e nao da valores, entao TODO parametro e `CONVENCAO — <razao>` declarada, mesma logica ja
+usada em `bass.sub`/`bass.sub_drop`. `verified: false` no bloco marca isso alto.
+
+### 3.2 Parametros
+
+```technique
+{
+  "name": "perc_elec",
+  "family": "drums",
+  "summary": "Camada de percussao eletronica curta (clap/hit) ancorada nos snare_positions da origem: pitch fixo, gate curto, velocity com variacao humana pequena.",
+  "verified": false,
+  "description": "[NAO VERIFICADO] Pitch NUNCA varia (amostra unica). Onset de cada hit e o instante em analysis.snare_positions dentro da secao, com offset humano pequeno em ms; secao sem snare_positions gera zero notas. Gate e curto e fixo em ms (nao escala com BPM como hat_elec, porque clap/hit de sample player nao aumenta de duracao com tempo mais lento — a amostra tem tamanho fixo). Sem detector de caixa novo: reaproveita o mesmo campo que outros palettes ja consomem para ancorar no groove.",
+  "parameters": [
+    {"name": "pitch", "value": 39, "source": "CONVENCAO — a issue #22 nao declara mapeamento MIDI para perc_elec. 39 e a nota GM de Hand Clap, opcao neutra que dispara clap em qualquer sample player generico e nao colide com kick (36) nem com a caixa (38) da mesma track; ainda assim e um chute de mapeamento de sample player, nao medicao do arranjo do usuario."},
+    {"name": "gate_ms", "value": 60, "source": "CONVENCAO — clap/hit percussivo de sample player tem duracao curta e fixa: 60ms cobre o transiente + cauda audivel do clap sem invadir o proximo backbeat mesmo a 200bpm (step_ms de semicolcheia a 200bpm ~75ms). Nao escala com BPM por design (amostra tem duracao propria)."},
+    {"name": "velocity_range", "range": [80, 110], "source": "CONVENCAO — mesma ordem de grandeza do velocity_range medido em hat_elec (79-113) mas levemente rebaixado no topo, porque clap costuma tocar como camada de acento sobre a caixa e nao deve rivalizar com o backbeat da caixa (bucket accent do StyleProfile.default() vai ate ~110); nao ha medicao de perc_elec no arranjo de referencia."},
+    {"name": "velocity_mean", "value": 95, "source": "CONVENCAO — centro da faixa declarada acima; mesmo valor central de hat_elec (95) para manter as duas camadas eletronicas na mesma pressao percebida, ja que emparelham no mesmo groove."},
+    {"name": "velocity_stdev", "value": 8, "source": "CONVENCAO — mesma ordem de grandeza do stdev medido em hat_elec (8). Ombro percussivo curto nao suporta grandes oscilacoes de velocity sem soar erratico; 8 pontos e variacao humana plausivel sem inventar precisao."},
+    {"name": "offset_range_ms", "range": [-15, 15], "source": "CONVENCAO — faixa mais estreita que hat_elec (+-20ms) porque clap/hit sobre backbeat e um evento de acento e desvio grande deslocaria o backbeat percebido; nao ha medicao propria."},
+    {"name": "offset_bias_ms", "value": -3, "source": "CONVENCAO — mesmo sentido do vies medido em hat_elec (-4ms adiantado). A camada de percussao eletronica vive na mesma grade estilistica do hi-hat; um vies levemente adiantado (nao instantaneo) mantem a sensacao de energia percussiva sem competir com a caixa."},
+    {"name": "offset_stdev_ms", "value": 6, "source": "CONVENCAO — proporcional ao offset_range_ms mais estreito (~metade da faixa), mesmo criterio usado em hat_elec (stdev ~ metade do range) para produzir distribuicao plausivel dentro da faixa declarada."}
+  ],
+  "tools": {
+    "generic": {"notes": [39], "note": "pitch fixo, sem variacao — trate como amostra de clap/hit de sample player, nao como peca de kit acustico"}
+  }
+}
+```
+
+---
+
+## 4. Sub de breakdown e sub-drop
+
+### 4.1 Comportamento
 
 `sub`: linha de sub-bass sustentada de breakdown eletrônico. Segue tônica (nota pedal), o padrão do
 kick (`analysis.kick_positions`), ou o contorno do riff (via `element.degrees`, mesmo mecanismo já usado
@@ -89,7 +131,7 @@ elemento.
 bend (curva monotônica descendente). Também monofônico por construção — é um único evento, não uma
 sequência.
 
-### 3.2 Parâmetros
+### 4.2 Parâmetros
 
 ```technique
 {

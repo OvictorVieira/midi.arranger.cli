@@ -51,6 +51,7 @@ def test_index_finds_all_techniques_from_versioned_manuals():
         "drums.ghost_notes",
         "drums.hat_elec",
         "drums.microtiming",
+        "drums.perc_elec",
         "guitar.bend",
         "guitar.chord_voicing",
         "guitar.dead_notes",
@@ -152,7 +153,7 @@ def test_accented_roll_velocities_agree_with_the_accent_hierarchy():
 
 def test_by_family_filters_correctly():
     idx = build_index(MANUALS_DIR)
-    assert len(idx.by_family("drums")) == 9
+    assert len(idx.by_family("drums")) == 10
     assert len(idx.by_family("bass")) == 12
     assert len(idx.by_family("keys")) == 14
     assert len(idx.by_family("guitar")) == 18
