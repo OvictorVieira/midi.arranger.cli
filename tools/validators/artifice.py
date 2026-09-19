@@ -133,14 +133,18 @@ ROLE_INTENTIONAL_PATTERNS: dict[str, frozenset[str]] = {
     "subdivision_flip": frozenset({
         "grid_perfect", "velocity_grouped", "repeated_notes",
     }),
+    "half_time_magnifier": frozenset({
+        "grid_perfect", "duration_uniform", "velocity_grouped", "repeated_notes",
+    }),
 }
 """Anti-padroes que sao a propria intencao declarada de um role.
 
 `subdivision_flip` e, por contrato, uma unica altura quantizada cuja unica
-mudanca e a taxa de subdivisao antes da fronteira. Reprová-lo por grid,
-velocity plana ou repeticao seria rejeitar exatamente o comportamento que o
-plano pediu; os outros checks (respiro, duracao e duplicacao do source)
-continuam ativos.
+mudanca e a taxa de subdivisao antes da fronteira. `half_time_magnifier`
+preserva os hits pares de uma grade declarada de bateria. Reprová-los por
+grid, duracao uniforme, velocity plana ou repeticao seria rejeitar exatamente
+o comportamento que o plano pediu; os outros checks (respiro e duplicacao do
+source) continuam ativos.
 """
 
 # Chaves nomeadas dos anti-padroes — string curto usado no relatorio e em
@@ -466,9 +470,10 @@ def _validate_track(
         chain = _check_end_chain(element.id, track)
         if chain is not None:
             issues.append(chain)
-        dur = _check_duration_uniform(element.id, track)
-        if dur is not None:
-            issues.append(dur)
+        if PATTERN_DURATION_UNIFORM not in intentional:
+            dur = _check_duration_uniform(element.id, track)
+            if dur is not None:
+                issues.append(dur)
         if PATTERN_VELOCITY_GROUPED not in intentional:
             grouped = _check_velocity_grouped(element.id, track)
             if grouped is not None:

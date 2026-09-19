@@ -22,10 +22,11 @@ numero que caracteriza o comportamento vem de
 
 ## O que este modulo NAO faz nesta rodada
 
-`subdivision_flip` e uma mecanica menor que tambem e um role declaravel:
-o plano informa pitch e a troca de subdivisao, e o renderer a ancora na
-fronteira de secao. `false_downbeat` e `half_time_magnifier` continuam
-funcoes puras e testadas, sem role/campo de plano proprio nesta rodada.
+`subdivision_flip` e `half_time_magnifier` sao mecanicas menores que tambem
+sao roles declaraveis: o primeiro ancora uma troca de subdivisao na
+fronteira de secao; o segundo preserva apenas os steps pares de uma grade de
+bateria declarada. `false_downbeat` continua funcao pura e testada, sem
+campo de plano proprio nesta rodada.
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ DOWNER_ROLES: tuple[str, ...] = ("downer",)
 IMPACT_ROLES: tuple[str, ...] = ("impact",)
 REVERSE_ROLES: tuple[str, ...] = ("reverse",)
 SUBDIVISION_FLIP_ROLES: tuple[str, ...] = ("subdivision_flip",)
+HALF_TIME_MAGNIFIER_ROLES: tuple[str, ...] = ("half_time_magnifier",)
 
 CC_EXPRESSION: int = 11
 CC_VOLUME: int = 7
@@ -494,6 +496,7 @@ __all__ = [
     "CC_FILTER",
     "CC_VOLUME",
     "DOWNER_ROLES",
+    "HALF_TIME_MAGNIFIER_ROLES",
     "IMPACT_ROLES",
     "INTENSITY_LEVELS",
     "REVERSE_ROLES",

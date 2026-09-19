@@ -179,6 +179,54 @@ def test_validate_rejects_subdivision_flip_without_pitch():
     assert "missing required pitch" in str(exc.value)
 
 
+def _half_time_magnifier_element(pattern: dict[str, object]) -> Element:
+    return Element(
+        id="half_time_before_chorus",
+        role="half_time_magnifier",
+        sections=["CHORUS 1"],
+        register=[0, 127],
+        layers=1,
+        sync_role="exact_anchor",
+        articulation="tight",
+        harmony="percussion",
+        pattern=pattern,
+        instrument={"plugin": "Superior Drummer", "preset": "Metal Kit", "verified": True},
+        rationale="Reduz a bateria para half-time sem reduzir o arp acompanhante.",
+    )
+
+
+def test_validate_accepts_half_time_magnifier_binary_base_pattern():
+    plan = _valid_plan()
+    plan.elements.append(_half_time_magnifier_element({
+        "base_pattern": [1, 1, 1, 1] * 4,
+    }))
+
+    validate(plan)
+
+
+def test_validate_rejects_empty_half_time_magnifier_base_pattern():
+    plan = _valid_plan()
+    plan.elements.append(_half_time_magnifier_element({"base_pattern": []}))
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "elements[2].pattern.base_pattern"
+    assert "non-empty" in str(exc.value)
+
+
+@pytest.mark.parametrize("base_pattern", [[1, 2], [1, True], [1, -1]])
+def test_validate_rejects_non_binary_half_time_magnifier_base_pattern(base_pattern):
+    plan = _valid_plan()
+    plan.elements.append(_half_time_magnifier_element({"base_pattern": base_pattern}))
+
+    with pytest.raises(PlanValidationError) as exc:
+        validate(plan)
+
+    assert exc.value.path == "elements[2].pattern.base_pattern[1]"
+    assert "must be 0 or 1" in str(exc.value)
+
+
 def test_round_trip_writes_and_reads_identical_object(tmp_path: Path):
     """AC: 'round-trip: escrever plano, ler plano e obter objeto identico'."""
     plan = _valid_plan()

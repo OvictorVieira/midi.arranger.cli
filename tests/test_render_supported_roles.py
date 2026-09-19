@@ -28,6 +28,7 @@ from tools.palette.harmonic import DRONE_ROLES, KEYBOARD_ROLES, STRINGS_ROLES, P
 from tools.palette.rhythmic import MOTOR_ROLES, RHYTHMIC_ROLES, SHADOW_ROLES
 from tools.palette.transitions import (
     DOWNER_ROLES,
+    HALF_TIME_MAGNIFIER_ROLES,
     IMPACT_ROLES,
     REVERSE_ROLES,
     RISER_ROLES,
@@ -158,6 +159,22 @@ def _subdivision_flip_element() -> Element:
     )
 
 
+def _half_time_magnifier_element() -> Element:
+    return Element(
+        id="half_time_magnifier_main",
+        role="half_time_magnifier",
+        sections=["MAIN"],
+        register=[0, 127],
+        layers=1,
+        sync_role="exact_anchor",
+        articulation="tight",
+        harmony="percussion",
+        pattern={"base_pattern": [1] * 16},
+        instrument={"plugin": "Superior Drummer", "preset": "Metal Kit", "verified": True},
+        rationale="Bateria em half-time para a cobertura de roles renderizaveis.",
+    )
+
+
 def _element_for_role(role: str):
     if role == "pad":
         return None
@@ -195,6 +212,8 @@ def _element_for_role(role: str):
         return _reverse_element()
     if role in SUBDIVISION_FLIP_ROLES:
         return _subdivision_flip_element()
+    if role in HALF_TIME_MAGNIFIER_ROLES:
+        return _half_time_magnifier_element()
     raise AssertionError(f"test helper missing role factory for {role!r}")
 
 

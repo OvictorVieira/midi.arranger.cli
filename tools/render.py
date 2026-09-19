@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from io import BytesIO
@@ -40,7 +41,15 @@ import pretty_midi
 from .analyze import Analysis, analyze
 from .edits import EditReport, apply_edits, collect_track_names, track_name
 from .palette.bass import BASS_ROLES, generate_bass
-from .palette.drums import DRUMS_ROLES, generate_drums
+from .palette.drums import (
+    DRUMS_HIT_DURATION_S,
+    DRUMS_ROLES,
+    _energy_axis,
+    _hat_or_ride_pitch,
+    _hat_or_ride_velocity_bucket,
+    _velocity_for,
+    generate_drums,
+)
 from .palette.electronic import (
     HAT_ELEC_ROLES,
     SUB_DROP_ROLES,
@@ -78,6 +87,7 @@ from .palette.rhythmic import (
 )
 from .palette.transitions import (
     DOWNER_ROLES,
+    HALF_TIME_MAGNIFIER_ROLES,
     IMPACT_ROLES,
     REVERSE_ROLES,
     RISER_ROLES,
@@ -87,6 +97,7 @@ from .palette.transitions import (
     generate_reverse,
     generate_riser,
     generate_subdivision_flip,
+    half_time_drum_pattern,
 )
 from .plan import (
     ROLE_STYLE_FAMILIES,
@@ -109,6 +120,7 @@ from .plan import (
 from .plan import (
     validate as validate_plan,
 )
+from .rng import assert_traceable_seed
 from .style_schema import is_style_parameter_scalar
 from .techniques import (
     TechniqueApplyResult,
@@ -217,6 +229,7 @@ SUBDIVISION_FLIP_PATTERN_FIELDS: frozenset[str] = frozenset({
     "pitch", "velocity", "base_subdivision", "flip_subdivision",
     "flip_bars_before_boundary",
 })
+HALF_TIME_MAGNIFIER_PATTERN_FIELDS: frozenset[str] = frozenset({"base_pattern"})
 
 # Formato do carimbo de plugin/preset em meta-evento SMF de texto (0x01).
 # Exemplo literal (documentado em docs/arquitetura.md):
@@ -671,6 +684,8 @@ def _pattern_fields_for_role(role: str) -> frozenset[str]:
         return REVERSE_PATTERN_FIELDS
     if role in SUBDIVISION_FLIP_ROLES:
         return SUBDIVISION_FLIP_PATTERN_FIELDS
+    if role in HALF_TIME_MAGNIFIER_ROLES:
+        return HALF_TIME_MAGNIFIER_PATTERN_FIELDS
     return frozenset()
 
 
@@ -2458,6 +2473,48 @@ def _render_subdivision_flip_element(
     return _point_event_to_tracks(element, notes, [], pm, channel)
 
 
+def _render_half_time_magnifier_element(
+    element: Element,
+    plan: ArrangementPlan,
+    analysis: Analysis,
+    pm: pretty_midi.PrettyMIDI,
+    channel: int,
+) -> tuple[list[mido.MidiTrack], list[RenderedTrack]]:
+    """Materializa a grade half-time em hits de kit no canal de bateria.
+
+    ``half_time_drum_pattern`` decide quais steps sobrevivem; pitch, bucket
+    de velocity e gate sao os mesmos que ``generate_drums`` ja usa para o
+    hat/ride da secao. Assim o role nao inventa uma nova articulacao de kit
+    nem um segundo grid de bateria.
+    """
+    pattern = element.pattern or {}
+    half_time_pattern = half_time_drum_pattern(tuple(pattern["base_pattern"]))
+    notes: list[RhythmicNote] = []
+
+    for section, seed in _iter_element_sections(element, plan):
+        assert_traceable_seed(
+            seed, source="render._render_half_time_magnifier_element",
+        )
+        impacto = _energy_axis(section, "impacto")
+        pitch = _hat_or_ride_pitch(impacto)
+        velocity_bucket = _hat_or_ride_velocity_bucket(impacto)
+        rng = random.Random(seed)
+        for bar in bars_in_section(section, analysis):
+            step_duration_s = (bar.end - bar.start) / len(half_time_pattern)
+            for step_index, active in enumerate(half_time_pattern):
+                if not active:
+                    continue
+                start_s = bar.start + step_index * step_duration_s
+                notes.append(RhythmicNote(
+                    pitch=pitch,
+                    velocity=_velocity_for(velocity_bucket, rng),
+                    start_s=start_s,
+                    end_s=start_s + DRUMS_HIT_DURATION_S,
+                ))
+
+    return _point_event_to_tracks(element, notes, [], pm, channel)
+
+
 def _point_event_to_tracks(
     element: Element,
     notes: list[RhythmicNote],
@@ -2690,6 +2747,10 @@ def _build_role_renderers() -> dict[str, _RoleRenderer]:
         **{
             role: _RoleRenderer(_render_subdivision_flip_element, RHYTHMIC_CHANNEL)
             for role in SUBDIVISION_FLIP_ROLES
+        },
+        **{
+            role: _RoleRenderer(_render_half_time_magnifier_element, DRUMS_CHANNEL)
+            for role in HALF_TIME_MAGNIFIER_ROLES
         },
     }
 

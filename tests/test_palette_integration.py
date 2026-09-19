@@ -277,6 +277,17 @@ _ROLE_SPECS: dict[str, dict] = {
         # estar declaradas para o placement validar esses ataques reais.
         "sections": ["A", "MAIN"],
     },
+    "half_time_magnifier": {
+        "route": "hook_eletronico_pesado",
+        "register": [0, 127],
+        "articulation": "tight",
+        "harmony": "percussion",
+        "sync_role": "exact_anchor",
+        "pattern": {"base_pattern": [1] * 16},
+        "instrument": {
+            "plugin": "Superior Drummer", "preset": "Metal Kit", "verified": True,
+        },
+    },
 }
 
 

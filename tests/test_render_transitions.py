@@ -13,6 +13,7 @@ import mido
 import pretty_midi
 import pytest
 
+from tools.palette.drums import GM_HAT_CLOSED
 from tools.plan import ArrangementPlan, Element, PlanSection, SourceMidi, Transition
 from tools.render import SUPPORTED_ROLES, render
 
@@ -82,8 +83,10 @@ def _build_plan(
 
 # --- dispatch ---------------------------------------------------------------
 
-def test_all_four_transition_roles_are_registered():
-    assert {"riser", "downer", "impact", "reverse"} <= SUPPORTED_ROLES
+def test_transition_roles_are_registered():
+    assert {
+        "riser", "downer", "impact", "reverse", "half_time_magnifier",
+    } <= SUPPORTED_ROLES
 
 
 # --- riser: termina antes do downbeat de B ----------------------------------
@@ -233,8 +236,14 @@ def test_subdivision_flip_element_materializes_expected_density_and_stamp(tmp_pa
     assert len(before_flip) == 8
     assert len(after_flip) == 16
     assert {(note.pitch, note.velocity) for note in notes} == {(60, 96)}
-    assert {round(b.start - a.start, 6) for a, b in zip(before_flip, before_flip[1:])} == {0.25}
-    assert {round(b.start - a.start, 6) for a, b in zip(after_flip, after_flip[1:])} == {0.125}
+    assert {
+        round(b.start - a.start, 6)
+        for a, b in zip(before_flip, before_flip[1:], strict=False)
+    } == {0.25}
+    assert {
+        round(b.start - a.start, 6)
+        for a, b in zip(after_flip, after_flip[1:], strict=False)
+    } == {0.125}
 
     out_mid = mido.MidiFile(str(out))
     midi_track = next(
@@ -258,6 +267,49 @@ def test_subdivision_flip_element_is_deterministic_byte_for_byte(tmp_path):
     render(plan, out2)
 
     assert out1.read_bytes() == out2.read_bytes()
+
+
+# --- half-time magnifier: conserva apenas steps pares ----------------------
+
+def test_half_time_magnifier_materializes_only_even_declared_steps(tmp_path):
+    src = _build_source(tmp_path)
+    element = Element(
+        id="half_time_a", role="half_time_magnifier", sections=["A"],
+        register=[0, 127], layers=1,
+        sync_role="exact_anchor", articulation="tight", harmony="percussion",
+        pattern={"base_pattern": [1] * 16},
+        instrument=_instrument("Superior Drummer", "Metal Kit"),
+        rationale="Mantem apenas os ataques pares enquanto o arp segue rapido.",
+    )
+    out = tmp_path / "out.mid"
+    render(_build_plan(src, [element]), out)
+
+    out_pm = pretty_midi.PrettyMIDI(str(out))
+    track = next(i for i in out_pm.instruments if "half_time_a" in (i.name or ""))
+    notes = sorted(track.notes, key=lambda note: note.start)
+
+    # A secao A cobre quatro compassos de 16 steps. O half-time de uma
+    # grade toda ativa deixa oito hits (os indices pares) por compasso.
+    assert len(notes) == 32
+    assert {note.pitch for note in notes} == {GM_HAT_CLOSED}
+    expected_starts = [
+        bar * 2.0 + step * 0.125
+        for bar in range(4)
+        for step in range(0, 16, 2)
+    ]
+    assert [round(note.start, 6) for note in notes] == [
+        round(start, 6) for start in expected_starts
+    ]
+
+    out_mid = mido.MidiFile(str(out))
+    midi_track = next(
+        midi_track for midi_track in out_mid.tracks
+        if any(msg.type == "track_name" and msg.name == track.name for msg in midi_track)
+    )
+    assert {
+        msg.channel for msg in midi_track
+        if msg.type == "note_on" and msg.velocity > 0
+    } == {9}
 
 
 # --- avisos de pattern nao suportado ----------------------------------------

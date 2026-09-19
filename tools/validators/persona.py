@@ -47,7 +47,8 @@ os tres papeis de suporte no vocabulario SYNC_ROLES."""
 #   texture).
 # - hook_eletronico_pesado: secao 5.4-5.6 ('Rhythmic Machines / Arena
 #   Leads / Seismic Subs' + secao 8.2 'Motor/Interlocking/Shadow' como
-#   gramatica ritmica). riser/downer/impact/reverse/subdivision_flip (issue #23) sao os
+#   gramatica ritmica). riser/downer/impact/reverse/subdivision_flip/half_time_magnifier
+#   (issue #23) sao os
 #   eventos de transicao caracteristicos do mesmo vocabulario eletronico —
 #   nao ha secao dedicada na persona, mesma familia sonora de sub/sub_drop.
 ROUTE_PALETTES: dict[str, frozenset[str]] = {
@@ -61,6 +62,7 @@ ROUTE_PALETTES: dict[str, frozenset[str]] = {
         "arp", "rhythmic_machine", "motor", "drone", "shadow",
         "hat_elec", "sub", "sub_drop",
         "riser", "downer", "impact", "reverse", "subdivision_flip",
+        "half_time_magnifier",
     }),
 }
 """Paletas por rota. Elemento fora da paleta da rota declarada dispara

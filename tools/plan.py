@@ -111,6 +111,7 @@ ROLE_STYLE_FAMILIES = {
     "hat_elec": "drums",
     "perc_elec": "drums",
     "impact": "drums",
+    "half_time_magnifier": "drums",
     "snare_bomb": "drums",
     "guitar": "guitar",
     "rhythm_guitar": "guitar",
@@ -1190,6 +1191,43 @@ def _is_subdivision_flip_role(role: str) -> bool:
     return role in SUBDIVISION_FLIP_ROLES
 
 
+def _validate_half_time_magnifier_pattern(pattern: object, path: str) -> None:
+    """Valida a grade declarada para ``half_time_magnifier``.
+
+    A grade tem a mesma convencao dos pads de hi-hat eletronico: cada item
+    representa um step e so ``0`` (silencio) ou ``1`` (hit) e permitido.
+    O comprimento permanece livre para que o autor escolha a subdivisao sem
+    introduzir um segundo vocabulario de grade no plano.
+    """
+    if not isinstance(pattern, dict):
+        raise PlanValidationError(path, "must be an object with required field 'base_pattern'")
+
+    base_pattern_path = f"{path}.base_pattern"
+    if "base_pattern" not in pattern:
+        raise PlanValidationError(base_pattern_path, "missing required base_pattern")
+    base_pattern = pattern["base_pattern"]
+    if not isinstance(base_pattern, (list, tuple)):
+        raise PlanValidationError(
+            base_pattern_path,
+            f"must be a non-empty sequence of 0 or 1, got {type(base_pattern).__name__}",
+        )
+    if not base_pattern:
+        raise PlanValidationError(base_pattern_path, "must be a non-empty sequence of 0 or 1")
+    for step_index, value in enumerate(base_pattern):
+        if not isinstance(value, int) or isinstance(value, bool) or value not in (0, 1):
+            raise PlanValidationError(
+                f"{base_pattern_path}[{step_index}]",
+                f"must be 0 or 1, got {value!r}",
+            )
+
+
+def _is_half_time_magnifier_role(role: str) -> bool:
+    """Consulta o registro de roles sem importar a paleta no carregamento."""
+    from .palette.transitions import HALF_TIME_MAGNIFIER_ROLES
+
+    return role in HALF_TIME_MAGNIFIER_ROLES
+
+
 def style_families_used_by_plan(plan: ArrangementPlan) -> tuple[str, ...]:
     """Familias de `style` que o plano efetivamente usa.
 
@@ -1555,6 +1593,8 @@ def validate(
         _require_nonblank_str(e.rationale, f"{base}.rationale")
         if _is_subdivision_flip_role(e.role):
             _validate_subdivision_flip_pattern(e.pattern, f"{base}.pattern")
+        if _is_half_time_magnifier_role(e.role):
+            _validate_half_time_magnifier_pattern(e.pattern, f"{base}.pattern")
 
         # BLOQUEIO (issue #17): veto de criacao de familia. `plan.elements`
         # e sempre conteudo GERADO (nunca a edicao de uma track existente,
