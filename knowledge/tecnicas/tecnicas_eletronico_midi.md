@@ -116,9 +116,56 @@ usada em `bass.sub`/`bass.sub_drop`. `verified: false` no bloco marca isso alto.
 
 ---
 
-## 4. Sub de breakdown e sub-drop
+## 4. Chop de vocal ritmico
 
 ### 4.1 Comportamento
+
+`vox_chop` e um gate ritmico monofonico sobre um pitch fixo — representa um slice/chop de sample
+vocal usado como camada percussiva de linha (nao como voz melodica). O sample fica na mesma nota
+MIDI em toda a secao: nao ha contorno melodico, nao ha `follow=riff`, nao ha `element.degrees` —
+o gate quem faz a musica, e a variacao entre onsets vem so de velocity e microtiming humano
+pequeno. O ritmo do gate vem de `element.pattern.pattern_mode`, reaproveitando o vocabulario
+fechado ja documentado em `hat_elec` (`sixteenth`/`gaps`/`half_time`); a issue #22 descreve
+"chop de vocal com gate curto sobre pitch fixo" e nao pede um modo novo — inventar seria criar
+comportamento que a issue nao autoriza.
+
+Gate curto e fixo em ms (nao escala com BPM): o chop e um recorte fixo do arquivo de audio, sua
+duracao vive na amostra, nao no tempo do arranjo. Mesma logica ja aplicada em `perc_elec`.
+
+Nenhum numero abaixo veio de medicao: a issue #22 descreve `vox_chop` em prosa e nao da valores.
+Todo parametro e `CONVENCAO — <razao>` declarada, mesma logica de `bass.sub`/`bass.sub_drop` e
+`drums.perc_elec`. `verified: false` no bloco marca isso alto.
+
+### 4.2 Parametros
+
+```technique
+{
+  "name": "vox_chop",
+  "family": "drums",
+  "summary": "Chop de sample vocal como camada ritmica monofonica: pitch fixo (sem contorno), gate curto, ritmo via pattern_mode de hat_elec.",
+  "verified": false,
+  "description": "[NAO VERIFICADO] Pitch NUNCA varia dentro de uma secao — o sample vocal e disparado sempre na mesma nota MIDI, sem `follow=riff` nem `element.degrees`. Onset segue a grade do `element.pattern.pattern_mode` (mesmo vocabulario fechado de hat_elec: sixteenth/gaps/half_time), com offset humano pequeno em ms. Gate e curto e fixo em ms (nao escala com BPM: o chop e um recorte fixo do arquivo, sua duracao vive na amostra). Nao substitui um melodia — vive como camada percussiva sobre o groove.",
+  "parameters": [
+    {"name": "pitch", "value": 60, "source": "CONVENCAO — a issue #22 nao declara mapeamento MIDI para vox_chop. 60 (C4) e a nota central de teclado, opcao neutra que a maioria dos sample players vocais mapeia como pitch nativo do slice (`root key`) — dispara o chop sem transposicao. Ainda e chute de mapeamento de sample player, nao medicao do arranjo do usuario."},
+    {"name": "gate_ms", "value": 80, "source": "CONVENCAO — chop de vocal e recorte curto do arquivo original (silaba/frase truncada): 80ms cobre o transiente + cauda audivel da silaba sem invadir o proximo onset de semicolcheia mesmo a 200bpm (step_ms ~75ms) — usa a mesma ordem de grandeza do gate medido de hat_elec (~83-86ms a 174bpm) e por isso o valor central vale sem escalar com BPM, como perc_elec ja documenta. Nao escala com BPM por design (amostra tem duracao propria)."},
+    {"name": "velocity_range", "range": [75, 108], "source": "CONVENCAO — mesma ordem de grandeza do velocity_range medido em hat_elec (79-113), levemente rebaixado no topo porque chop vocal costuma tocar como camada de textura sobre o groove e nao deve competir com backbeat da caixa (bucket accent do StyleProfile.default() vai ate ~110); nao ha medicao propria."},
+    {"name": "velocity_mean", "value": 92, "source": "CONVENCAO — centro geometrico da faixa declarada acima, levemente abaixo do centro de hat_elec/perc_elec (95) porque chop vocal e textura, nao acento estrutural; mantem a camada perceptivelmente presente sem dominar."},
+    {"name": "velocity_stdev", "value": 8, "source": "CONVENCAO — mesma ordem de grandeza do stdev medido em hat_elec (8). Chop curto nao suporta grandes oscilacoes de velocity sem soar erratico; 8 pontos e variacao humana plausivel sem inventar precisao que a medicao nao deu."},
+    {"name": "offset_range_ms", "range": [-15, 15], "source": "CONVENCAO — faixa mais estreita que hat_elec (+-20ms) porque chop vocal desloca o senso de silaba/frase quando arrasta demais; alinhado ao mesmo criterio de perc_elec (+-15ms) para as camadas eletronicas curtas; nao ha medicao propria."},
+    {"name": "offset_bias_ms", "value": -3, "source": "CONVENCAO — mesmo sentido do vies medido em hat_elec (-4ms adiantado). A camada de chop vocal vive na mesma grade estilistica do hi-hat e da percussao eletronica; um vies levemente adiantado (nao instantaneo) mantem a sensacao de energia percussiva sem competir com a caixa."},
+    {"name": "offset_stdev_ms", "value": 6, "source": "CONVENCAO — proporcional ao offset_range_ms mais estreito (~metade da faixa), mesmo criterio usado em hat_elec/perc_elec (stdev ~ metade do range) para produzir distribuicao plausivel dentro da faixa declarada."}
+  ],
+  "tools": {
+    "generic": {"notes": [60], "note": "pitch fixo, sem variacao — trate como slice/chop de sample player vocal, nao como voz melodica; o `root key` do plugin deve casar com o pitch declarado"}
+  }
+}
+```
+
+---
+
+## 5. Sub de breakdown e sub-drop
+
+### 5.1 Comportamento
 
 `sub`: linha de sub-bass sustentada de breakdown eletrônico. Segue tônica (nota pedal), o padrão do
 kick (`analysis.kick_positions`), ou o contorno do riff (via `element.degrees`, mesmo mecanismo já usado
@@ -131,7 +178,7 @@ elemento.
 bend (curva monotônica descendente). Também monofônico por construção — é um único evento, não uma
 sequência.
 
-### 4.2 Parâmetros
+### 5.2 Parâmetros
 
 ```technique
 {
